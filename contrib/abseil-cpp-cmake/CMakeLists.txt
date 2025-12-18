@@ -5,9 +5,12 @@ if(NOT EXISTS "${ABSL_ROOT_DIR}/CMakeLists.txt")
 endif()
 set(BUILD_TESTING OFF)
 set(ABSL_PROPAGATE_CXX_STD ON)
+
+no_warning(deprecated-builtins)
 add_subdirectory("${ABSL_ROOT_DIR}" "${TiFlash_BINARY_DIR}/contrib/abseil-cpp")
 
 add_library(abseil_swiss_tables INTERFACE)
+set_target_properties(abseil_swiss_tables PROPERTIES INTERFACE_COMPILE_OPTIONS "-Wno-array-parameter")
 
 target_link_libraries(abseil_swiss_tables INTERFACE
   absl::flat_hash_map

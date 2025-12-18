@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Storages/ITableDeclaration.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -37,7 +39,7 @@ public:
     Block getSampleBlockNonMaterialized() const;
     Block getSampleBlockForColumns(const Names & column_names) const;
 
-    /** The hidden coloumns will not be returned. Mainly for INSERT query.
+    /** The hidden columns will not be returned. Mainly for INSERT query.
       */
     Block getSampleBlockNoHidden() const;
     Block getSampleBlockNonMaterializedNoHidden() const;
@@ -71,10 +73,7 @@ private:
 
     OrderedNameSet empty_names;
 
-    virtual const OrderedNameSet & getHiddenColumnsImpl() const
-    {
-        return empty_names;
-    }
+    virtual const OrderedNameSet & getHiddenColumnsImpl() const { return empty_names; }
     void setColumnsImpl(ColumnsDescription columns_);
 };
 

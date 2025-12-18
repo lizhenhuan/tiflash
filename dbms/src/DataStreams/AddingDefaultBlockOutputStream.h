@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/DataStreams/AddingDefaultBlockOutputStream.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,11 +16,12 @@
 
 #pragma once
 
-#include <DataStreams/IBlockOutputStream.h>
 #include <Columns/ColumnConst.h>
-#include <Storages/ColumnDefault.h>
-#include <Interpreters/Context.h>
+#include <DataStreams/IBlockOutputStream.h>
+#include <Interpreters/Context_fwd.h>
 #include <Interpreters/evaluateMissingDefaults.h>
+#include <Storages/ColumnDefault.h>
+#include <Storages/IStorage.h>
 
 
 namespace DB
@@ -32,15 +35,12 @@ class AddingDefaultBlockOutputStream : public IBlockOutputStream
 {
 public:
     AddingDefaultBlockOutputStream(
-        const BlockOutputStreamPtr & output_,
+        const StoragePtr & storage_,
+        const ASTPtr & query_ptr_,
         const Block & header_,
         NamesAndTypesList required_columns_,
         const ColumnDefaults & column_defaults_,
-        const Context & context_)
-        : output(output_), header(header_), required_columns(required_columns_),
-          column_defaults(column_defaults_), context(context_)
-    {
-    }
+        const Context & context_);
 
     Block getHeader() const override { return header; }
     void write(const Block & block) override;
@@ -51,12 +51,14 @@ public:
     void writeSuffix() override;
 
 private:
+    StoragePtr storage;
     BlockOutputStreamPtr output;
     Block header;
     NamesAndTypesList required_columns;
     const ColumnDefaults column_defaults;
     const Context & context;
+    ASTPtr query_ptr;
 };
 
 
-}
+} // namespace DB

@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -29,12 +29,12 @@ TEST(DAGContextTest, FlagsTest)
     context.setFlags(f);
     ASSERT_EQ(context.getFlags(), f);
 
-    UInt64 f1 = f | TiDBSQLFlags::OVERFLOW_AS_WARNING;
-    context.addFlag(TiDBSQLFlags::OVERFLOW_AS_WARNING);
+    UInt64 f1 = f | TiDBSQLFlags::TRUNCATE_AS_WARNING;
+    context.addFlag(TiDBSQLFlags::TRUNCATE_AS_WARNING);
     ASSERT_EQ(context.getFlags(), f1);
 
-    context.delFlag(TiDBSQLFlags::OVERFLOW_AS_WARNING);
-    ASSERT_EQ(context.getFlags(), f);
+    context.delFlag(TiDBSQLFlags::TRUNCATE_AS_WARNING);
+    ASSERT_EQ(context.getFlags(), TiDBSQLFlags::IN_LOAD_DATA_STMT);
 }
 
 } // namespace tests

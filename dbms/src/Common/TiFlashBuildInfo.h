@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,21 +14,25 @@
 
 #pragma once
 
+#include <common/types.h>
+
 #include <ostream>
-#include <string>
 
 namespace TiFlashBuildInfo
 {
-std::string getName();
+String getName();
 /// Semantic version.
-std::string getVersion();
+String getVersion();
 /// Release version that follows PD/TiKV/TiDB convention.
-std::string getReleaseVersion();
-std::string getEdition();
-std::string getGitHash();
-std::string getGitBranch();
-std::string getUTCBuildTime();
-std::string getProfile();
+String getReleaseVersion();
+String getEdition();
+String getGitHash();
+String getGitBranch();
+String getUTCBuildTime();
+String getProfile();
+UInt32 getMajorVersion();
+UInt32 getMinorVersion();
+UInt32 getPatchVersion();
 
 void outputDetail(std::ostream & os);
 } // namespace TiFlashBuildInfo

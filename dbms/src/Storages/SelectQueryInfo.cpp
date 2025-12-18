@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -31,6 +31,7 @@ SelectQueryInfo::SelectQueryInfo(const SelectQueryInfo & rhs)
     , req_id(rhs.req_id)
     , keep_order(rhs.keep_order)
     , is_fast_scan(rhs.is_fast_scan)
+    , has_multiple_partitions(rhs.has_multiple_partitions)
 {}
 
 SelectQueryInfo::SelectQueryInfo(SelectQueryInfo && rhs) noexcept
@@ -41,6 +42,7 @@ SelectQueryInfo::SelectQueryInfo(SelectQueryInfo && rhs) noexcept
     , req_id(std::move(rhs.req_id))
     , keep_order(rhs.keep_order)
     , is_fast_scan(rhs.is_fast_scan)
+    , has_multiple_partitions(rhs.has_multiple_partitions)
 {}
 
 } // namespace DB

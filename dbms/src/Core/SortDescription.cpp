@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Core/SortDescription.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,10 +14,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <Columns/Collator.h>
 #include <Core/SortDescription.h>
+#include <IO/Buffer/WriteBufferFromString.h>
 #include <IO/Operators.h>
-#include <IO/WriteBufferFromString.h>
+#include <TiDB/Collation/Collator.h>
 
 #include <sstream>
 
@@ -27,7 +29,7 @@ std::string SortColumnDescription::getID() const
     WriteBufferFromOwnString out;
     out << column_name << ", " << column_number << ", " << direction << ", " << nulls_direction;
     if (collator)
-        out << ", collation locale: " << collator->getLocale();
+        out << ", collation locale: " << collator->getCollatorId();
     return out.str();
 }
 

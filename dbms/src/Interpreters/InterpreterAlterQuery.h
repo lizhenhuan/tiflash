@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Interpreters/InterpreterAlterQuery.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,7 +16,7 @@
 
 #pragma once
 
-#include <Interpreters/Context.h>
+#include <Interpreters/Context_fwd.h>
 #include <Interpreters/IInterpreter.h>
 #include <Parsers/ASTAlterQuery.h>
 #include <Storages/AlterCommands.h>
@@ -114,10 +116,11 @@ private:
 
     const Context & context;
 
-    static void parseAlter(const ASTAlterQuery::ParameterContainer & params,
-                           AlterCommands & out_alter_commands,
-                           PartitionCommands & out_partition_commands,
-                           StoragePtr table);
+    static void parseAlter(
+        const ASTAlterQuery::ParameterContainer & params,
+        AlterCommands & out_alter_commands,
+        PartitionCommands & out_partition_commands,
+        StoragePtr table);
 };
 
 } // namespace DB

@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,10 +18,9 @@
 #include <Storages/DeltaMerge/convertColumnTypeHelpers.h>
 
 
-namespace DB
+namespace DB::DM
 {
-namespace DM
-{
+
 void ColumnFileInMemory::fillColumns(const ColumnDefines & col_defs, size_t col_count, Columns & result) const
 {
     if (result.size() >= col_count)
@@ -32,6 +31,7 @@ void ColumnFileInMemory::fillColumns(const ColumnDefines & col_defs, size_t col_
     Columns read_cols;
 
     std::scoped_lock lock(cache->mutex);
+    const auto & colid_to_offset = schema->getColIdToOffset();
     for (size_t i = col_start; i < col_end; ++i)
     {
         const auto & cd = col_defs[i];
@@ -41,6 +41,7 @@ void ColumnFileInMemory::fillColumns(const ColumnDefines & col_defs, size_t col_
             // Copy data from cache
             const auto & type = getDataType(cd.id);
             auto col_data = type->createColumn();
+            col_data->reserve(rows);
             col_data->insertRangeFrom(*(cache->block.getByPosition(col_offset).column), 0, rows);
             // Cast if need
             auto col_converted = convertColumnByColumnDefineIfNeed(type, std::move(col_data), cd);
@@ -55,36 +56,54 @@ void ColumnFileInMemory::fillColumns(const ColumnDefines & col_defs, size_t col_
     result.insert(result.end(), read_cols.begin(), read_cols.end());
 }
 
-ColumnFileReaderPtr
-ColumnFileInMemory::getReader(const DMContext & /*context*/, const StorageSnapshotPtr & /*storage_snap*/, const ColumnDefinesPtr & col_defs) const
+ColumnFileReaderPtr ColumnFileInMemory::getReader(
+    const DMContext &,
+    const IColumnFileDataProviderPtr &,
+    const ColumnDefinesPtr & col_defs,
+    ReadTag) const
 {
     return std::make_shared<ColumnFileInMemoryReader>(*this, col_defs);
 }
 
-bool ColumnFileInMemory::append(DMContext & context, const Block & data, size_t offset, size_t limit, size_t data_bytes)
+void ColumnFileInMemory::disableAppend()
+{
+    disable_append = true;
+    // TODO: Call shrinkToFit() to release the extra memory of the cache block.
+}
+
+ColumnFile::AppendResult ColumnFileInMemory::append(
+    const DMContext & context,
+    const Block & data,
+    size_t offset,
+    size_t limit,
+    size_t data_bytes)
 {
     if (disable_append)
-        return false;
+        return AppendResult{false, 0};
 
     std::scoped_lock lock(cache->mutex);
     if (!isSameSchema(cache->block, data))
-        return false;
+        return AppendResult{false, 0};
 
     // check whether this instance overflows
-    if (cache->block.rows() >= context.delta_cache_limit_rows || cache->block.bytes() >= context.delta_cache_limit_bytes)
-        return false;
+    if (cache->block.rows() >= context.delta_cache_limit_rows
+        || cache->block.bytes() >= context.delta_cache_limit_bytes)
+        return AppendResult{false, 0};
 
+    size_t new_alloc_block_bytes = 0;
     for (size_t i = 0; i < cache->block.columns(); ++i)
     {
         const auto & col = data.getByPosition(i).column;
         const auto & cache_col = *cache->block.getByPosition(i).column;
         auto * mutable_cache_col = const_cast<IColumn *>(&cache_col);
+        size_t alloc_bytes = mutable_cache_col->allocatedBytes();
         mutable_cache_col->insertRangeFrom(*col, offset, limit);
+        new_alloc_block_bytes += mutable_cache_col->allocatedBytes() - alloc_bytes;
     }
 
     rows += limit;
     bytes += data_bytes;
-    return true;
+    return AppendResult{true, new_alloc_block_bytes};
 }
 
 Block ColumnFileInMemory::readDataForFlush() const
@@ -98,20 +117,18 @@ Block ColumnFileInMemory::readDataForFlush() const
     return cache_block.cloneWithColumns(std::move(columns));
 }
 
-
-ColumnPtr ColumnFileInMemoryReader::getPKColumn()
+std::pair<ColumnPtr, ColumnPtr> ColumnFileInMemoryReader::getPKAndVersionColumns()
 {
-    memory_file.fillColumns(*col_defs, 1, cols_data_cache);
-    return cols_data_cache[0];
-}
-
-ColumnPtr ColumnFileInMemoryReader::getVersionColumn()
-{
+    // fill the first 2 columns into `cols_data_cache`
     memory_file.fillColumns(*col_defs, 2, cols_data_cache);
-    return cols_data_cache[1];
+    return {cols_data_cache[0], cols_data_cache[1]};
 }
 
-size_t ColumnFileInMemoryReader::readRows(MutableColumns & output_cols, size_t rows_offset, size_t rows_limit, const RowKeyRange * range)
+std::pair<size_t, size_t> ColumnFileInMemoryReader::readRows(
+    MutableColumns & output_cols,
+    size_t rows_offset,
+    size_t rows_limit,
+    const RowKeyRange * range)
 {
     memory_file.fillColumns(*col_defs, output_cols.size(), cols_data_cache);
 
@@ -132,11 +149,20 @@ Block ColumnFileInMemoryReader::readNextBlock()
     return genBlock(*col_defs, columns);
 }
 
-ColumnFileReaderPtr ColumnFileInMemoryReader::createNewReader(const ColumnDefinesPtr & new_col_defs)
+
+size_t ColumnFileInMemoryReader::skipNextBlock()
+{
+    if (read_done)
+        return 0;
+
+    read_done = true;
+    return memory_file.getRows();
+}
+
+ColumnFileReaderPtr ColumnFileInMemoryReader::createNewReader(const ColumnDefinesPtr & new_col_defs, ReadTag)
 {
     // Reuse the cache data.
     return std::make_shared<ColumnFileInMemoryReader>(memory_file, new_col_defs, cols_data_cache);
 }
 
-} // namespace DM
-} // namespace DB
+} // namespace DB::DM

@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -27,7 +27,7 @@
   * make a persistent copy of the key in each of the following cases:
   * 1) the aggregation method doesn't use temporary keys, so they're persistent
   *    from the start;
-  * 1) the key is already present in the hash table;
+  * 2) the key is already present in the hash table;
   * 3) that particular key is stored by value, e.g. a short StringRef key in
   *    StringHashMap.
   *
@@ -92,7 +92,7 @@ namespace DB
 struct ArenaKeyHolder
 {
     StringRef key;
-    Arena & pool;
+    Arena * pool;
 };
 
 } // namespace DB
@@ -111,23 +111,19 @@ inline void ALWAYS_INLINE keyHolderPersistKey(DB::ArenaKeyHolder & holder)
 {
     // Hash table shouldn't ask us to persist a zero key
     assert(holder.key.size > 0);
-    holder.key.data = holder.pool.insert(holder.key.data, holder.key.size);
+    holder.key.data = holder.pool->insert(holder.key.data, holder.key.size);
 }
 
 inline void ALWAYS_INLINE keyHolderPersistKey(DB::ArenaKeyHolder && holder)
 {
     // Hash table shouldn't ask us to persist a zero key
     assert(holder.key.size > 0);
-    holder.key.data = holder.pool.insert(holder.key.data, holder.key.size);
+    holder.key.data = holder.pool->insert(holder.key.data, holder.key.size);
 }
 
-inline void ALWAYS_INLINE keyHolderDiscardKey(DB::ArenaKeyHolder &)
-{
-}
+inline void ALWAYS_INLINE keyHolderDiscardKey(DB::ArenaKeyHolder &) {}
 
-inline void ALWAYS_INLINE keyHolderDiscardKey(DB::ArenaKeyHolder &&)
-{
-}
+inline void ALWAYS_INLINE keyHolderDiscardKey(DB::ArenaKeyHolder &&) {}
 
 namespace DB
 {
@@ -138,7 +134,7 @@ namespace DB
 struct SerializedKeyHolder
 {
     StringRef key;
-    Arena & pool;
+    Arena * pool;
 };
 
 } // namespace DB
@@ -153,19 +149,15 @@ inline StringRef & ALWAYS_INLINE keyHolderGetKey(DB::SerializedKeyHolder && hold
     return holder.key;
 }
 
-inline void ALWAYS_INLINE keyHolderPersistKey(DB::SerializedKeyHolder &)
-{
-}
+inline void ALWAYS_INLINE keyHolderPersistKey(DB::SerializedKeyHolder &) {}
 
-inline void ALWAYS_INLINE keyHolderPersistKey(DB::SerializedKeyHolder &&)
-{
-}
+inline void ALWAYS_INLINE keyHolderPersistKey(DB::SerializedKeyHolder &&) {}
 
 inline void ALWAYS_INLINE keyHolderDiscardKey(DB::SerializedKeyHolder & holder)
 {
     //[[maybe_unused]] void * new_head = holder.pool.rollback(holder.key.size);
     //assert(new_head == holder.key.data);
-    holder.pool.rollback(holder.key.size);
+    holder.pool->rollback(holder.key.size);
     holder.key.data = nullptr;
     holder.key.size = 0;
 }
@@ -174,7 +166,7 @@ inline void ALWAYS_INLINE keyHolderDiscardKey(DB::SerializedKeyHolder && holder)
 {
     //[[maybe_unused]] void * new_head = holder.pool.rollback(holder.key.size);
     //assert(new_head == holder.key.data);
-    holder.pool.rollback(holder.key.size);
+    holder.pool->rollback(holder.key.size);
     holder.key.data = nullptr;
     holder.key.size = 0;
 }

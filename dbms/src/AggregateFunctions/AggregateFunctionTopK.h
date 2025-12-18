@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/AggregateFunctions/AggregateFunctionTopK.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -124,7 +126,10 @@ struct AggregateFunctionTopKGenericData
  *  For such columns topK() can be implemented more efficently (especially for small numeric arrays).
  */
 template <bool is_plain_column = false>
-class AggregateFunctionTopKGeneric : public IAggregateFunctionDataHelper<AggregateFunctionTopKGenericData, AggregateFunctionTopKGeneric<is_plain_column>>
+class AggregateFunctionTopKGeneric
+    : public IAggregateFunctionDataHelper<
+          AggregateFunctionTopKGenericData,
+          AggregateFunctionTopKGeneric<is_plain_column>>
 {
 private:
     using State = AggregateFunctionTopKGenericData;
@@ -144,15 +149,9 @@ public:
 
     String getName() const override { return "topK"; }
 
-    DataTypePtr getReturnType() const override
-    {
-        return std::make_shared<DataTypeArray>(input_data_type);
-    }
+    DataTypePtr getReturnType() const override { return std::make_shared<DataTypeArray>(input_data_type); }
 
-    bool allocatesMemoryInArena() const override
-    {
-        return true;
-    }
+    bool allocatesMemoryInArena() const override { return true; }
 
     void serialize(ConstAggregateDataPtr __restrict place, WriteBuffer & buf) const override
     {
@@ -207,7 +206,7 @@ public:
 
     void insertResultInto(ConstAggregateDataPtr __restrict place, IColumn & to, Arena *) const override
     {
-        ColumnArray & arr_to = static_cast<ColumnArray &>(to);
+        auto & arr_to = static_cast<ColumnArray &>(to);
         ColumnArray::Offsets & offsets_to = arr_to.getOffsets();
         IColumn & data_to = arr_to.getData();
 

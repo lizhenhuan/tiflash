@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,18 +14,17 @@
 
 #pragma once
 
+#include <AggregateFunctions/IAggregateFunction.h>
+#include <Common/AlignedBuffer.h>
 #include <Core/ColumnNumbers.h>
 #include <Core/Field.h>
 #include <Core/Types.h>
 #include <DataTypes/IDataType.h>
-
-#include <memory>
-
+#include <WindowFunctions/WindowUtils.h>
 
 namespace DB
 {
-class WindowBlockInputStream;
-using WindowBlockInputStreamPtr = std::shared_ptr<WindowBlockInputStream>;
+struct WindowTransformAction;
 
 class IWindowFunction
 {
@@ -41,7 +40,7 @@ public:
     virtual DataTypePtr getReturnType() const = 0;
     // Must insert the result for current_row.
     virtual void windowInsertResultInto(
-        WindowBlockInputStreamPtr streamPtr,
+        WindowTransformAction & action,
         size_t function_index,
         const ColumnNumbers & arguments)
         = 0;
@@ -52,4 +51,25 @@ protected:
 
 using WindowFunctionPtr = std::shared_ptr<IWindowFunction>;
 
+// Runtime data for computing one window function.
+struct WindowFunctionWorkspace
+{
+    WindowFunctionPtr window_function = nullptr;
+    AggregateFunctionPtr aggregate_function;
+
+    // Will not be initialized for a pure window function.
+    mutable AlignedBuffer aggregate_function_state;
+
+    // Argument columns. Be careful, this is a per-block cache.
+    std::vector<const IColumn *> argument_columns;
+
+    UInt64 cached_block_number = std::numeric_limits<UInt64>::max();
+
+    ColumnNumbers arguments;
+
+    // Avoid the release of column pointer
+    Columns materialized_columns;
+
+    UInt64 idx;
+};
 } // namespace DB

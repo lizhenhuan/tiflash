@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@
 #include <Storages/DeltaMerge/DeltaMergeStore.h>
 #include <Storages/DeltaMerge/Segment.h>
 #include <Storages/DeltaMerge/tests/DMTestEnv.h>
-#include <Storages/tests/TiFlashStorageTestBasic.h>
+#include <TestUtils/TiFlashStorageTestBasic.h>
 #include <TestUtils/TiFlashTestBasic.h>
 
 namespace DB
@@ -26,7 +26,6 @@ namespace DM
 {
 namespace tests
 {
-
 /**
  * This is similar to SegmentTestBasic, but is for the DeltaMergeStore.
  * It allows you to write tests easier based on the assumption that the PK is either Int or Int encoded in String.
@@ -34,15 +33,9 @@ namespace tests
 class SimplePKTestBasic : public DB::base::TiFlashStorageTestBasic
 {
 public:
-    void SetUp() override
-    {
-        reload();
-    }
+    void SetUp() override { reload(); }
 
-    void TearDown() override
-    {
-        TiFlashStorageTestBasic::TearDown();
-    }
+    void TearDown() override { TiFlashStorageTestBasic::TearDown(); }
 
 public:
     // Lightweight wrappers
@@ -53,9 +46,32 @@ public:
     void flush();
     void mergeDelta(Int64 start_key, Int64 end_key);
     void mergeDelta();
+    bool merge(Int64 start_key, Int64 end_key);
     void deleteRange(Int64 start_key, Int64 end_key);
-    size_t getRowsN();
-    size_t getRowsN(Int64 start_key, Int64 end_key);
+
+    struct IngestFilesOptions
+    {
+        std::pair<Int64, Int64> range;
+        const std::vector<Block> & blocks;
+        bool clear = false;
+
+        // Records of the same handle must be written in version order and cannot be arbitrarily out of sequence.
+        // When ingestFiles concurrently, ranges that intersect share the same mutex to serialize their data generation and ingestion order.
+        std::shared_ptr<std::mutex> mtx;
+    };
+    void ingestFiles(const IngestFilesOptions & options);
+
+    size_t getRowsN() const;
+    size_t getRowsN(Int64 start_key, Int64 end_key) const;
+    size_t getRawRowsN() const;
+    bool isFilled(Int64 start_key, Int64 end_key) const;
+
+    struct FillBlockOptions
+    {
+        std::pair<Int64, Int64> range;
+        bool is_deleted = false;
+    };
+    Block fillBlock(const FillBlockOptions & options);
 
 public:
     SegmentPtr getSegmentAt(Int64 key) const;
@@ -90,16 +106,14 @@ protected:
 
     std::pair<Int64, Int64> parseRange(const RowKeyRange & range) const;
 
-    Block prepareWriteBlock(Int64 start_key, Int64 end_key, bool is_deleted = false);
-
 protected:
     DeltaMergeStorePtr store;
     DMContextPtr dm_context;
 
-    UInt64 version = 0;
+    std::atomic<UInt64> version = 0;
 
-    LoggerPtr logger = Logger::get("SimplePKTestBasic");
-    LoggerPtr logger_op = Logger::get("SimplePKTestBasicOperations");
+    LoggerPtr logger = Logger::get();
+    LoggerPtr logger_op = Logger::get("SimplePKTestBasicOperation");
 
 protected:
     // Below are options

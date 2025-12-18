@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Core/Field.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,9 +17,9 @@
 #include <Common/FieldVisitors.h>
 #include <Core/DecimalComparison.h>
 #include <Core/Field.h>
-#include <IO/ReadBuffer.h>
+#include <IO/Buffer/ReadBuffer.h>
+#include <IO/Buffer/WriteBuffer.h>
 #include <IO/ReadHelpers.h>
-#include <IO/WriteBuffer.h>
 #include <IO/WriteHelpers.h>
 #include <fmt/core.h>
 
@@ -49,7 +51,7 @@ void readBinary(Array & x, ReadBuffer & buf)
         }
         case Field::Types::UInt128:
         {
-            UInt128 value;
+            UInt128 value{};
             DB::readBinary(value, buf);
             x.push_back(value);
             break;
@@ -180,7 +182,7 @@ void readBinary(Tuple & x_def, ReadBuffer & buf)
         }
         case Field::Types::UInt128:
         {
-            UInt128 value;
+            UInt128 value{};
             DB::readBinary(value, buf);
             x.push_back(value);
             break;

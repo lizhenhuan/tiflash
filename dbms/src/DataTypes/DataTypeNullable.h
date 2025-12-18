@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/DataTypes/DataTypeNullable.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -26,7 +28,7 @@ class DataTypeNullable final : public IDataType
 public:
     static constexpr bool is_parametric = true;
 
-    DataTypeNullable(const DataTypePtr & nested_data_type_);
+    explicit DataTypeNullable(const DataTypePtr & nested_data_type_);
     std::string getName() const override { return "Nullable(" + nested_data_type->getName() + ")"; }
     const char * getFamilyName() const override { return "Nullable"; }
 
@@ -50,24 +52,14 @@ public:
         bool position_independent_encoding,
         SubstreamPath & path) const override;
 
-    void serializeWidenBinaryBulkWithMultipleStreams(
-        const IColumn & column,
-        const OutputStreamGetter & getter,
-        size_t offset,
-        size_t limit,
-        bool position_independent_encoding,
-        SubstreamPath & path) const override;
-
-    void deserializeWidenBinaryBulkWithMultipleStreams(
-        IColumn & column,
-        const InputStreamGetter & getter,
-        size_t limit,
-        double avg_value_size_hint,
-        bool position_independent_encoding,
-        SubstreamPath & path) const override;
-
-    void serializeBinary(const Field & field, WriteBuffer & ostr) const override { nested_data_type->serializeBinary(field, ostr); }
-    void deserializeBinary(Field & field, ReadBuffer & istr) const override { nested_data_type->deserializeBinary(field, istr); }
+    void serializeBinary(const Field & field, WriteBuffer & ostr) const override
+    {
+        nested_data_type->serializeBinary(field, ostr);
+    }
+    void deserializeBinary(Field & field, ReadBuffer & istr) const override
+    {
+        nested_data_type->deserializeBinary(field, istr);
+    }
     void serializeBinary(const IColumn & column, size_t row_num, WriteBuffer & ostr) const override;
     void deserializeBinary(IColumn & column, ReadBuffer & istr) const override;
     void serializeTextEscaped(const IColumn & column, size_t row_num, WriteBuffer & ostr) const override;
@@ -75,21 +67,10 @@ public:
     void serializeTextQuoted(const IColumn & column, size_t row_num, WriteBuffer & ostr) const override;
     void deserializeTextQuoted(IColumn & column, ReadBuffer & istr) const override;
 
-    void serializeTextCSV(const IColumn & column, size_t row_num, WriteBuffer & ostr) const override;
-
-    /** It is questionable, how NULL values could be represented in CSV. There are three variants:
-      * 1. \N
-      * 2. empty string (without quotes)
-      * 3. NULL
-      * Now we support only first.
-      * In CSV, non-NULL string value, starting with \N characters, must be placed in quotes, to avoid ambiguity.
-      */
-    void deserializeTextCSV(IColumn & column, ReadBuffer & istr, const char delimiter) const override;
-
-    void serializeTextJSON(const IColumn & column, size_t row_num, WriteBuffer & ostr, const FormatSettingsJSON &) const override;
+    void serializeTextJSON(const IColumn & column, size_t row_num, WriteBuffer & ostr, const FormatSettingsJSON &)
+        const override;
     void deserializeTextJSON(IColumn & column, ReadBuffer & istr) const override;
     void serializeText(const IColumn & column, size_t row_num, WriteBuffer & ostr) const override;
-    void serializeTextXML(const IColumn & column, size_t row_num, WriteBuffer & ostr) const override;
 
     MutableColumnPtr createColumn() const override;
 
@@ -100,15 +81,21 @@ public:
     bool isParametric() const override { return true; }
     bool haveSubtypes() const override { return true; }
     bool cannotBeStoredInTables() const override { return nested_data_type->cannotBeStoredInTables(); }
-    bool shouldAlignRightInPrettyFormats() const override { return nested_data_type->shouldAlignRightInPrettyFormats(); }
+    bool shouldAlignRightInPrettyFormats() const override
+    {
+        return nested_data_type->shouldAlignRightInPrettyFormats();
+    }
     bool textCanContainOnlyValidUTF8() const override { return nested_data_type->textCanContainOnlyValidUTF8(); }
-    bool isComparable() const override { return nested_data_type->isComparable(); };
+    bool isComparable() const override { return nested_data_type->isComparable(); }
     bool canBeComparedWithCollation() const override { return nested_data_type->canBeComparedWithCollation(); }
     bool canBeUsedAsVersion() const override { return false; }
     bool isSummable() const override { return nested_data_type->isSummable(); }
     bool canBeUsedInBooleanContext() const override { return nested_data_type->canBeUsedInBooleanContext(); }
     bool haveMaximumSizeOfValue() const override { return nested_data_type->haveMaximumSizeOfValue(); }
-    size_t getMaximumSizeOfValueInMemory() const override { return 1 + nested_data_type->getMaximumSizeOfValueInMemory(); }
+    size_t getMaximumSizeOfValueInMemory() const override
+    {
+        return 1 + nested_data_type->getMaximumSizeOfValueInMemory();
+    }
     bool isNullable() const override { return true; }
     size_t getSizeOfValueInMemory() const override;
     bool onlyNull() const override;

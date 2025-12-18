@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -36,17 +36,32 @@ public:
         Task() = default;
 
         ColumnFilePersisteds to_compact;
+        size_t first_file_index = std::numeric_limits<size_t>::max();
         size_t total_rows = 0;
         size_t total_bytes = 0;
 
         bool is_trivial_move = false;
         ColumnFilePersistedPtr result;
 
-        void addColumnFile(const ColumnFilePersistedPtr & column_file)
+        void addColumnFile(const ColumnFilePersistedPtr & column_file, size_t index)
         {
+            to_compact.push_back(column_file);
+            first_file_index = std::min(first_file_index, index);
             total_rows += column_file->getRows();
             total_bytes += column_file->getBytes();
-            to_compact.push_back(column_file);
+        }
+
+        String toString() const
+        {
+            return fmt::format(
+                "Task{{to_compact_size={} first_file_index={} total_rows={} total_bytes={} is_trivial_move={} "
+                "result_rows={}}}",
+                to_compact.size(),
+                first_file_index,
+                total_rows,
+                total_bytes,
+                is_trivial_move,
+                result ? result->getRows() : 0);
         }
     };
     using Tasks = std::vector<Task>;
@@ -54,15 +69,18 @@ public:
 private:
     Tasks tasks;
 
-    size_t compaction_src_level;
+    // The index of the first cftiny which can be compacted
+    size_t first_compact_index = std::numeric_limits<size_t>::max();
+
     size_t current_compaction_version;
 
     size_t total_compact_files = 0;
     size_t total_compact_rows = 0;
+    size_t total_compact_bytes = 0;
     size_t result_compact_files = 0;
 
 public:
-    MinorCompaction(size_t compaction_src_level_, size_t current_compaction_version_);
+    explicit MinorCompaction(size_t current_compaction_version_);
 
     // Add new task and return whether this task is a trivial move
     inline bool packUpTask(Task && task)
@@ -73,25 +91,25 @@ public:
         bool is_trivial_move = false;
         if (task.to_compact.size() == 1)
         {
-            // Maybe this column file is small, but it cannot be merged with other column files, so also remove it's cache if possible.
-            for (auto & f : task.to_compact)
-            {
-                if (auto * t_file = f->tryToTinyFile(); t_file)
-                {
-                    t_file->clearCache();
-                }
-            }
             is_trivial_move = true;
         }
+
         task.is_trivial_move = is_trivial_move;
         tasks.push_back(std::move(task));
+        if (!is_trivial_move)
+            first_compact_index = std::min(first_compact_index, task.first_file_index);
         return is_trivial_move;
     }
 
     const Tasks & getTasks() const { return tasks; }
 
-    size_t getCompactionSourceLevel() const { return compaction_src_level; }
+    size_t getFirsCompactIndex() const { return first_compact_index; }
+
     size_t getCompactionVersion() const { return current_compaction_version; }
+
+    // The stats about compaction. Only effective after `prepare` is called.
+    size_t getTotalCompactRows() const { return total_compact_rows; }
+    size_t getTotalCompactBytes() const { return total_compact_bytes; }
 
     /// Create new column file by combining several small `ColumnFileTiny`s
     void prepare(DMContext & context, WriteBatches & wbs, const PageReader & reader);

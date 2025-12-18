@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -61,7 +61,9 @@ const std::string & SourceFilterChannel::getSource() const
 
 void SourceFilterChannel::log(const Message & msg)
 {
-    if ((target_source == msg.getSource()) && channel)
+    // There may be other identifiers in the msg source.
+    // Let's just check whether target_source is contained.
+    if (msg.getSource().find(target_source) != std::string::npos && channel)
         channel->log(msg);
 }
 } // namespace Poco

@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/AggregateFunctions/registerAggregateFunctions.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -27,6 +29,7 @@ void registerAggregateFunctionGroupArrayInsertAt(AggregateFunctionFactory &);
 void registerAggregateFunctionsQuantile(AggregateFunctionFactory &);
 void registerAggregateFunctionsSequenceMatch(AggregateFunctionFactory &);
 void registerAggregateFunctionsMinMaxAny(AggregateFunctionFactory &);
+void registerAggregateFunctionsMinMaxForWindow(AggregateFunctionFactory &);
 void registerAggregateFunctionsStatisticsStable(AggregateFunctionFactory &);
 void registerAggregateFunctionsStatisticsSimple(AggregateFunctionFactory &);
 void registerAggregateFunctionSum(AggregateFunctionFactory &);
@@ -58,6 +61,7 @@ void registerAggregateFunctions()
         registerAggregateFunctionsQuantile(factory);
         registerAggregateFunctionsSequenceMatch(factory);
         registerAggregateFunctionsMinMaxAny(factory);
+        registerAggregateFunctionsMinMaxForWindow(factory);
         registerAggregateFunctionsStatisticsStable(factory);
         registerAggregateFunctionsStatisticsSimple(factory);
         registerAggregateFunctionSum(factory);

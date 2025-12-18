@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Common/parseAddress.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -38,9 +40,10 @@ std::pair<std::string, UInt16> parseAddress(const std::string & str, UInt16 defa
     {
         const char * closing_square_bracket = find_first_symbols<']'>(begin + 1, end);
         if (closing_square_bracket >= end)
-            throw Exception("Illegal address passed to function parseAddress: "
-                            "the address begins with opening square bracket, but no closing square bracket found",
-                            ErrorCodes::BAD_ARGUMENTS);
+            throw Exception(
+                "Illegal address passed to function parseAddress: "
+                "the address begins with opening square bracket, but no closing square bracket found",
+                ErrorCodes::BAD_ARGUMENTS);
 
         port = find_first_symbols<':'>(closing_square_bracket + 1, end);
     }
@@ -49,7 +52,7 @@ std::pair<std::string, UInt16> parseAddress(const std::string & str, UInt16 defa
 
     if (port != end)
     {
-        UInt16 port_number = parse<UInt16>(port + 1);
+        auto port_number = parse<UInt16>(port + 1);
         return {std::string(begin, port), port_number};
     }
     else if (default_port)
@@ -57,9 +60,10 @@ std::pair<std::string, UInt16> parseAddress(const std::string & str, UInt16 defa
         return {str, default_port};
     }
     else
-        throw Exception("The address passed to function parseAddress doesn't contain port number "
-                        "and no 'default_port' was passed",
-                        ErrorCodes::BAD_ARGUMENTS);
+        throw Exception(
+            "The address passed to function parseAddress doesn't contain port number "
+            "and no 'default_port' was passed",
+            ErrorCodes::BAD_ARGUMENTS);
 }
 
 } // namespace DB

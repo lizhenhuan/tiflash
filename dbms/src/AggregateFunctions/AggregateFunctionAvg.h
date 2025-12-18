@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/AggregateFunctions/AggregateFunctionAvg.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,6 +23,8 @@
 #include <IO/ReadHelpers.h>
 #include <IO/WriteHelpers.h>
 
+#include <type_traits>
+
 namespace DB
 {
 template <typename T>
@@ -28,6 +32,12 @@ struct AggregateFunctionAvgData
 {
     T sum;
     UInt64 count;
+
+    void reset()
+    {
+        sum = T(0);
+        count = 0;
+    }
 
     AggregateFunctionAvgData()
         : sum(0)
@@ -37,11 +47,12 @@ struct AggregateFunctionAvgData
 
 
 /// Calculates arithmetic mean of numbers.
-template <typename T, typename TResult = Float64>
+template <typename T, typename CalculateType, typename TResult = Float64>
 class AggregateFunctionAvg final
     : public IAggregateFunctionDataHelper<
-          AggregateFunctionAvgData<std::conditional_t<IsDecimal<T>, TResult, typename NearestFieldType<T>::Type>>,
-          AggregateFunctionAvg<T, TResult>>
+          AggregateFunctionAvgData<
+              std::conditional_t<IsDecimal<CalculateType>, CalculateType, typename NearestFieldType<T>::Type>>,
+          AggregateFunctionAvg<T, CalculateType, TResult>>
 {
     PrecType prec;
     ScaleType scale;
@@ -77,6 +88,19 @@ public:
         ++this->data(place).count;
     }
 
+    void decrease(AggregateDataPtr __restrict place, const IColumn ** columns, size_t row_num, Arena *) const override
+    {
+        if constexpr (IsDecimal<T>)
+            this->data(place).sum -= static_cast<const ColumnDecimal<T> &>(*columns[0]).getData()[row_num];
+        else
+            this->data(place).sum -= static_cast<const ColumnVector<T> &>(*columns[0]).getData()[row_num];
+
+        --this->data(place).count;
+        assert(this->data(place).count >= 0);
+    }
+
+    void reset(AggregateDataPtr __restrict place) const override { this->data(place).reset(); }
+
     void merge(AggregateDataPtr __restrict place, ConstAggregateDataPtr rhs, Arena *) const override
     {
         this->data(place).sum += this->data(rhs).sum;
@@ -97,22 +121,46 @@ public:
 
     void insertResultInto(ConstAggregateDataPtr __restrict place, IColumn & to, Arena *) const override
     {
-        if constexpr (IsDecimal<TResult>)
+        if constexpr (IsDecimal<CalculateType>)
         {
             ScaleType left_scale = result_scale - scale;
-            TResult result = this->data(place).sum.value * getScaleMultiplier<TResult>(left_scale)
-                / static_cast<typename TResult::NativeType>(this->data(place).count);
-            static_cast<ColumnDecimal<TResult> &>(to).getData().push_back(result);
+            typename CalculateType::NativeType result = this->data(place).sum.value
+                * getScaleMultiplier<CalculateType>(left_scale)
+                / static_cast<typename CalculateType::NativeType>(this->data(place).count);
+            static_cast<ColumnDecimal<TResult> &>(to).getData().push_back(
+                TResult(static_cast<typename TResult::NativeType>(result)));
         }
         else
         {
-            static_cast<ColumnFloat64 &>(to).getData().push_back(static_cast<Float64>(this->data(place).sum) / this->data(place).count);
+            static_cast<ColumnFloat64 &>(to).getData().push_back(
+                static_cast<Float64>(this->data(place).sum) / this->data(place).count);
+        }
+    }
+
+    void batchInsertSameResultInto(ConstAggregateDataPtr __restrict place, IColumn & to, size_t num) const override
+    {
+        if constexpr (IsDecimal<TResult>)
+        {
+            ScaleType left_scale = result_scale - scale;
+            typename CalculateType::NativeType result = this->data(place).sum.value
+                * getScaleMultiplier<CalculateType>(left_scale)
+                / static_cast<typename CalculateType::NativeType>(this->data(place).count);
+            auto & container = static_cast<ColumnDecimal<TResult> &>(to).getData();
+            container.resize_fill(container.size() + num, TResult(static_cast<typename TResult::NativeType>(result)));
+        }
+        else
+        {
+            auto & container = static_cast<ColumnFloat64 &>(to).getData();
+            container.resize_fill(
+                container.size() + num,
+                static_cast<Float64>(this->data(place).sum) / this->data(place).count);
         }
     }
 
     void create(AggregateDataPtr __restrict place) const override
     {
-        using Data = AggregateFunctionAvgData<std::conditional_t<IsDecimal<T>, TResult, typename NearestFieldType<T>::Type>>;
+        using Data = AggregateFunctionAvgData<
+            std::conditional_t<IsDecimal<CalculateType>, CalculateType, typename NearestFieldType<T>::Type>>;
         new (place) Data;
     }
 

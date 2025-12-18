@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,19 +14,42 @@
 
 #pragma once
 
+#include <fmt/compile.h>
 #include <fmt/format.h>
 
 namespace DB
 {
+
 class FmtBuffer
 {
 public:
     FmtBuffer() = default;
 
-    template <typename... Args>
-    FmtBuffer & fmtAppend(std::string_view fmt, Args &&... args)
+    // See https://github.com/fmtlib/fmt/issues/2391 for wrapping the fmt API
+    template <typename... T>
+    FmtBuffer & fmtAppend(fmt::format_string<T...> fmt, T &&... args)
     {
-        fmt::vformat_to(std::back_inserter(buffer), fmt, fmt::make_format_args(std::forward<Args>(args)...));
+        fmt::format_to(std::back_inserter(buffer), fmt, std::forward<T>(args)...);
+        return *this;
+    }
+
+    template <
+        typename CompiledFormat, //
+        typename... Args,
+        fmt::enable_if_t<(fmt::detail::is_compiled_format<CompiledFormat>::value), int> = 0>
+    constexpr FmtBuffer & fmtAppend(const CompiledFormat & cf, const Args &... args)
+    {
+        fmt::format_to(std::back_inserter(buffer), cf, std::forward<Args>(args)...);
+        return *this;
+    }
+
+    template <
+        typename S, //
+        typename... Args,
+        fmt::enable_if_t<(fmt::detail::is_compiled_string<S>::value), int> = 0>
+    constexpr FmtBuffer & fmtAppend(const S & s, Args &&... args)
+    {
+        fmt::format_to(std::back_inserter(buffer), s, std::forward<Args>(args)...);
         return *this;
     }
 
@@ -36,24 +59,22 @@ public:
         return *this;
     }
 
-    std::string toString() const
+    FmtBuffer & append(const char ch)
     {
-        return fmt::to_string(buffer);
+        buffer.push_back(ch);
+        return *this;
     }
 
+    std::string toString() const { return fmt::to_string(buffer); }
+
     template <typename Iter>
-    FmtBuffer & joinStr(
-        Iter first,
-        Iter end)
+    FmtBuffer & joinStr(Iter first, Iter end)
     {
         return joinStr(first, end, ", ");
     }
 
     template <typename Iter>
-    FmtBuffer & joinStr(
-        Iter first,
-        Iter end,
-        std::string_view delimiter)
+    FmtBuffer & joinStr(Iter first, Iter end, std::string_view delimiter)
     {
         auto func = [](const auto & s, FmtBuffer & fb) {
             fb.append(s);
@@ -81,7 +102,13 @@ public:
     }
 
     void resize(size_t count) { buffer.resize(count); }
+
     void reserve(size_t capacity) { buffer.reserve(capacity); }
+
+    size_t capacity() { return buffer.capacity(); }
+
+    size_t size() { return buffer.size(); }
+
     void clear() { buffer.clear(); }
 
 private:

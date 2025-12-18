@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Columns/ColumnNothing.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,7 +18,6 @@
 
 #include <Columns/IColumnDummy.h>
 
-
 namespace DB
 {
 class ColumnNothing final : public COWPtrHelper<IColumnDummy, ColumnNothing>
@@ -24,16 +25,13 @@ class ColumnNothing final : public COWPtrHelper<IColumnDummy, ColumnNothing>
 private:
     friend class COWPtrHelper<IColumnDummy, ColumnNothing>;
 
-    explicit ColumnNothing(size_t s_)
-    {
-        s = s_;
-    }
+    explicit ColumnNothing(size_t s_) { s = s_; }
 
     ColumnNothing(const ColumnNothing &) = default;
 
 public:
     const char * getFamilyName() const override { return "Nothing"; }
-    MutableColumnPtr cloneDummy(size_t s) const override { return ColumnNothing::create(s); };
+    MutableColumnPtr cloneDummy(size_t s) const override { return ColumnNothing::create(s); }
 
     bool canBeInsideNullable() const override { return true; }
 };

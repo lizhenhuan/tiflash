@@ -1,4 +1,4 @@
-# Copyright 2022 PingCAP, Ltd.
+# Copyright 2023 PingCAP, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,21 +15,18 @@
 version: '2.3'
 
 services:
-  # for tests under fullstack-test directory
-  # (engine DeltaTree)
   tiflash0:
-    image: hub.pingcap.net/tiflash/tiflash-ci-base
+    image: hub.pingcap.net/tiflash/tiflash-ci-base:rocky8-20241028
+    security_opt:
+      - seccomp:unconfined
     volumes:
       - ./config/tiflash_dt.toml:/config.toml:ro
+      - ./config/proxy.toml:/proxy.toml:ro
+      - ./config/cipher-file-256:/cipher-file-256:ro
       - ./data/tiflash:/tmp/tiflash/data
       - ./log/tiflash:/tmp/tiflash/log
       - ..:/tests
       - ../docker/_env.sh:/tests/_env.sh
-      - ./log/tiflash-cluster-manager:/tmp/tiflash/data/tmp
-      - ./config/proxy.toml:/proxy.toml:ro
-      - ./config/cipher-file-256:/cipher-file-256:ro
-      - ./data/proxy:/data
-      - ./log/proxy:/log
       - ../.build/tiflash:/tiflash
     entrypoint:
       - /tiflash/tiflash

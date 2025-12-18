@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Functions/FunctionsDateTime.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,6 +17,8 @@
 #include <Functions/FunctionFactory.h>
 #include <Functions/FunctionsDateTime.h>
 
+#include <magic_enum.hpp>
+
 namespace DB
 {
 static std::string extractTimeZoneNameFromColumn(const IColumn & column)
@@ -22,15 +26,18 @@ static std::string extractTimeZoneNameFromColumn(const IColumn & column)
     const ColumnConst * time_zone_column = checkAndGetColumnConst<ColumnString>(&column);
 
     if (!time_zone_column)
-        throw Exception("Illegal column " + column.getName()
-                            + " of time zone argument of function, must be constant string",
-                        ErrorCodes::ILLEGAL_COLUMN);
+        throw Exception(
+            "Illegal column " + column.getName() + " of time zone argument of function, must be constant string",
+            ErrorCodes::ILLEGAL_COLUMN);
 
     return time_zone_column->getValue<String>();
 }
 
 
-std::string extractTimeZoneNameFromFunctionArguments(const ColumnsWithTypeAndName & arguments, size_t time_zone_arg_num, size_t datetime_arg_num)
+std::string extractTimeZoneNameFromFunctionArguments(
+    const ColumnsWithTypeAndName & arguments,
+    size_t time_zone_arg_num,
+    size_t datetime_arg_num)
 {
     /// Explicit time zone may be passed in last argument.
     if (arguments.size() == time_zone_arg_num + 1 && arguments[time_zone_arg_num].column)
@@ -50,17 +57,23 @@ std::string extractTimeZoneNameFromFunctionArguments(const ColumnsWithTypeAndNam
     }
 }
 
-const DateLUTImpl & extractTimeZoneFromFunctionArguments(Block & block, const ColumnNumbers & arguments, size_t time_zone_arg_num, size_t datetime_arg_num)
+const DateLUTImpl & extractTimeZoneFromFunctionArguments(
+    Block & block,
+    const ColumnNumbers & arguments,
+    size_t time_zone_arg_num,
+    size_t datetime_arg_num)
 {
     if (arguments.size() == time_zone_arg_num + 1)
-        return DateLUT::instance(extractTimeZoneNameFromColumn(*block.getByPosition(arguments[time_zone_arg_num]).column));
+        return DateLUT::instance(
+            extractTimeZoneNameFromColumn(*block.getByPosition(arguments[time_zone_arg_num]).column));
     else
     {
         if (arguments.empty())
             return DateLUT::instance();
 
         /// If time zone is attached to an argument of type DateTime.
-        if (const auto * type = checkAndGetDataType<DataTypeDateTime>(block.getByPosition(arguments[datetime_arg_num]).type.get()))
+        if (const auto * type
+            = checkAndGetDataType<DataTypeDateTime>(block.getByPosition(arguments[datetime_arg_num]).type.get()))
             return type->getTimeZone();
 
         return DateLUT::instance();
@@ -144,7 +157,8 @@ public:
     {
         if (block.getByPosition(arguments[0]).type->onlyNull())
         {
-            block.getByPosition(result).column = block.getByPosition(result).type->createColumnConst(block.rows(), Null());
+            block.getByPosition(result).column
+                = block.getByPosition(result).type->createColumnConst(block.rows(), Null());
             return;
         }
 
@@ -176,7 +190,12 @@ public:
             dispatch<Int64>(block, arguments, result);
             break;
         default:
-            throw Exception(fmt::format("argument type of {} is invalid, expect integer, got {}", getName(), type_index), ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT);
+            throw Exception(
+                fmt::format(
+                    "argument type of {} is invalid, expect integer, got {}",
+                    getName(),
+                    magic_enum::enum_name(type_index)),
+                ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT);
         };
     }
 };
@@ -247,6 +266,7 @@ void registerFunctionsDateTime(FunctionFactory & factory)
     factory.registerFunction<FunctionDateDiff>(FunctionFactory::CaseInsensitive);
     factory.registerFunction<FunctionTiDBTimestampDiff>();
     factory.registerFunction<FunctionExtractMyDateTime>();
+    factory.registerFunction<FunctionExtractMyDateTimeFromString>();
     factory.registerFunction<FunctionTiDBDateDiff>();
     factory.registerFunction<FunctionToTiDBDayOfWeek>();
     factory.registerFunction<FunctionToTiDBDayOfYear>();

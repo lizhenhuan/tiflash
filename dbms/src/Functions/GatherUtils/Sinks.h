@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Functions/GatherUtils/Sinks.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -66,20 +68,11 @@ struct NumericArraySink : public ArraySinkImpl<NumericArraySink<T>>
         ++row_num;
     }
 
-    bool isEnd() const
-    {
-        return row_num == offsets.size();
-    }
+    bool isEnd() const { return row_num == offsets.size(); }
 
-    size_t rowNum() const
-    {
-        return row_num;
-    }
+    size_t rowNum() const { return row_num; }
 
-    void reserve(size_t num_elements)
-    {
-        elements.reserve(num_elements);
-    }
+    void reserve(size_t num_elements) { elements.reserve(num_elements); }
 };
 
 
@@ -106,20 +99,11 @@ struct StringSink
         ++row_num;
     }
 
-    bool isEnd() const
-    {
-        return row_num == offsets.size();
-    }
+    bool isEnd() const { return row_num == offsets.size(); }
 
-    size_t rowNum() const
-    {
-        return row_num;
-    }
+    size_t rowNum() const { return row_num; }
 
-    void reserve(size_t num_elements)
-    {
-        elements.reserve(num_elements);
-    }
+    void reserve(size_t num_elements) { elements.reserve(num_elements); }
 };
 
 
@@ -146,20 +130,11 @@ struct FixedStringSink
         ++row_num;
     }
 
-    bool isEnd() const
-    {
-        return row_num == total_rows;
-    }
+    bool isEnd() const { return row_num == total_rows; }
 
-    size_t rowNum() const
-    {
-        return row_num;
-    }
+    size_t rowNum() const { return row_num; }
 
-    void reserve(size_t num_elements)
-    {
-        elements.reserve(num_elements);
-    }
+    void reserve(size_t num_elements) { elements.reserve(num_elements); }
 };
 
 
@@ -187,20 +162,11 @@ struct GenericArraySink : public ArraySinkImpl<GenericArraySink>
         ++row_num;
     }
 
-    bool isEnd() const
-    {
-        return row_num == offsets.size();
-    }
+    bool isEnd() const { return row_num == offsets.size(); }
 
-    size_t rowNum() const
-    {
-        return row_num;
-    }
+    size_t rowNum() const { return row_num; }
 
-    void reserve(size_t num_elements)
-    {
-        elements.reserve(num_elements);
-    }
+    void reserve(size_t num_elements) { elements.reserve(num_elements); }
 };
 
 
@@ -215,8 +181,7 @@ struct NullableArraySink : public ArraySink
     NullableArraySink(ColumnArray & arr, NullMap & null_map, size_t column_size)
         : ArraySink(arr, column_size)
         , null_map(null_map)
-    {
-    }
+    {}
 
     void accept(ArraySinkVisitor & visitor) override { visitor.visit(*this); }
 

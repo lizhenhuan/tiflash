@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,17 +15,20 @@
 #pragma once
 
 #include <Storages/DeltaMerge/ColumnFile/ColumnFilePersisted.h>
+#include <Storages/DeltaMerge/Remote/Serializer_fwd.h>
 
-namespace DB
+
+namespace DB::DM
 {
-namespace DM
-{
+
 class ColumnFileDeleteRange;
-using ColumnDeleteRangeFilePtr = std::shared_ptr<ColumnFileDeleteRange>;
+using ColumnFileDeleteRangePtr = std::shared_ptr<ColumnFileDeleteRange>;
 
 /// A column file that contains a DeleteRange. It will remove all covered data in the previous column files.
 class ColumnFileDeleteRange : public ColumnFilePersisted
 {
+    friend struct Remote::Serializer;
+
 private:
     RowKeyRange delete_range;
 
@@ -38,33 +41,43 @@ public:
     {}
     ColumnFileDeleteRange(const ColumnFileDeleteRange &) = default;
 
-    ColumnFileReaderPtr getReader(const DMContext & /*context*/,
-                                  const StorageSnapshotPtr & /*storage_snap*/,
-                                  const ColumnDefinesPtr & /*col_defs*/) const override;
+    ColumnFileReaderPtr getReader(
+        const DMContext &,
+        const IColumnFileDataProviderPtr &,
+        const ColumnDefinesPtr &,
+        ReadTag) const override;
 
-    const auto & getDeleteRange() { return delete_range; }
+    const auto & getDeleteRange() const { return delete_range; }
 
-    ColumnDeleteRangeFilePtr cloneWith(const RowKeyRange & range)
+    ColumnFileDeleteRangePtr cloneWith(const RowKeyRange & range)
     {
-        auto new_dpdr = new ColumnFileDeleteRange(*this);
+        auto * new_dpdr = new ColumnFileDeleteRange(*this);
         new_dpdr->delete_range = range;
         return std::shared_ptr<ColumnFileDeleteRange>(new_dpdr);
     }
 
     Type getType() const override { return Type::DELETE_RANGE; }
-    size_t getDeletes() const override { return 1; };
+    size_t getDeletes() const override { return 1; }
 
     void serializeMetadata(WriteBuffer & buf, bool save_schema) const override;
+    void serializeMetadata(dtpb::ColumnFilePersisted * cf_pb, bool save_schema) const override;
 
     static ColumnFilePersistedPtr deserializeMetadata(ReadBuffer & buf);
+    static ColumnFilePersistedPtr deserializeMetadata(const dtpb::ColumnFileDeleteRange & dr_pb);
+
+    bool mayBeFlushedFrom(ColumnFile * from_file) const override
+    {
+        if (const auto * other = from_file->tryToDeleteRange(); other)
+            return delete_range == other->delete_range;
+        else
+            return false;
+    }
+
+    // ColumnFileDeleteRange does not store itself into PageStorage.
+    // So there is no need to do anything
+    void removeData(WriteBatches &) const override {}
 
     String toString() const override { return "{delete_range:" + delete_range.toString() + "}"; }
 };
 
-class ColumnFileEmptyReader : public ColumnFileReader
-{
-public:
-    ColumnFileReaderPtr createNewReader(const ColumnDefinesPtr &) override;
-};
-} // namespace DM
-} // namespace DB
+} // namespace DB::DM

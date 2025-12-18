@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -26,6 +26,7 @@ void encodeDAGFloat64(Float64, WriteBuffer &);
 void encodeDAGString(const String &, WriteBuffer &);
 void encodeDAGBytes(const String &, WriteBuffer &);
 void encodeDAGDecimal(const Field &, WriteBuffer &);
+void encodeDAGVectorFloat32(const Array &, WriteBuffer &);
 
 Int64 decodeDAGInt64(const String &);
 UInt64 decodeDAGUInt64(const String &);
@@ -34,5 +35,6 @@ Float64 decodeDAGFloat64(const String &);
 String decodeDAGString(const String &);
 String decodeDAGBytes(const String &);
 Field decodeDAGDecimal(const String &);
+Field decodeDAGVectorFloat32(const String &);
 
 } // namespace DB

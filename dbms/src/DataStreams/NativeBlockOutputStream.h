@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/DataStreams/NativeBlockOutputStream.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,7 +19,7 @@
 #include <Core/Types.h>
 #include <DataStreams/IBlockOutputStream.h>
 #include <DataTypes/IDataType.h>
-#include <IO/CompressedWriteBuffer.h>
+#include <IO/Compression/CompressedWriteBuffer.h>
 
 namespace DB
 {
@@ -46,7 +48,12 @@ public:
     void write(const Block & block) override;
     void flush() override;
 
-    static void writeData(const IDataType & type, const ColumnPtr & column, WriteBuffer & ostr, size_t offset, size_t limit);
+    static void writeData(
+        const IDataType & type,
+        const ColumnPtr & column,
+        WriteBuffer & ostr,
+        size_t offset,
+        size_t limit);
 
     String getContentType() const override { return "application/octet-stream"; }
 

@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Common/memcpySmall.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,6 +18,8 @@
 
 #include <common/defines.h>
 #include <string.h>
+
+#include <cassert>
 
 /** memcpy function could work suboptimal if all the following conditions are met:
   * 1. Size of memory region is relatively small (approximately, under 50 bytes).
@@ -40,7 +44,10 @@
 
 namespace detail
 {
-ALWAYS_INLINE inline void memcpySmallAllowReadWriteOverflow15Impl(char * __restrict dst, const char * __restrict src, ssize_t n)
+ALWAYS_INLINE inline void memcpySmallAllowReadWriteOverflow15Impl(
+    char * __restrict dst,
+    const char * __restrict src,
+    ssize_t n)
 {
     while (n > 0)
     {
@@ -55,7 +62,40 @@ ALWAYS_INLINE inline void memcpySmallAllowReadWriteOverflow15Impl(char * __restr
 /** Works under assumption, that it's possible to read up to 15 excessive bytes after end of 'src' region
   *  and to write any garbage into up to 15 bytes after end of 'dst' region.
   */
-__attribute__((always_inline)) inline void memcpySmallAllowReadWriteOverflow15(void * __restrict dst, const void * __restrict src, size_t n)
+__attribute__((always_inline)) inline void memcpySmallAllowReadWriteOverflow15(
+    void * __restrict dst,
+    const void * __restrict src,
+    size_t n)
 {
-    ::detail::memcpySmallAllowReadWriteOverflow15Impl(reinterpret_cast<char *>(dst), reinterpret_cast<const char *>(src), n);
+    ::detail::memcpySmallAllowReadWriteOverflow15Impl(static_cast<char *>(dst), static_cast<const char *>(src), n);
+}
+
+/** Works under assumptions:
+  * 1. copy maximum 64 Byte.
+  * 2. may read up to 15 excessive bytes after end of 'src' region.
+  * 3. may write any garbage into up to 15 bytes after end of 'dst' region.
+  */
+__attribute__((always_inline)) inline void memcpyMax64BAllowReadWriteOverflow15(
+    void * __restrict dst,
+    const void * __restrict src,
+    size_t n)
+{
+    assert(n <= 64);
+    auto * d = static_cast<char *>(dst);
+    const auto * s = static_cast<const char *>(src);
+    switch ((n + 15) / 16)
+    {
+    case 4:
+        tiflash_compiler_builtin_memcpy(d, s, 64);
+        break;
+    case 3:
+        tiflash_compiler_builtin_memcpy(d, s, 48);
+        break;
+    case 2:
+        tiflash_compiler_builtin_memcpy(d, s, 32);
+        break;
+    case 1:
+        tiflash_compiler_builtin_memcpy(d, s, 16);
+        break;
+    }
 }

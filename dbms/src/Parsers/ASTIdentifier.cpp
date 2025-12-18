@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Parsers/ASTIdentifier.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,9 +14,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <Parsers/ASTIdentifier.h>
-#include <IO/WriteBufferFromOStream.h>
+#include <IO/Buffer/WriteBufferFromOStream.h>
 #include <IO/WriteHelpers.h>
+#include <Parsers/ASTIdentifier.h>
 
 
 namespace DB
@@ -22,8 +24,7 @@ namespace DB
 
 void ASTIdentifier::formatImplWithoutAlias(const FormatSettings & settings, FormatState &, FormatStateStacked) const
 {
-    auto format_element = [&](const String & name)
-    {
+    auto format_element = [&](const String & name) {
         settings.ostr << (settings.hilite ? hilite_identifier : "");
 
         WriteBufferFromOStream wb(settings.ostr, 32);
@@ -51,4 +52,4 @@ void ASTIdentifier::formatImplWithoutAlias(const FormatSettings & settings, Form
     }
 }
 
-}
+} // namespace DB

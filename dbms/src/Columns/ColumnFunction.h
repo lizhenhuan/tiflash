@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Columns/ColumnFunction.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -41,14 +43,24 @@ public:
     size_t size() const override { return column_size; }
 
     ColumnPtr cut(size_t start, size_t length) const override;
-    ColumnPtr replicate(const Offsets & offsets) const override;
-    ColumnPtr filter(const Filter & filt, ssize_t result_size_hint) const override;
+    ColumnPtr replicateRange(size_t start_row, size_t end_row, const IColumn::Offsets & offsets) const override;
+    ColumnPtr filter(const Filter & filter, ssize_t result_size_hint) const override;
     ColumnPtr permute(const Permutation & perm, size_t limit) const override;
     void insertDefault() override;
+
+    void insertManyDefaults(size_t length) override
+    {
+        for (size_t i = 0; i < length; ++i)
+            insertDefault();
+    }
     void popBack(size_t n) override;
-    std::vector<MutableColumnPtr> scatter(
+    ScatterColumns scatter(IColumn::ColumnIndex num_columns, const IColumn::Selector & selector) const override;
+    ScatterColumns scatter(
         IColumn::ColumnIndex num_columns,
-        const IColumn::Selector & selector) const override;
+        const IColumn::Selector & selector,
+        const BlockSelective & selective) const override;
+    void scatterTo(ScatterColumns & columns, const Selector & selector) const override;
+    void scatterTo(ScatterColumns &, const Selector &, const BlockSelective &) const override;
 
     void getExtremes(Field &, Field &) const override {}
 
@@ -84,12 +96,23 @@ public:
         throw Exception("Cannot insert into " + getName(), ErrorCodes::NOT_IMPLEMENTED);
     }
 
+    void insertManyFrom(const IColumn &, size_t, size_t) override
+    {
+        throw Exception("Cannot insert into " + getName(), ErrorCodes::NOT_IMPLEMENTED);
+    }
+
+    void insertSelectiveRangeFrom(const IColumn &, const Offsets &, size_t, size_t) override
+    {
+        throw Exception("Cannot insert into " + getName(), ErrorCodes::NOT_IMPLEMENTED);
+    }
+
     void insertData(const char *, size_t) override
     {
         throw Exception("Cannot insert into " + getName(), ErrorCodes::NOT_IMPLEMENTED);
     }
 
-    StringRef serializeValueIntoArena(size_t, Arena &, char const *&, const TiDB::TiDBCollatorPtr &, String &) const override
+    StringRef serializeValueIntoArena(size_t, Arena &, char const *&, const TiDB::TiDBCollatorPtr &, String &)
+        const override
     {
         throw Exception("Cannot serialize from " + getName(), ErrorCodes::NOT_IMPLEMENTED);
     }
@@ -97,6 +120,128 @@ public:
     const char * deserializeAndInsertFromArena(const char *, const TiDB::TiDBCollatorPtr &) override
     {
         throw Exception("Cannot deserialize to " + getName(), ErrorCodes::NOT_IMPLEMENTED);
+    }
+
+    size_t serializeByteSize() const override
+    {
+        throw Exception("Method serializeByteSize is not supported for " + getName(), ErrorCodes::NOT_IMPLEMENTED);
+    }
+
+    void countSerializeByteSize(PaddedPODArray<size_t> & /* byte_size */) const override
+    {
+        throw Exception("Method countSerializeByteSize is not supported for " + getName(), ErrorCodes::NOT_IMPLEMENTED);
+    }
+    void countSerializeByteSizeForCmp(
+        PaddedPODArray<size_t> & /* byte_size */,
+        const NullMap * /*nullmap*/,
+        const TiDB::TiDBCollatorPtr & /* collator */) const override
+    {
+        throw Exception(
+            "Method countSerializeByteSizeForCmp is not supported for " + getName(),
+            ErrorCodes::NOT_IMPLEMENTED);
+    }
+
+    void countSerializeByteSizeForColumnArray(
+        PaddedPODArray<size_t> & /* byte_size */,
+        const IColumn::Offsets & /* offsets */) const override
+    {
+        throw Exception(
+            "Method countSerializeByteSizeForColumnArray is not supported for " + getName(),
+            ErrorCodes::NOT_IMPLEMENTED);
+    }
+    void countSerializeByteSizeForCmpColumnArray(
+        PaddedPODArray<size_t> & /* byte_size */,
+        const IColumn::Offsets & /* offsets */,
+        const NullMap * /*nullmap*/,
+        const TiDB::TiDBCollatorPtr & /* collator */) const override
+    {
+        throw Exception(
+            "Method countSerializeByteSizeForCmpColumnArray is not supported for " + getName(),
+            ErrorCodes::NOT_IMPLEMENTED);
+    }
+
+    void serializeToPos(
+        PaddedPODArray<char *> & /* pos */,
+        size_t /* start */,
+        size_t /* length */,
+        bool /* has_null */) const override
+    {
+        throw Exception("Method serializeToPos is not supported for " + getName(), ErrorCodes::NOT_IMPLEMENTED);
+    }
+    void serializeToPosForCmp(
+        PaddedPODArray<char *> & /* pos */,
+        size_t /* start */,
+        size_t /* length */,
+        bool /* has_null */,
+        const NullMap * /* nullmap */,
+        const TiDB::TiDBCollatorPtr & /* collator */,
+        String * /*sort_key_container */) const override
+    {
+        throw Exception("Method serializeToPosForCmp is not supported for " + getName(), ErrorCodes::NOT_IMPLEMENTED);
+    }
+
+    void serializeToPosForColumnArray(
+        PaddedPODArray<char *> & /* pos */,
+        size_t /* start */,
+        size_t /* length */,
+        bool /* has_null */,
+        const IColumn::Offsets & /* array_offsets */) const override
+    {
+        throw Exception(
+            "Method serializeToPosForColumnArray is not supported for " + getName(),
+            ErrorCodes::NOT_IMPLEMENTED);
+    }
+    void serializeToPosForCmpColumnArray(
+        PaddedPODArray<char *> & /* pos */,
+        size_t /* start */,
+        size_t /* length */,
+        bool /* has_null */,
+        const NullMap * /* nullmap */,
+        const IColumn::Offsets & /* array_offsets */,
+        const TiDB::TiDBCollatorPtr & /* collator */,
+        String * /* sort_key_container */) const override
+    {
+        throw Exception(
+            "Method serializeToPosForCmpColumnArray is not supported for " + getName(),
+            ErrorCodes::NOT_IMPLEMENTED);
+    }
+
+    void deserializeAndInsertFromPos(PaddedPODArray<char *> & /* pos */, bool /* use_nt_align_buffer */) override
+    {
+        throw Exception(
+            "Method deserializeAndInsertFromPos is not supported for " + getName(),
+            ErrorCodes::NOT_IMPLEMENTED);
+    }
+
+    void deserializeAndInsertFromPosForColumnArray(
+        PaddedPODArray<char *> & /* pos */,
+        const IColumn::Offsets & /* array_offsets */,
+        bool /* use_nt_align_buffer */) override
+    {
+        throw Exception(
+            "Method deserializeAndInsertFromPosForColumnArray is not supported for " + getName(),
+            ErrorCodes::NOT_IMPLEMENTED);
+    }
+
+    void flushNTAlignBuffer() override
+    {
+        throw Exception("Method flushNTAlignBuffer is not supported for " + getName(), ErrorCodes::NOT_IMPLEMENTED);
+    }
+
+    void deserializeAndAdvancePos(PaddedPODArray<char *> & /* pos */) const override
+    {
+        throw Exception(
+            "Method deserializeAndAdvancePos is not supported for " + getName(),
+            ErrorCodes::NOT_IMPLEMENTED);
+    }
+
+    void deserializeAndAdvancePosForColumnArray(
+        PaddedPODArray<char *> & /* pos */,
+        const IColumn::Offsets & /* array_offsets */) const override
+    {
+        throw Exception(
+            "Method deserializeAndAdvancePosForColumnArray is not supported for " + getName(),
+            ErrorCodes::NOT_IMPLEMENTED);
     }
 
     void updateHashWithValue(size_t, SipHash &, const TiDB::TiDBCollatorPtr &, String &) const override
@@ -110,6 +255,11 @@ public:
     }
 
     void updateWeakHash32(WeakHash32 &, const TiDB::TiDBCollatorPtr &, String &) const override
+    {
+        throw Exception("updateWeakHash32 is not implemented for " + getName(), ErrorCodes::NOT_IMPLEMENTED);
+    }
+
+    void updateWeakHash32(WeakHash32 &, const TiDB::TiDBCollatorPtr &, String &, const BlockSelective &) const override
     {
         throw Exception("updateWeakHash32 is not implemented for " + getName(), ErrorCodes::NOT_IMPLEMENTED);
     }

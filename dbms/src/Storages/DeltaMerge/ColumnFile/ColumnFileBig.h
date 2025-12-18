@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,22 +14,26 @@
 
 #pragma once
 
+#include <Storages/DeltaMerge/ColumnFile/ColumnFile.h>
 #include <Storages/DeltaMerge/ColumnFile/ColumnFilePersisted.h>
+#include <Storages/DeltaMerge/File/DMFile.h>
+#include <Storages/DeltaMerge/Remote/Serializer_fwd.h>
+#include <Storages/DeltaMerge/SkippableBlockInputStream.h>
 
-namespace DB
+namespace DB::DM
 {
-namespace DM
-{
+
 class DMFileBlockInputStream;
 using DMFileBlockInputStreamPtr = std::shared_ptr<DMFileBlockInputStream>;
 class ColumnFileBig;
-using ColumnBigFilePtr = std::shared_ptr<ColumnFileBig>;
+using ColumnFileBigPtr = std::shared_ptr<ColumnFileBig>;
 
 
 /// A column file which contains a DMFile. The DMFile could have many Blocks.
 class ColumnFileBig : public ColumnFilePersisted
 {
     friend class ColumnFileBigReader;
+    friend struct Remote::Serializer;
 
 private:
     DMFilePtr file;
@@ -43,23 +47,25 @@ private:
         , valid_rows(valid_rows_)
         , valid_bytes(valid_bytes_)
         , segment_range(segment_range_)
-    {
-    }
+    {}
 
-    void calculateStat(const DMContext & context);
+    void calculateStat(const DMContext & dm_context);
 
 public:
-    ColumnFileBig(const DMContext & context, const DMFilePtr & file_, const RowKeyRange & segment_range_);
+    ColumnFileBig(const DMContext & dm_context, const DMFilePtr & file_, const RowKeyRange & segment_range_);
 
     ColumnFileBig(const ColumnFileBig &) = default;
 
-    ColumnBigFilePtr cloneWith(DMContext & context, const DMFilePtr & new_file, const RowKeyRange & new_segment_range)
+    ColumnFileBigPtr cloneWith(
+        DMContext & dm_context,
+        const DMFilePtr & new_file,
+        const RowKeyRange & new_segment_range)
     {
         auto * new_column_file = new ColumnFileBig(*this);
         new_column_file->file = new_file;
         new_column_file->segment_range = new_segment_range;
         // update `valid_rows` and `valid_bytes` by `new_segment_range`
-        new_column_file->calculateStat(context);
+        new_column_file->calculateStat(dm_context);
         return std::shared_ptr<ColumnFileBig>(new_column_file);
     }
 
@@ -67,40 +73,61 @@ public:
 
     auto getFile() const { return file; }
 
-    PageId getDataPageId() { return file->pageId(); }
+    RowKeyRange getRange() const { return segment_range; }
+
+    PageIdU64 getDataPageId() { return file->pageId(); }
 
     size_t getRows() const override { return valid_rows; }
-    size_t getBytes() const override { return valid_bytes; };
+    size_t getBytes() const override { return valid_bytes; }
 
-    void removeData(WriteBatches & wbs) const override
-    {
-        // Here we remove the data id instead of file_id.
-        // Because a dmfile could be used in several places, and only after all page ids are removed,
-        // then the file_id got removed.
-        wbs.removed_data.delPage(file->pageId());
-    }
+    void removeData(WriteBatches & wbs) const override;
 
-    ColumnFileReaderPtr
-    getReader(const DMContext & context, const StorageSnapshotPtr & /*storage_snap*/, const ColumnDefinesPtr & col_defs) const override;
+    ColumnFileReaderPtr getReader(
+        const DMContext & dm_context,
+        const IColumnFileDataProviderPtr & data_provider,
+        const ColumnDefinesPtr & col_defs,
+        ReadTag) const override;
 
     void serializeMetadata(WriteBuffer & buf, bool save_schema) const override;
+    void serializeMetadata(dtpb::ColumnFilePersisted * cf_pb, bool save_schema) const override;
 
-    static ColumnFilePersistedPtr deserializeMetadata(DMContext & context, //
-                                                      const RowKeyRange & segment_range,
-                                                      ReadBuffer & buf);
+    static ColumnFilePersistedPtr deserializeMetadata(
+        const DMContext & dm_context,
+        const RowKeyRange & segment_range,
+        ReadBuffer & buf);
+    static ColumnFilePersistedPtr deserializeMetadata(
+        const DMContext & dm_context,
+        const RowKeyRange & segment_range,
+        const dtpb::ColumnFileBig & cf_pb);
 
-    String toString() const override
+    static ColumnFilePersistedPtr createFromCheckpoint(
+        DMContext & dm_context,
+        const RowKeyRange & target_range,
+        ReadBuffer & buf,
+        UniversalPageStoragePtr temp_ps,
+        WriteBatches & wbs);
+    static ColumnFilePersistedPtr createFromCheckpoint(
+        DMContext & dm_context,
+        const RowKeyRange & target_range,
+        const dtpb::ColumnFileBig & cf_pb,
+        UniversalPageStoragePtr temp_ps,
+        WriteBatches & wbs);
+
+    String toString() const override { return fmt::format("{{big_file,rows:{},bytes:{}}}", getRows(), getBytes()); }
+
+    bool mayBeFlushedFrom(ColumnFile * from_file) const override
     {
-        String s = "{big_file,rows:" + DB::toString(getRows()) //
-            + ",bytes:" + DB::toString(getBytes()) + "}"; //
-        return s;
+        if (const auto * other = from_file->tryToBigFile(); other)
+            return file->pageId() == other->file->pageId();
+        else
+            return false;
     }
 };
 
 class ColumnFileBigReader : public ColumnFileReader
 {
 private:
-    const DMContext & context;
+    const DMContext & dm_context;
     const ColumnFileBig & column_file;
     const ColumnDefinesPtr col_defs;
 
@@ -108,7 +135,7 @@ private:
 
     bool pk_ver_only;
 
-    DMFileBlockInputStreamPtr file_stream;
+    SkippableBlockInputStreamPtr file_stream;
 
     // The data members for reading only pk and version columns.
     // we cache them to minimize the cost.
@@ -123,27 +150,42 @@ private:
     Block cur_block;
     Columns cur_block_data; // The references to columns in cur_block, for faster access.
 
+    ReadTag read_tag;
+
 private:
     void initStream();
-    size_t readRowsRepeatedly(MutableColumns & output_cols, size_t rows_offset, size_t rows_limit, const RowKeyRange * range);
-    size_t readRowsOnce(MutableColumns & output_cols, size_t rows_offset, size_t rows_limit, const RowKeyRange * range);
+    std::pair<size_t, size_t> readRowsRepeatedly(
+        MutableColumns & output_cols,
+        size_t rows_offset,
+        size_t rows_limit,
+        const RowKeyRange * range);
+    std::pair<size_t, size_t> readRowsOnce(
+        MutableColumns & output_cols,
+        size_t rows_offset,
+        size_t rows_limit,
+        const RowKeyRange * range);
 
 public:
-    ColumnFileBigReader(const DMContext & context_, const ColumnFileBig & column_file_, const ColumnDefinesPtr & col_defs_)
-        : context(context_)
+    ColumnFileBigReader(
+        const DMContext & dm_context_,
+        const ColumnFileBig & column_file_,
+        const ColumnDefinesPtr & col_defs_,
+        ReadTag read_tag_)
+        : dm_context(dm_context_)
         , column_file(column_file_)
         , col_defs(col_defs_)
+        , read_tag(read_tag_)
     {
         if (col_defs_->size() == 1)
         {
-            if ((*col_defs)[0].id == EXTRA_HANDLE_COLUMN_ID)
+            if ((*col_defs)[0].id == MutSup::extra_handle_id)
             {
                 pk_ver_only = true;
             }
         }
         else if (col_defs_->size() == 2)
         {
-            if ((*col_defs)[0].id == EXTRA_HANDLE_COLUMN_ID && (*col_defs)[1].id == VERSION_COLUMN_ID)
+            if ((*col_defs)[0].id == MutSup::extra_handle_id && (*col_defs)[1].id == MutSup::version_col_id)
             {
                 pk_ver_only = true;
             }
@@ -154,11 +196,17 @@ public:
         }
     }
 
-    size_t readRows(MutableColumns & output_cols, size_t rows_offset, size_t rows_limit, const RowKeyRange * range) override;
+    std::pair<size_t, size_t> readRows(
+        MutableColumns & output_cols,
+        size_t rows_offset,
+        size_t rows_limit,
+        const RowKeyRange * range) override;
 
     Block readNextBlock() override;
 
-    ColumnFileReaderPtr createNewReader(const ColumnDefinesPtr & new_col_defs) override;
+    size_t skipNextBlock() override;
+
+    ColumnFileReaderPtr createNewReader(const ColumnDefinesPtr & new_col_defs, ReadTag) override;
 };
-} // namespace DM
-} // namespace DB
+
+} // namespace DB::DM

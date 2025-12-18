@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Storages/System/StorageSystemDatabases.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,10 +22,10 @@
 #include <Databases/DatabaseTiFlash.h>
 #include <Databases/IDatabase.h>
 #include <Interpreters/Context.h>
+#include <Storages/KVStore/Types.h>
 #include <Storages/System/StorageSystemDatabases.h>
-#include <Storages/Transaction/TiDB.h>
-#include <Storages/Transaction/Types.h>
 #include <TiDB/Schema/SchemaNameMapper.h>
+#include <TiDB/Schema/TiDB.h>
 
 
 namespace DB
@@ -45,12 +47,13 @@ StorageSystemDatabases::StorageSystemDatabases(const std::string & name_)
 }
 
 
-BlockInputStreams StorageSystemDatabases::read(const Names & column_names,
-                                               const SelectQueryInfo &,
-                                               const Context & context,
-                                               QueryProcessingStage::Enum & processed_stage,
-                                               const size_t /*max_block_size*/,
-                                               const unsigned /*num_streams*/)
+BlockInputStreams StorageSystemDatabases::read(
+    const Names & column_names,
+    const SelectQueryInfo &,
+    const Context & context,
+    QueryProcessingStage::Enum & processed_stage,
+    const size_t /*max_block_size*/,
+    const unsigned /*num_streams*/)
 {
     check(column_names);
     processed_stage = QueryProcessingStage::FetchColumns;
@@ -85,7 +88,9 @@ BlockInputStreams StorageSystemDatabases::read(const Names & column_names,
         res_columns[j++]->insert(database.second->getMetadataPath());
     }
 
-    return BlockInputStreams(1, std::make_shared<OneBlockInputStream>(getSampleBlock().cloneWithColumns(std::move(res_columns))));
+    return BlockInputStreams(
+        1,
+        std::make_shared<OneBlockInputStream>(getSampleBlock().cloneWithColumns(std::move(res_columns))));
 }
 
 

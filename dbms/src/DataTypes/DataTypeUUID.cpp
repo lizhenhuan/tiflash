@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/DataTypes/DataTypeUUID.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -53,10 +55,15 @@ void DataTypeUUID::deserializeTextQuoted(IColumn & column, ReadBuffer & istr) co
     assertChar('\'', istr);
     readText(x, istr);
     assertChar('\'', istr);
-    static_cast<ColumnUInt128 &>(column).getData().push_back(x); /// It's important to do this at the end - for exception safety.
+    static_cast<ColumnUInt128 &>(column).getData().push_back(
+        x); /// It's important to do this at the end - for exception safety.
 }
 
-void DataTypeUUID::serializeTextJSON(const IColumn & column, size_t row_num, WriteBuffer & ostr, const FormatSettingsJSON &) const
+void DataTypeUUID::serializeTextJSON(
+    const IColumn & column,
+    size_t row_num,
+    WriteBuffer & ostr,
+    const FormatSettingsJSON &) const
 {
     writeChar('"', ostr);
     serializeText(column, row_num, ostr);
@@ -71,21 +78,6 @@ void DataTypeUUID::deserializeTextJSON(IColumn & column, ReadBuffer & istr) cons
     assertChar('"', istr);
     static_cast<ColumnUInt128 &>(column).getData().push_back(x);
 }
-
-void DataTypeUUID::serializeTextCSV(const IColumn & column, size_t row_num, WriteBuffer & ostr) const
-{
-    writeChar('"', ostr);
-    serializeText(column, row_num, ostr);
-    writeChar('"', ostr);
-}
-
-void DataTypeUUID::deserializeTextCSV(IColumn & column, ReadBuffer & istr, const char /*delimiter*/) const
-{
-    UUID value;
-    readCSV(value, istr);
-    static_cast<ColumnUInt128 &>(column).getData().push_back(value);
-}
-
 
 bool DataTypeUUID::equals(const IDataType & rhs) const
 {

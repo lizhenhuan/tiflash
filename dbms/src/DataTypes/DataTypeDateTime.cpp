@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/DataTypes/DataTypeDateTime.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,9 +18,9 @@
 #include <Common/typeid_cast.h>
 #include <DataTypes/DataTypeDateTime.h>
 #include <DataTypes/DataTypeFactory.h>
+#include <IO/Buffer/WriteBufferFromString.h>
 #include <IO/Operators.h>
 #include <IO/ReadHelpers.h>
-#include <IO/WriteBufferFromString.h>
 #include <IO/WriteHelpers.h>
 #include <Parsers/ASTLiteral.h>
 #include <common/DateLUT.h>
@@ -29,8 +31,7 @@ namespace DB
 DataTypeDateTime::DataTypeDateTime(const std::string & time_zone_name)
     : has_explicit_time_zone(!time_zone_name.empty())
     , time_zone(DateLUT::instance(time_zone_name))
-{
-}
+{}
 
 std::string DataTypeDateTime::getName() const
 {
@@ -78,10 +79,15 @@ void DataTypeDateTime::deserializeTextQuoted(IColumn & column, ReadBuffer & istr
     {
         readIntText(x, istr);
     }
-    static_cast<ColumnUInt32 &>(column).getData().push_back(x); /// It's important to do this at the end - for exception safety.
+    static_cast<ColumnUInt32 &>(column).getData().push_back(
+        x); /// It's important to do this at the end - for exception safety.
 }
 
-void DataTypeDateTime::serializeTextJSON(const IColumn & column, size_t row_num, WriteBuffer & ostr, const FormatSettingsJSON &) const
+void DataTypeDateTime::serializeTextJSON(
+    const IColumn & column,
+    size_t row_num,
+    WriteBuffer & ostr,
+    const FormatSettingsJSON &) const
 {
     writeChar('"', ostr);
     serializeText(column, row_num, ostr);
@@ -100,20 +106,6 @@ void DataTypeDateTime::deserializeTextJSON(IColumn & column, ReadBuffer & istr) 
     {
         readIntText(x, istr);
     }
-    static_cast<ColumnUInt32 &>(column).getData().push_back(x);
-}
-
-void DataTypeDateTime::serializeTextCSV(const IColumn & column, size_t row_num, WriteBuffer & ostr) const
-{
-    writeChar('"', ostr);
-    serializeText(column, row_num, ostr);
-    writeChar('"', ostr);
-}
-
-void DataTypeDateTime::deserializeTextCSV(IColumn & column, ReadBuffer & istr, const char /*delimiter*/) const
-{
-    time_t x;
-    readDateTimeCSV(x, istr, time_zone);
     static_cast<ColumnUInt32 &>(column).getData().push_back(x);
 }
 
@@ -137,11 +129,15 @@ static DataTypePtr create(const ASTPtr & arguments)
         return std::make_shared<DataTypeDateTime>();
 
     if (arguments->children.size() != 1)
-        throw Exception("DateTime data type can optionally have only one argument - time zone name", ErrorCodes::NUMBER_OF_ARGUMENTS_DOESNT_MATCH);
+        throw Exception(
+            "DateTime data type can optionally have only one argument - time zone name",
+            ErrorCodes::NUMBER_OF_ARGUMENTS_DOESNT_MATCH);
 
-    const ASTLiteral * arg = typeid_cast<const ASTLiteral *>(arguments->children[0].get());
+    const auto * arg = typeid_cast<const ASTLiteral *>(arguments->children[0].get());
     if (!arg || arg->value.getType() != Field::Types::String)
-        throw Exception("Parameter for DateTime data type must be string literal", ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT);
+        throw Exception(
+            "Parameter for DateTime data type must be string literal",
+            ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT);
 
     return std::make_shared<DataTypeDateTime>(arg->value.get<String>());
 }

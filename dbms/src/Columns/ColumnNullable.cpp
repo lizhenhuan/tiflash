@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Columns/ColumnNullable.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -37,15 +39,21 @@ ColumnNullable::ColumnNullable(MutableColumnPtr && nested_column_, MutableColumn
     : nested_column(std::move(nested_column_))
     , null_map(std::move(null_map_))
 {
+    assert(nested_column->size() == null_map->size());
     /// ColumnNullable cannot have constant nested column. But constant argument could be passed. Materialize it.
     if (ColumnPtr nested_column_materialized = getNestedColumn().convertToFullColumnIfConst())
         nested_column = nested_column_materialized;
 
     if (!getNestedColumn().canBeInsideNullable())
-        throw Exception(fmt::format("{} cannot be inside Nullable column", getNestedColumn().getName()), ErrorCodes::ILLEGAL_COLUMN);
+        throw Exception(
+            fmt::format("{} cannot be inside Nullable column", getNestedColumn().getName()),
+            ErrorCodes::ILLEGAL_COLUMN);
 
     if (null_map->isColumnConst())
         throw Exception("ColumnNullable cannot have constant null map", ErrorCodes::ILLEGAL_COLUMN);
+
+    if (!typeid_cast<const ColumnUInt8 *>(null_map.get()))
+        throw Exception("null_map must be a ColumnUInt8", ErrorCodes::ILLEGAL_COLUMN);
 }
 
 
@@ -102,24 +110,68 @@ void ColumnNullable::updateHashWithValues(
     }
 }
 
-void ColumnNullable::updateWeakHash32(WeakHash32 & hash, const TiDB::TiDBCollatorPtr & collator, String & sort_key_container) const
+void ColumnNullable::updateWeakHash32(
+    WeakHash32 & hash,
+    const TiDB::TiDBCollatorPtr & collator,
+    String & sort_key_container) const
 {
-    auto s = size();
+    updateWeakHash32Impl<false>(hash, collator, sort_key_container, {});
+}
 
-    if (hash.getData().size() != s)
-        throw Exception(fmt::format("Size of WeakHash32 does not match size of column: column size is {}, hash size is {}", s, hash.getData().size()), ErrorCodes::LOGICAL_ERROR);
+void ColumnNullable::updateWeakHash32(
+    WeakHash32 & hash,
+    const TiDB::TiDBCollatorPtr & collator,
+    String & sort_key_container,
+    const BlockSelective & selective) const
+{
+    updateWeakHash32Impl<true>(hash, collator, sort_key_container, selective);
+}
+
+template <bool selective_block>
+void ColumnNullable::updateWeakHash32Impl(
+    WeakHash32 & hash,
+    const TiDB::TiDBCollatorPtr & collator,
+    String & sort_key_container,
+    const BlockSelective & selective) const
+{
+    size_t rows;
+    if constexpr (selective_block)
+    {
+        rows = selective.size();
+    }
+    else
+    {
+        rows = size();
+    }
+
+    RUNTIME_CHECK_MSG(
+        hash.getData().size() == rows,
+        "size of WeakHash32({}) doesn't match size of column({})",
+        hash.getData().size(),
+        rows);
 
     WeakHash32 old_hash = hash;
-    nested_column->updateWeakHash32(hash, collator, sort_key_container);
+    if constexpr (selective_block)
+        nested_column->updateWeakHash32(hash, collator, sort_key_container, selective);
+    else
+        nested_column->updateWeakHash32(hash, collator, sort_key_container);
 
     const auto & null_map_data = getNullMapData();
-    auto & hash_data = hash.getData();
-    auto & old_hash_data = old_hash.getData();
+    UInt32 * hash_data = hash.getData().data();
+    UInt32 * old_hash_data = old_hash.getData().data();
 
-    /// Use old data for nulls.
-    for (size_t row = 0; row < s; ++row)
+    for (size_t i = 0; i < rows; ++i)
+    {
+        size_t row = i;
+        if constexpr (selective_block)
+            row = selective[i];
+
         if (null_map_data[row])
-            hash_data[row] = old_hash_data[row];
+            *hash_data = *old_hash_data;
+
+        ++hash_data;
+        ++old_hash_data;
+    }
 }
 
 MutableColumnPtr ColumnNullable::cloneResized(size_t new_size) const
@@ -157,14 +209,29 @@ void ColumnNullable::get(size_t n, Field & res) const
         getNestedColumn().get(n, res);
 }
 
-StringRef ColumnNullable::getDataAt(size_t /*n*/) const
+StringRef ColumnNullable::getDataAt(size_t n) const
 {
-    throw Exception(fmt::format("Method getDataAt is not supported for {}", getName()), ErrorCodes::NOT_IMPLEMENTED);
+    if (likely(!isNullAt(n)))
+        return getNestedColumn().getDataAt(n);
+
+    throw Exception(
+        ErrorCodes::NOT_IMPLEMENTED,
+        "Method getDataAt is not supported for {} in case if value is NULL",
+        getName());
 }
 
-void ColumnNullable::insertData(const char * /*pos*/, size_t /*length*/)
+void ColumnNullable::insertData(const char * pos, size_t length)
 {
-    throw Exception(fmt::format("Method insertData is not supported for {}", getName()), ErrorCodes::NOT_IMPLEMENTED);
+    if (pos == nullptr)
+    {
+        getNestedColumn().insertDefault();
+        getNullMapData().push_back(1);
+    }
+    else
+    {
+        getNestedColumn().insertData(pos, length);
+        getNullMapData().push_back(0);
+    }
 }
 
 bool ColumnNullable::decodeTiDBRowV2Datum(size_t cursor, const String & raw_value, size_t length, bool force_decode)
@@ -173,6 +240,12 @@ bool ColumnNullable::decodeTiDBRowV2Datum(size_t cursor, const String & raw_valu
         return false;
     getNullMapData().push_back(0);
     return true;
+}
+
+void ColumnNullable::insertFromDatumData(const char * cursor, size_t len)
+{
+    getNestedColumn().insertFromDatumData(cursor, len);
+    getNullMapData().push_back(0);
 }
 
 StringRef ColumnNullable::serializeValueIntoArena(
@@ -211,6 +284,135 @@ const char * ColumnNullable::deserializeAndInsertFromArena(const char * pos, con
     return pos;
 }
 
+size_t ColumnNullable::serializeByteSize() const
+{
+    return getNestedColumn().serializeByteSize() + getNullMapColumn().serializeByteSize();
+}
+
+void ColumnNullable::countSerializeByteSize(PaddedPODArray<size_t> & byte_size) const
+{
+    getNullMapColumn().countSerializeByteSize(byte_size);
+    getNestedColumn().countSerializeByteSize(byte_size);
+}
+
+void ColumnNullable::countSerializeByteSizeForCmp(
+    PaddedPODArray<size_t> & byte_size,
+    const NullMap * nullmap,
+    const TiDB::TiDBCollatorPtr & collator) const
+{
+    // Nested ColumnNullable like ColumnNullable(ColumnArray(ColumnNullable(ColumnXXX))) not support.
+    RUNTIME_CHECK_MSG(!nullmap, "countSerializeByteSizeForCmp cannot handle nested nullable");
+    getNullMapColumn().countSerializeByteSizeForCmp(byte_size, nullptr, collator);
+    getNestedColumn().countSerializeByteSizeForCmp(byte_size, &getNullMapData(), collator);
+}
+
+void ColumnNullable::countSerializeByteSizeForColumnArray(
+    PaddedPODArray<size_t> & byte_size,
+    const IColumn::Offsets & array_offsets) const
+{
+    getNullMapColumn().countSerializeByteSizeForColumnArray(byte_size, array_offsets);
+    getNestedColumn().countSerializeByteSizeForColumnArray(byte_size, array_offsets);
+}
+
+void ColumnNullable::countSerializeByteSizeForCmpColumnArray(
+    PaddedPODArray<size_t> &,
+    const IColumn::Offsets &,
+    const NullMap *,
+    const TiDB::TiDBCollatorPtr &) const
+{
+    // Unable to handle ColumnArray(ColumnNullable(ColumnXXX)).
+    throw Exception(
+        "countSerializeByteSizeForCmpColumnArray cannot handle ColumnArray(ColumnNullable(ColumnXXX))" + getName()
+            + ")",
+        ErrorCodes::NOT_IMPLEMENTED);
+}
+
+void ColumnNullable::serializeToPos(PaddedPODArray<char *> & pos, size_t start, size_t length, bool has_null) const
+{
+    getNullMapColumn().serializeToPos(pos, start, length, has_null);
+    getNestedColumn().serializeToPos(pos, start, length, has_null);
+}
+
+void ColumnNullable::serializeToPosForCmp(
+    PaddedPODArray<char *> & pos,
+    size_t start,
+    size_t length,
+    bool has_null,
+    const NullMap * nullmap,
+    const TiDB::TiDBCollatorPtr & collator,
+    String * sort_key_container) const
+{
+    // Nested ColumnNullable like ColumnNullable(ColumnArray(ColumnNullable(ColumnXXX))) not support.
+    RUNTIME_CHECK_MSG(!nullmap, "serializeToPosForCmp cannot handle nested nullable");
+    getNullMapColumn().serializeToPosForCmp(pos, start, length, has_null, nullptr, collator, sort_key_container);
+    getNestedColumn()
+        .serializeToPosForCmp(pos, start, length, has_null, &getNullMapData(), collator, sort_key_container);
+}
+
+void ColumnNullable::serializeToPosForColumnArray(
+    PaddedPODArray<char *> & pos,
+    size_t start,
+    size_t length,
+    bool has_null,
+    const IColumn::Offsets & array_offsets) const
+{
+    getNullMapColumn().serializeToPosForColumnArray(pos, start, length, has_null, array_offsets);
+    getNestedColumn().serializeToPosForColumnArray(pos, start, length, has_null, array_offsets);
+}
+
+void ColumnNullable::serializeToPosForCmpColumnArray(
+    PaddedPODArray<char *> & /* pos */,
+    size_t /* start */,
+    size_t /* length */,
+    bool /* has_null */,
+    const NullMap * /* nullmap */,
+    const IColumn::Offsets & /* array_offsets */,
+    const TiDB::TiDBCollatorPtr & /* collator */,
+    String * /* sort_key_container */) const
+{
+    // Unable to handle ColumnArray(ColumnNullable(ColumnXXX)). Because the pos vector corresponds to the rows of ColumnArray,
+    // while ColumnNullable::nullmap corresponds to the rows of ColumnNullable.
+    // This means it's not easy to correctly serialize the row in ColumnNullable to the corresponding position in pos.
+    throw Exception(
+        "serializeToPosForCmpColumnArray cannot handle ColumnArray(ColumnNullable(ColumnXXX))" + getName() + ")",
+        ErrorCodes::NOT_IMPLEMENTED);
+}
+
+void ColumnNullable::deserializeAndInsertFromPos(PaddedPODArray<char *> & pos, bool use_nt_align_buffer)
+{
+    getNullMapColumn().deserializeAndInsertFromPos(pos, use_nt_align_buffer);
+    getNestedColumn().deserializeAndInsertFromPos(pos, use_nt_align_buffer);
+}
+
+void ColumnNullable::deserializeAndInsertFromPosForColumnArray(
+    PaddedPODArray<char *> & pos,
+    const IColumn::Offsets & array_offsets,
+    bool use_nt_align_buffer)
+{
+    getNullMapColumn().deserializeAndInsertFromPosForColumnArray(pos, array_offsets, use_nt_align_buffer);
+    getNestedColumn().deserializeAndInsertFromPosForColumnArray(pos, array_offsets, use_nt_align_buffer);
+}
+
+void ColumnNullable::flushNTAlignBuffer()
+{
+    getNullMapColumn().flushNTAlignBuffer();
+    getNestedColumn().flushNTAlignBuffer();
+}
+
+void ColumnNullable::deserializeAndAdvancePos(PaddedPODArray<char *> & pos) const
+{
+    getNullMapColumn().deserializeAndAdvancePos(pos);
+    getNestedColumn().deserializeAndAdvancePos(pos);
+}
+
+void ColumnNullable::deserializeAndAdvancePosForColumnArray(
+    PaddedPODArray<char *> & pos,
+    const IColumn::Offsets & array_offsets) const
+{
+    getNullMapColumn().deserializeAndAdvancePosForColumnArray(pos, array_offsets);
+    getNestedColumn().deserializeAndAdvancePosForColumnArray(pos, array_offsets);
+}
+
 void ColumnNullable::insertRangeFrom(const IColumn & src, size_t start, size_t length)
 {
     const auto & nullable_col = static_cast<const ColumnNullable &>(src);
@@ -239,6 +441,25 @@ void ColumnNullable::insertFrom(const IColumn & src, size_t n)
     getNullMapData().push_back(src_concrete.getNullMapData()[n]);
 }
 
+void ColumnNullable::insertManyFrom(const IColumn & src, size_t n, size_t length)
+{
+    const auto & src_concrete = static_cast<const ColumnNullable &>(src);
+    getNestedColumn().insertManyFrom(src_concrete.getNestedColumn(), n, length);
+    auto & map = getNullMapData();
+    map.resize_fill(map.size() + length, src_concrete.getNullMapData()[n]);
+}
+
+void ColumnNullable::insertSelectiveRangeFrom(
+    const IColumn & src,
+    const Offsets & selective_offsets,
+    size_t start,
+    size_t length)
+{
+    const auto & src_concrete = static_cast<const ColumnNullable &>(src);
+    getNestedColumn().insertSelectiveRangeFrom(src_concrete.getNestedColumn(), selective_offsets, start, length);
+    getNullMapColumn().insertSelectiveRangeFrom(src_concrete.getNullMapColumn(), selective_offsets, start, length);
+}
+
 void ColumnNullable::popBack(size_t n)
 {
     getNestedColumn().popBack(n);
@@ -259,7 +480,11 @@ ColumnPtr ColumnNullable::permute(const Permutation & perm, size_t limit) const
     return ColumnNullable::create(permuted_data, permuted_null_map);
 }
 
-std::tuple<bool, int> ColumnNullable::compareAtCheckNull(size_t n, size_t m, const ColumnNullable & rhs, int null_direction_hint) const
+std::tuple<bool, int> ColumnNullable::compareAtCheckNull(
+    size_t n,
+    size_t m,
+    const ColumnNullable & rhs,
+    int null_direction_hint) const
 {
     /// NULL values share the properties of NaN values.
     /// Here the last parameter of compareAt is called null_direction_hint
@@ -291,7 +516,7 @@ int ColumnNullable::compareAt(
     size_t m,
     const IColumn & rhs_,
     int null_direction_hint,
-    const ICollator & collator) const
+    const TiDB::ITiDBCollator & collator) const
 {
     const auto & nullable_rhs = static_cast<const ColumnNullable &>(rhs_);
     auto [has_null, res] = compareAtCheckNull(n, m, nullable_rhs, null_direction_hint);
@@ -312,7 +537,7 @@ int ColumnNullable::compareAt(size_t n, size_t m, const IColumn & rhs_, int null
 }
 
 void ColumnNullable::getPermutation(
-    const ICollator & collator,
+    const TiDB::ITiDBCollator & collator,
     bool reverse,
     size_t limit,
     int null_direction_hint,
@@ -330,7 +555,11 @@ void ColumnNullable::getPermutation(bool reverse, size_t limit, int null_directi
     adjustPermutationWithNullDirection(reverse, limit, null_direction_hint, res);
 }
 
-void ColumnNullable::adjustPermutationWithNullDirection(bool reverse, size_t limit, int null_direction_hint, Permutation & res) const
+void ColumnNullable::adjustPermutationWithNullDirection(
+    bool reverse,
+    size_t limit,
+    int null_direction_hint,
+    Permutation & res) const
 {
     if ((null_direction_hint > 0) != reverse)
     {
@@ -409,6 +638,26 @@ void ColumnNullable::reserve(size_t n)
 {
     getNestedColumn().reserve(n);
     getNullMapData().reserve(n);
+}
+
+void ColumnNullable::reserveAlign(size_t n, size_t alignment)
+{
+    getNestedColumn().reserveAlign(n, alignment);
+    getNullMapData().reserve(n, alignment);
+}
+
+void ColumnNullable::reserveWithTotalMemoryHint(size_t n, Int64 total_memory_hint)
+{
+    getNullMapColumn().reserve(n);
+    total_memory_hint -= n * sizeof(UInt8);
+    getNestedColumn().reserveWithTotalMemoryHint(n, total_memory_hint);
+}
+
+void ColumnNullable::reserveAlignWithTotalMemoryHint(size_t n, Int64 total_memory_hint, size_t alignment)
+{
+    getNullMapColumn().reserveAlign(n, alignment);
+    total_memory_hint -= n * sizeof(UInt8);
+    getNestedColumn().reserveAlignWithTotalMemoryHint(n, total_memory_hint, alignment);
 }
 
 size_t ColumnNullable::byteSize() const
@@ -524,13 +773,12 @@ void ColumnNullable::getExtremes(Field & min, Field & max) const
     });
 }
 
-ColumnPtr ColumnNullable::replicate(const Offsets & offsets) const
+ColumnPtr ColumnNullable::replicateRange(size_t start_row, size_t end_row, const IColumn::Offsets & offsets) const
 {
-    ColumnPtr replicated_data = getNestedColumn().replicate(offsets);
-    ColumnPtr replicated_null_map = getNullMapColumn().replicate(offsets);
+    ColumnPtr replicated_data = getNestedColumn().replicateRange(start_row, end_row, offsets);
+    ColumnPtr replicated_null_map = getNullMapColumn().replicateRange(start_row, end_row, offsets);
     return ColumnNullable::create(replicated_data, replicated_null_map);
 }
-
 
 template <bool negative>
 void ColumnNullable::applyNullMapImpl(const ColumnUInt8 & map)
@@ -567,9 +815,11 @@ void ColumnNullable::checkConsistency() const
 {
     if (null_map->size() != getNestedColumn().size())
         throw Exception(
-            fmt::format("Logical error: Sizes of nested column and null map of Nullable column are not equal: null size is : {} column size is : {}",
-                        null_map->size(),
-                        getNestedColumn().size()),
+            fmt::format(
+                "Logical error: Sizes of nested column and null map of Nullable column are not equal: null size is : "
+                "{} column size is : {}",
+                null_map->size(),
+                getNestedColumn().size()),
             ErrorCodes::SIZES_OF_NESTED_COLUMNS_ARE_INCONSISTENT);
 }
 
@@ -580,7 +830,9 @@ ColumnPtr makeNullable(const ColumnPtr & column)
         return column;
 
     if (column->isColumnConst())
-        return ColumnConst::create(makeNullable(static_cast<const ColumnConst &>(*column).getDataColumnPtr()), column->size());
+        return ColumnConst::create(
+            makeNullable(static_cast<const ColumnConst &>(*column).getDataColumnPtr()),
+            column->size());
 
     return ColumnNullable::create(column, ColumnUInt8::create(column->size(), 0));
 }

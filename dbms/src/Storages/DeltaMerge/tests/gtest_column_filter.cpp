@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2024 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -11,18 +11,16 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+
 #include <DataStreams/BlocksListBlockInputStream.h>
 #include <Storages/DeltaMerge/DMDecoratorStreams.h>
 #include <Storages/DeltaMerge/tests/DMTestEnv.h>
 #include <TestUtils/FunctionTestUtils.h>
 #include <TestUtils/InputStreamTestUtils.h>
 
-namespace DB
+namespace DB::DM::tests
 {
-namespace DM
-{
-namespace tests
-{
+
 namespace
 {
 constexpr const char * str_col_name = "col_a";
@@ -33,13 +31,13 @@ public:
     DebugBlockInputStream(BlocksList & blocks, bool is_common_handle_)
         : BlocksListBlockInputStream(std::move(blocks))
         , is_common_handle(is_common_handle_)
-    {
-    }
+    {}
     String getName() const override { return "Debug"; }
     Block getHeader() const override
     {
-        auto cds = DMTestEnv::getDefaultColumns(is_common_handle ? DMTestEnv::PkType::CommonHandle : DMTestEnv::PkType::HiddenTiDBRowID);
-        cds->push_back(ColumnDefine(100, str_col_name, DataTypeFactory::instance().get("String")));
+        auto cds = DMTestEnv::getDefaultColumns(
+            is_common_handle ? DMTestEnv::PkType::CommonHandle : DMTestEnv::PkType::HiddenTiDBRowID);
+        cds->emplace_back(100, str_col_name, DataTypeFactory::instance().get(DataTypeString::getDefaultName()));
         return toEmptyBlock(*cds);
     }
 
@@ -50,21 +48,24 @@ private:
 BlockInputStreamPtr genColumnProjInputStream(BlocksList & blocks, const ColumnDefines & columns, bool is_common_handle)
 {
     ColumnDefine handle_define(
-        TiDBPkColumnID,
+        MutSup::extra_handle_id,
         DMTestEnv::pk_name,
-        is_common_handle ? EXTRA_HANDLE_COLUMN_STRING_TYPE : EXTRA_HANDLE_COLUMN_INT_TYPE);
+        is_common_handle ? MutSup::getExtraHandleColumnStringType() : MutSup::getExtraHandleColumnIntType());
 
     return std::make_shared<DMColumnProjectionBlockInputStream>(
         std::make_shared<DebugBlockInputStream>(blocks, is_common_handle),
         columns);
 }
 
-BlockInputStreamPtr genDeleteFilterInputStream(BlocksList & blocks, const ColumnDefines & columns, bool is_common_handle)
+BlockInputStreamPtr genDeleteFilterInputStream(
+    BlocksList & blocks,
+    const ColumnDefines & columns,
+    bool is_common_handle)
 {
     ColumnDefine handle_define(
-        TiDBPkColumnID,
+        MutSup::extra_handle_id,
         DMTestEnv::pk_name,
-        is_common_handle ? EXTRA_HANDLE_COLUMN_STRING_TYPE : EXTRA_HANDLE_COLUMN_INT_TYPE);
+        is_common_handle ? MutSup::getExtraHandleColumnStringType() : MutSup::getExtraHandleColumnIntType());
 
     return std::make_shared<DMDeleteFilterBlockInputStream>(
         std::make_shared<DebugBlockInputStream>(blocks, is_common_handle),
@@ -125,6 +126,5 @@ TEST(ColumnProjectionTest, NormalCase)
             createColumn<String>({"hello", "world", "", "TiFlash", "Storage"}, str_col_name),
         }));
 }
-} // namespace tests
-} // namespace DM
-} // namespace DB
+
+} // namespace DB::DM::tests

@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Common/CompactArray.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,9 +18,9 @@
 
 #include <Common/nocopyable.h>
 #include <Core/Defines.h>
-#include <IO/ReadBuffer.h>
+#include <IO/Buffer/ReadBuffer.h>
+#include <IO/Buffer/WriteBuffer.h>
 #include <IO/ReadHelpers.h>
-#include <IO/WriteBuffer.h>
 #include <IO/WriteHelpers.h>
 
 namespace DB
@@ -103,8 +105,7 @@ class CompactArray<BucketIndex, content_width, bucket_count>::Reader final
 public:
     explicit Reader(ReadBuffer & in_)
         : in(in_)
-    {
-    }
+    {}
 
     DISALLOW_COPY(Reader);
 
@@ -225,10 +226,7 @@ public:
 private:
     Locus() = default;
 
-    explicit Locus(BucketIndex bucket_index)
-    {
-        init(bucket_index);
-    }
+    explicit Locus(BucketIndex bucket_index) { init(bucket_index); }
 
     void ALWAYS_INLINE init(BucketIndex bucket_index)
     {

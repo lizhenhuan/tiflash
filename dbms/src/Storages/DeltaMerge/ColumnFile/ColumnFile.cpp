@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <IO/MemoryReadWriteBuffer.h>
+#include <IO/Buffer/MemoryReadWriteBuffer.h>
 #include <Storages/DeltaMerge/ColumnFile/ColumnFile.h>
 #include <Storages/DeltaMerge/ColumnFile/ColumnFileBig.h>
 #include <Storages/DeltaMerge/ColumnFile/ColumnFileDeleteRange.h>
@@ -22,14 +22,10 @@
 #include <Storages/DeltaMerge/RowKeyFilter.h>
 
 
-namespace DB
+namespace DB::DM
 {
-namespace DM
-{
-/// ======================================================
-/// Helper methods.
-/// ======================================================
-size_t copyColumnsData(
+
+std::pair<size_t, size_t> ColumnFileReader::copyColumnsData(
     const Columns & from,
     const ColumnPtr & pk_col,
     MutableColumns & to,
@@ -46,19 +42,20 @@ size_t copyColumnsData(
             {
                 for (size_t col_index = 0; col_index < to.size(); ++col_index)
                     to[col_index]->insertFrom(*from[col_index], rows_offset);
-                return 1;
+                return {rows_offset, 1};
             }
             else
             {
-                return 0;
+                return {rows_offset, 0};
             }
         }
         else
         {
-            auto [actual_offset, actual_limit] = RowKeyFilter::getPosRangeOfSorted(*range, pk_col, rows_offset, rows_limit);
+            auto [actual_offset, actual_limit]
+                = RowKeyFilter::getPosRangeOfSorted(*range, pk_col, rows_offset, rows_limit);
             for (size_t col_index = 0; col_index < to.size(); ++col_index)
                 to[col_index]->insertRangeFrom(*from[col_index], actual_offset, actual_limit);
-            return actual_limit;
+            return {actual_offset, actual_limit};
         }
     }
     else
@@ -73,7 +70,7 @@ size_t copyColumnsData(
             for (size_t col_index = 0; col_index < to.size(); ++col_index)
                 to[col_index]->insertRangeFrom(*from[col_index], rows_offset, rows_limit);
         }
-        return rows_limit;
+        return {rows_offset, rows_limit};
     }
 }
 
@@ -103,29 +100,29 @@ ColumnFilePersisted * ColumnFile::tryToColumnFilePersisted()
 }
 
 template <class T>
-String columnFilesToString(const T & column_files)
+String ColumnFile::filesToString(const T & column_files)
 {
-    String column_files_info = "[";
-    for (const auto & f : column_files)
-    {
-        if (f->isInMemoryFile())
-            column_files_info += "M_" + DB::toString(f->getRows()) + ",";
-        else if (f->isTinyFile())
-            column_files_info += "T_" + DB::toString(f->getRows()) + ",";
-        else if (f->isBigFile())
-            column_files_info += "F_" + DB::toString(f->getRows()) + ",";
-        else if (auto * f_delete = f->tryToDeleteRange(); f_delete)
-            column_files_info += "D_" + f_delete->getDeleteRange().toString() + ",";
-    }
-
-    if (!column_files.empty())
-        column_files_info.erase(column_files_info.size() - 1);
-    column_files_info += "]";
-    return column_files_info;
+    FmtBuffer buffer;
+    buffer.append("[");
+    buffer.joinStr(
+        column_files.cbegin(),
+        column_files.cend(),
+        [](const auto & f, FmtBuffer & fb) {
+            if (f->isInMemoryFile())
+                fb.fmtAppend("M_{}", f->getRows());
+            else if (f->isTinyFile())
+                fb.fmtAppend("T_{}", f->getRows());
+            else if (f->isBigFile())
+                fb.fmtAppend("F_{}", f->getRows());
+            else if (auto * f_delete = f->tryToDeleteRange(); f_delete)
+                fb.fmtAppend("D_{}", f_delete->getDeleteRange().toString());
+        },
+        ",");
+    buffer.append("]");
+    return buffer.toString();
 }
 
-template String columnFilesToString<ColumnFiles>(const ColumnFiles & column_files);
-template String columnFilesToString<ColumnFilePersisteds>(const ColumnFilePersisteds & column_files);
+template String ColumnFile::filesToString<ColumnFiles>(const ColumnFiles & column_files);
+template String ColumnFile::filesToString<ColumnFilePersisteds>(const ColumnFilePersisteds & column_files);
 
-} // namespace DM
-} // namespace DB
+} // namespace DB::DM

@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Parsers/ASTQualifiedAsterisk.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -23,11 +25,12 @@ String ASTQualifiedAsterisk::getColumnName() const
     return qualifier->getColumnName() + ".*";
 }
 
-void ASTQualifiedAsterisk::formatImpl(const FormatSettings & settings, FormatState & state, FormatStateStacked frame) const
+void ASTQualifiedAsterisk::formatImpl(const FormatSettings & settings, FormatState & state, FormatStateStacked frame)
+    const
 {
     const auto & qualifier = children.at(0);
     qualifier->formatImpl(settings, state, frame);
     settings.ostr << ".*";
 }
 
-}
+} // namespace DB

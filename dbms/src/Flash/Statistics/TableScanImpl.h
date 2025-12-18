@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,14 +20,28 @@
 
 namespace DB
 {
-struct TableScanDetail : public ConnectionProfileInfo
+struct TableScanTimeDetail
 {
-    bool is_local;
+    double min_stream_cost_ns = -1.0;
+    double max_stream_cost_ns = -1.0;
 
-    explicit TableScanDetail(bool is_local_)
-        : is_local(is_local_)
-    {}
+    double total_speed_rows_per_sec = 0.0;
+    double total_speed_bytes_per_sec = 0.0;
+    size_t num_streams = 0;
 
+    String toJson() const;
+};
+struct LocalTableScanDetail
+{
+    Int64 bytes = 0;
+    TableScanTimeDetail time_detail;
+    String toJson() const;
+};
+struct RemoteTableScanDetail
+{
+    ConnectionProfileInfo inner_zone_conn_profile_info{ConnectionProfileInfo::InnerZoneRemote};
+    ConnectionProfileInfo inter_zone_conn_profile_info{ConnectionProfileInfo::InterZoneRemote};
+    TableScanTimeDetail time_detail;
     String toJson() const;
 };
 
@@ -41,6 +55,8 @@ struct TableScanImpl
     {
         return executor->has_tbl_scan() || executor->has_partition_table_scan();
     }
+
+    static bool isSourceExecutor() { return true; }
 };
 using TableScanStatisticsBase = ExecutorStatistics<TableScanImpl>;
 
@@ -50,11 +66,15 @@ public:
     TableScanStatistics(const tipb::Executor * executor, DAGContext & dag_context_);
 
 private:
-    TableScanDetail local_table_scan_detail{true};
-    TableScanDetail cop_table_scan_detail{false};
+    LocalTableScanDetail local_table_scan_detail;
+    RemoteTableScanDetail remote_table_scan_detail;
 
 protected:
     void appendExtraJson(FmtBuffer &) const override;
     void collectExtraRuntimeDetail() override;
+
+private:
+    void updateTableScanDetail(const std::vector<ConnectionProfileInfo> & connection_profile_infos);
+    void updateTableScanDetailForDisaggIfNecessary(const IProfilingBlockInputStream * stream);
 };
 } // namespace DB

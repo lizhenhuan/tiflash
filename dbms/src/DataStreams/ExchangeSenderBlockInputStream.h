@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@
 #include <Common/Logger.h>
 #include <DataStreams/IProfilingBlockInputStream.h>
 #include <Flash/Coprocessor/DAGResponseWriter.h>
-#include <Interpreters/ExpressionAnalyzer.h>
+
 namespace DB
 {
 /// read blocks directly from Union, then broadcast or partition blocks and encode them, later put them into sending tunnels
@@ -30,7 +30,7 @@ public:
         std::unique_ptr<DAGResponseWriter> writer,
         const String & req_id)
         : writer(std::move(writer))
-        , log(Logger::get(name, req_id))
+        , log(Logger::get(req_id))
     {
         children.push_back(input);
     }
@@ -38,13 +38,12 @@ public:
     String getName() const override { return name; }
     Block getHeader() const override { return children.back()->getHeader(); }
 
+    bool canHandleSelectiveBlock() const override { return true; }
+
 protected:
     Block readImpl() override;
-    void readSuffixImpl() override
-    {
-        writer->finishWrite();
-        LOG_FMT_DEBUG(log, "finish write with {} rows", total_rows);
-    }
+    void readPrefixImpl() override { writer->prepare(getHeader()); }
+    void readSuffixImpl() override { LOG_DEBUG(log, "finish write with {} rows", total_rows); }
 
 private:
     std::unique_ptr<DAGResponseWriter> writer;

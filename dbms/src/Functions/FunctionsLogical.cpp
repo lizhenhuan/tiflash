@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Functions/FunctionsLogical.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,6 +15,7 @@
 // limitations under the License.
 
 #include <Functions/FunctionFactory.h>
+#include <Functions/FunctionsLegacyLogical.h>
 #include <Functions/FunctionsLogical.h>
 
 namespace DB
@@ -20,9 +23,13 @@ namespace DB
 void registerFunctionsLogical(FunctionFactory & factory)
 {
     factory.registerFunction<FunctionAnd>();
+    factory.registerFunction<FunctionTwoValueAnd>();
     factory.registerFunction<FunctionOr>();
     factory.registerFunction<FunctionXor>();
     factory.registerFunction<FunctionNot>();
+    factory.registerFunction<FunctionLegacyAnd>();
+    factory.registerFunction<FunctionLegacyOr>();
+    factory.registerFunction<FunctionLegacyXor>();
 }
 
 } // namespace DB

@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,41 +16,41 @@
 
 #include <Storages/DeltaMerge/Filter/RSOperator.h>
 
-namespace DB
+namespace DB::DM
 {
-namespace DM
-{
+
 class Unsupported : public RSOperator
 {
-    String content;
     String reason;
-    bool is_not;
 
 public:
-    Unsupported(const String & content_, const String & reason_)
-        : Unsupported(content_, reason_, false)
-    {}
-    Unsupported(const String & content_, const String & reason_, bool is_not_)
-        : content(content_)
-        , reason(reason_)
-        , is_not(is_not_)
+    explicit Unsupported(const String & reason_)
+        : reason(reason_)
     {}
 
     String name() override { return "unsupported"; }
 
-    Attrs getAttrs() override { return {}; }
+    ColIds getColumnIDs() override { return {}; }
 
-    String toDebugString() override
+    String toDebugString() override { return fmt::format(R"({{"op":"{}","reason":"{}"}})", name(), reason); }
+
+    Poco::JSON::Object::Ptr toJSONObject() override
     {
-        return R"({"op":")" + name() + //
-            R"(","reason":")" + reason + //
-            R"(","content":")" + content + //
-            R"(","is_not":")" + DB::toString(is_not) + "\"}";
+        Poco::JSON::Object::Ptr obj = new Poco::JSON::Object();
+        obj->set("op", name());
+        obj->set("reason", reason);
+        return obj;
     }
 
-    RSResult roughCheck(size_t /*pack_id*/, const RSCheckParam & /*param*/) override { return Some; }
+    RSResults roughCheck(size_t /*start_pack*/, size_t pack_count, const RSCheckParam & /*param*/) override
+    {
+        return RSResults(pack_count, RSResult::Some);
+    }
+
+    ColumnRangePtr buildSets(const google::protobuf::RepeatedPtrField<tipb::ColumnarIndexInfo> &) override
+    {
+        return UnsupportedColumnRange::create();
+    }
 };
 
-} // namespace DM
-
-} // namespace DB
+} // namespace DB::DM

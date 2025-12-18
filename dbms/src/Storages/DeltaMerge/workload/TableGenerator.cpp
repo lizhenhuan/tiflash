@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,7 +13,9 @@
 // limitations under the License.
 
 #include <Common/nocopyable.h>
+#include <DataTypes/DataTypeDecimal.h>
 #include <DataTypes/DataTypeEnum.h>
+#include <DataTypes/DataTypeFactory.h>
 #include <DataTypes/DataTypeString.h>
 #include <Storages/DeltaMerge/workload/Options.h>
 #include <Storages/DeltaMerge/workload/TableGenerator.h>
@@ -26,7 +28,13 @@ namespace DB::DM::tests
 std::vector<std::string> TableInfo::toStrings() const
 {
     std::vector<std::string> v;
-    v.push_back(fmt::format("db_name {} table_name {} columns count {} is_common_handle {} rowkey_column_indexes {}", db_name, table_name, columns->size(), is_common_handle, rowkey_column_indexes));
+    v.push_back(fmt::format(
+        "db_name {} table_name {} columns count {} is_common_handle {} rowkey_column_indexes {}",
+        db_name,
+        table_name,
+        columns->size(),
+        is_common_handle,
+        rowkey_column_indexes));
     for (size_t i = 0; i < columns->size(); i++)
     {
         auto col = (*columns)[i];
@@ -36,7 +44,8 @@ std::vector<std::string> TableInfo::toStrings() const
         }
         else
         {
-            v.push_back(fmt::format("columns[{}]: id {} name {} type {}", i, col.id, col.name, col.type->getFamilyName()));
+            v.push_back(
+                fmt::format("columns[{}]: id {} name {} type {}", i, col.id, col.name, col.type->getFamilyName()));
         }
     }
     return v;
@@ -67,10 +76,7 @@ public:
         PkIsHandleInt32,
     };
 
-    PkType randomPkType()
-    {
-        return pk_types[rand_gen() % pk_types.size()].second;
-    }
+    PkType randomPkType() { return pk_types[rand_gen() % pk_types.size()].second; }
 
     PkType getPkType(const std::string & name)
     {
@@ -100,7 +106,7 @@ public:
             columns->emplace_back(getExtraHandleColumnDefine(/*is_common_handle=*/true));
             break;
         case PkType::PkIsHandleInt64:
-            columns->emplace_back(ColumnDefine{2, PK_NAME_PK_IS_HANDLE, EXTRA_HANDLE_COLUMN_INT_TYPE});
+            columns->emplace_back(ColumnDefine{2, PK_NAME_PK_IS_HANDLE, MutSup::getExtraHandleColumnIntType()});
             break;
         case PkType::PkIsHandleInt32:
             columns->emplace_back(ColumnDefine{2, PK_NAME_PK_IS_HANDLE, DataTypeFactory::instance().get("Int32")});
@@ -219,7 +225,7 @@ private:
         "Int64",
         "Float32",
         "Float64",
-        "String",
+        DataTypeString::getDefaultName(),
         "MyDate",
         "MyDateTime",
         "Enum16",
@@ -279,10 +285,7 @@ private:
         return TablePkType::instance().getPkType(pk_type);
     }
 
-    static DataTypePtr getDataType()
-    {
-        return TableDataType::instance().randomDataType();
-    }
+    static DataTypePtr getDataType() { return TableDataType::instance().randomDataType(); }
 
     const std::string pk_type;
     const int cols_count;
@@ -314,7 +317,7 @@ class ConstantTableGenerator : public TableGenerator
             "Int64",
             "Float32",
             "Float64",
-            "String",
+            DataTypeString::getDefaultName(),
             "MyDate",
             "MyDateTime",
             "Enum16",
@@ -325,7 +328,8 @@ class ConstantTableGenerator : public TableGenerator
         {
             int id = i + 3;
             auto name = fmt::format("col_{}", id);
-            auto data_type = TableDataType::instance().getDataType(data_cols[i], 10 /*enum_cnt*/, 20 /*prec*/, 10 /*scale*/);
+            auto data_type
+                = TableDataType::instance().getDataType(data_cols[i], 10 /*enum_cnt*/, 20 /*prec*/, 10 /*scale*/);
             table_info.columns->emplace_back(ColumnDefine(id, name, data_type));
         }
         table_info.handle = (*table_info.columns)[0];

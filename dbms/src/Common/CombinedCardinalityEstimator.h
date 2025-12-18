@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Common/CombinedCardinalityEstimator.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -76,15 +78,9 @@ private:
     using Large = HyperLogLogCounter<K, Hash, HashValueType, DenominatorType, BiasEstimator, mode>;
 
 public:
-    CombinedCardinalityEstimator()
-    {
-        setContainerType(details::ContainerType::SMALL);
-    }
+    CombinedCardinalityEstimator() { setContainerType(details::ContainerType::SMALL); }
 
-    ~CombinedCardinalityEstimator()
-    {
-        destroy();
-    }
+    ~CombinedCardinalityEstimator() { destroy(); }
 
     void insert(Key value)
     {
@@ -129,7 +125,7 @@ public:
         else if (container_type == details::ContainerType::LARGE)
             return getContainer<Large>().size();
         else
-            throw Poco::Exception("Internal error", ErrorCodes::LOGICAL_ERROR);
+            throw DB::Exception("Internal error", ErrorCodes::LOGICAL_ERROR);
     }
 
     void merge(const Self & rhs)
@@ -239,7 +235,7 @@ private:
     void toMedium()
     {
         if (getContainerType() != details::ContainerType::SMALL)
-            throw Poco::Exception("Internal error", ErrorCodes::LOGICAL_ERROR);
+            throw DB::Exception("Internal error", ErrorCodes::LOGICAL_ERROR);
 
         CurrentMemoryTracker::alloc(sizeof(Medium));
         auto tmp_medium = std::make_unique<Medium>();
@@ -256,7 +252,7 @@ private:
         auto container_type = getContainerType();
 
         if ((container_type != details::ContainerType::SMALL) && (container_type != details::ContainerType::MEDIUM))
-            throw Poco::Exception("Internal error", ErrorCodes::LOGICAL_ERROR);
+            throw DB::Exception("Internal error", ErrorCodes::LOGICAL_ERROR);
 
         CurrentMemoryTracker::alloc(sizeof(Large));
         auto tmp_large = std::make_unique<Large>();
@@ -323,10 +319,7 @@ private:
         return static_cast<details::ContainerType>(address & ~mask);
     }
 
-    void clearContainerType()
-    {
-        address &= mask;
-    }
+    void clearContainerType() { address &= mask; }
 
 private:
     Small small;

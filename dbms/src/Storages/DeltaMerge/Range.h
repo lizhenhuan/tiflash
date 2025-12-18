@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@
 #include <Common/RedactHelpers.h>
 #include <Core/Types.h>
 #include <IO/WriteHelpers.h>
-#include <Storages/Transaction/Types.h>
+#include <Storages/KVStore/Types.h>
 
 namespace DB
 {
@@ -60,11 +60,20 @@ struct Range
     inline bool all() const { return start == MIN && end == MAX; }
     inline bool none() const { return start >= end; }
 
-    inline Range shrink(const Range<T> & other) const { return Range(std::max(start, other.start), std::min(end, other.end)); }
+    inline Range shrink(const Range<T> & other) const
+    {
+        return Range(std::max(start, other.start), std::min(end, other.end));
+    }
 
-    inline Range merge(const Range<T> & other) const { return Range(std::min(start, other.start), std::max(end, other.end)); }
+    inline Range merge(const Range<T> & other) const
+    {
+        return Range(std::min(start, other.start), std::max(end, other.end));
+    }
 
-    inline bool intersect(const Range<T> & other) const { return std::max(other.start, start) < std::min(other.end, end); }
+    inline bool intersect(const Range<T> & other) const
+    {
+        return std::max(other.start, start) < std::min(other.end, end);
+    }
 
     // [first, last_include]
     inline bool intersect(T first, T last_include) const
@@ -72,9 +81,6 @@ struct Range
         T max_start = std::max(first, start);
         return (last_include >= end && checkEnd(max_start)) || (last_include < end && max_start <= last_include);
     }
-
-    // [first, last_include]
-    inline bool include(T first, T last_include) const { return check(first) && check(last_include); }
 
     inline bool checkStart(T value) const { return start == MIN || start <= value; }
 
@@ -113,7 +119,7 @@ using HandleRanges = std::vector<HandleRange>;
 inline String toDebugString(const HandleRanges & ranges)
 {
     String s = "{";
-    for (auto & r : ranges)
+    for (const auto & r : ranges)
     {
         s += r.toDebugString() + ",";
     }

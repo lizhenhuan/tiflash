@@ -1,4 +1,6 @@
-# Copyright 2022 PingCAP, Ltd.
+# Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/libs/libcommon/CMakeLists.txt
+#
+# Copyright 2023 PingCAP, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -66,7 +68,6 @@ add_library (common ${SPLIT_SHARED}
     include/common/mremap.h
     include/common/likely.h
     include/common/logger_useful.h
-    include/common/MultiVersion.h
     include/common/strong_typedef.h
     include/common/JSON.h
     include/common/simd.h
@@ -112,7 +113,9 @@ if (GLIBC_COMPATIBILITY)
     set (GLIBC_COMPATIBILITY_LIBRARIES glibc-compatibility)
 endif ()
 
-if (USE_INTERNAL_MEMCPY)
+if (ARCH_AARCH64 AND OS_LINUX)
+    target_link_libraries (common PUBLIC aor)
+elseif (USE_INTERNAL_MEMCPY)
     set (MEMCPY_LIBRARIES memcpy)
 endif ()
 
@@ -124,7 +127,7 @@ target_include_directories (common PUBLIC ${COMMON_INCLUDE_DIR})
 
 target_include_directories (common BEFORE PUBLIC ${Boost_INCLUDE_DIRS})
 
-if(APPLE AND ARCH_AARCH64)
+if(OS_DARWIN AND ARCH_AARCH64)
     set(CPU_FEATURES_LIBRARY)
 else()
     set(CPU_FEATURES_LIBRARY cpu_features)
@@ -157,43 +160,44 @@ if (ENABLE_TESTS)
 endif ()
 
 # Region for specialized CPU flags tuning
-if (TIFLASH_ENABLE_AVX_SUPPORT)
-    # https://gcc.gnu.org/onlinedocs/gcc/x86-Options.html
-    set_source_files_properties(src/mem_utils_avx2.cpp APPEND COMPILE_FLAGS "-mavx -mavx2")
-    set_source_files_properties(src/avx2_mem_utils_impl.cpp APPEND COMPILE_FLAGS "-mavx -mavx2 ${COMPILER_MOVBE_FLAG} -fomit-frame-pointer")
-    if (TIFLASH_COMPILER_VPCLMULQDQ_SUPPORT)
-        set_source_files_properties(src/crc64_avx2.cpp
-                APPEND COMPILE_FLAGS "-mavx2 -mpclmul -mvpclmulqdq -Wno-ignored-attributes")
-    endif()
-endif ()
 
-if (TIFLASH_ENABLE_AVX512_SUPPORT)
-    # https://gcc.gnu.org/onlinedocs/gcc/x86-Options.html
-    set_source_files_properties(src/mem_utils_avx512.cpp
-            APPEND COMPILE_FLAGS "-mavx512bw -mavx512vl -mavx512f")
-    if (TIFLASH_COMPILER_VPCLMULQDQ_SUPPORT)
-        set_source_files_properties(src/crc64_avx512.cpp
-                APPEND COMPILE_FLAGS "-mpclmul -mvpclmulqdq -mavx512dq -mavx512f -Wno-ignored-attributes")
-    endif()
-endif ()
+check_then_add_sources_compile_flag (
+    TIFLASH_COMPILER_VPCLMULQDQ_SUPPORT
+    "-mvpclmulqdq;-Wno-ignored-attributes"
+    src/crc64_avx2.cpp
+    src/crc64_avx512.cpp
+)
 
-if (TIFLASH_ENABLE_ASIMD_SUPPORT)
-    # https://gcc.gnu.org/onlinedocs/gcc/ARM-Options.html
-    set_source_files_properties(src/mem_utils_asimd.cpp APPEND COMPILE_FLAGS "-march=armv8-a+simd")
-    set_source_files_properties(src/crc64_sse2_asimd.cpp APPEND COMPILE_FLAGS "-march=armv8-a+simd+crypto")
-endif ()
+check_then_add_sources_compile_flag (
+    TIFLASH_ENABLE_ARCH_HASWELL_SUPPORT
+    "${TIFLASH_COMPILER_ARCH_HASWELL_FLAG}"
+    src/mem_utils_avx2.cpp
+    src/crc64_avx2.cpp
+    src/avx2_mem_utils_impl.cpp
+)
+
+set_property(SOURCE src/avx2_mem_utils_impl.cpp APPEND PROPERTY COMPILE_OPTIONS "-fomit-frame-pointer") # remove frame pointer
+
+check_then_add_sources_compile_flag (
+    TIFLASH_ENABLE_AVX512_SUPPORT
+    "-mavx512bw;-mavx512vl;-mavx512f;-mavx512dq"
+    src/mem_utils_avx512.cpp
+    src/crc64_avx512.cpp
+)
+
+check_then_add_sources_compile_flag (
+    TIFLASH_ENABLE_ASIMD_SUPPORT
+    "-march=armv8-a+simd"
+    src/mem_utils_asimd.cpp
+)
+
+check_then_add_sources_compile_flag (
+    TIFLASH_ENABLE_ASIMD_SUPPORT
+    "-march=armv8-a+simd+crypto"
+    src/crc64_sse2_asimd.cpp
+)
 
 if (TIFLASH_ENABLE_SVE_SUPPORT)
     # https://gcc.gnu.org/onlinedocs/gcc/ARM-Options.html
     # set_source_files_properties(<SOURCE_FILE> APPEND COMPILE_FLAGS "-march=armv8.6-a+sve")
 endif ()
-
-if (ARCH_AMD64)
-    set_source_files_properties(
-            src/crc64_sse2_asimd.cpp
-            APPEND COMPILE_FLAGS "-mpclmul")
-endif()
-
-if (ARCH_AARCH64 AND ARCH_LINUX)
-    target_link_libraries (common PUBLIC tiflash-aarch64-string tiflash-aarch64-math)
-endif()

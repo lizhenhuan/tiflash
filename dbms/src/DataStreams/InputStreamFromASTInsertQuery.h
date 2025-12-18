@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/DataStreams/InputStreamFromASTInsertQuery.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,8 +16,9 @@
 
 #pragma once
 
-#include <Parsers/IAST.h>
 #include <DataStreams/IProfilingBlockInputStream.h>
+#include <Parsers/IAST.h>
+
 #include <cstddef>
 #include <memory>
 
@@ -33,7 +36,11 @@ class Context;
 class InputStreamFromASTInsertQuery : public IProfilingBlockInputStream
 {
 public:
-    InputStreamFromASTInsertQuery(const ASTPtr & ast, ReadBuffer & input_buffer_tail_part, const BlockIO & streams, Context & context);
+    InputStreamFromASTInsertQuery(
+        const ASTPtr & ast,
+        ReadBuffer & input_buffer_tail_part,
+        const BlockIO & streams,
+        Context & context);
 
     Block readImpl() override { return res_stream->read(); }
     void readPrefixImpl() override { return res_stream->readPrefix(); }
@@ -50,4 +57,4 @@ private:
     BlockInputStreamPtr res_stream;
 };
 
-}
+} // namespace DB

@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Common/FieldVisitors.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -181,7 +183,16 @@ typename std::decay_t<Visitor>::ResultType applyVisitor(Visitor && visitor, F1 &
 /** Prints Field as literal in SQL query */
 class FieldVisitorToString : public StaticVisitor<String>
 {
+private:
+    bool isDecimalWithQuoted;
+
 public:
+    FieldVisitorToString()
+        : isDecimalWithQuoted(true){};
+
+    FieldVisitorToString(bool val)
+        : isDecimalWithQuoted(val){};
+
     String operator()(const Null & x) const;
     String operator()(const UInt64 & x) const;
     String operator()(const Int64 & x) const;
@@ -447,8 +458,9 @@ private:
     {
         if constexpr (std::is_same_v<U, Null>)
             return false;
-        throw Exception("Cannot compare " + demangle(typeid(T).name()) + " with " + demangle(typeid(U).name()),
-                        ErrorCodes::BAD_TYPE_OF_FIELD);
+        throw Exception(
+            "Cannot compare " + demangle(typeid(T).name()) + " with " + demangle(typeid(U).name()),
+            ErrorCodes::BAD_TYPE_OF_FIELD);
     }
 };
 
@@ -579,8 +591,9 @@ private:
     template <typename T, typename U>
     bool cantCompare(const T &, const U &) const
     {
-        throw Exception("Cannot compare " + demangle(typeid(T).name()) + " with " + demangle(typeid(U).name()),
-                        ErrorCodes::BAD_TYPE_OF_FIELD);
+        throw Exception(
+            "Cannot compare " + demangle(typeid(T).name()) + " with " + demangle(typeid(U).name()),
+            ErrorCodes::BAD_TYPE_OF_FIELD);
     }
 };
 

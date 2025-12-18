@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Parsers/ASTFunction.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,8 +16,8 @@
 
 #pragma once
 
-#include <Parsers/ASTWithAlias.h>
 #include <Parsers/ASTExpressionList.h>
+#include <Parsers/ASTWithAlias.h>
 
 
 namespace DB
@@ -38,7 +40,8 @@ public:
     ASTPtr clone() const override;
 
 protected:
-    void formatImplWithoutAlias(const FormatSettings & settings, FormatState & state, FormatStateStacked frame) const override;
+    void formatImplWithoutAlias(const FormatSettings & settings, FormatState & state, FormatStateStacked frame)
+        const override;
     String getColumnNameImpl() const override;
 };
 
@@ -52,9 +55,9 @@ ASTPtr makeASTFunction(const String & name, Args &&... args)
     function->arguments = std::make_shared<ASTExpressionList>();
     function->children.push_back(function->arguments);
 
-    function->arguments->children = { std::forward<Args>(args)... };
+    function->arguments->children = {std::forward<Args>(args)...};
 
     return function;
 }
 
-}
+} // namespace DB

@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Common/FieldVisitors.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,16 +17,24 @@
 #include <Common/FieldVisitors.h>
 #include <Common/RedactHelpers.h>
 #include <Common/SipHash.h>
-#include <IO/ReadBuffer.h>
-#include <IO/ReadBufferFromString.h>
+#include <IO/Buffer/ReadBuffer.h>
+#include <IO/Buffer/ReadBufferFromString.h>
+#include <IO/Buffer/WriteBuffer.h>
+#include <IO/Buffer/WriteBufferFromString.h>
 #include <IO/ReadHelpers.h>
-#include <IO/WriteBuffer.h>
-#include <IO/WriteBufferFromString.h>
 #include <IO/WriteHelpers.h>
 
 
 namespace DB
 {
+template <typename T>
+static inline String format(const DecimalField<T> & x)
+{
+    WriteBufferFromOwnString wb;
+    writeText(x.getValue(), x.getScale(), wb);
+    return wb.str();
+}
+
 template <typename T>
 static inline String formatQuoted(T x)
 {
@@ -170,19 +180,27 @@ String FieldVisitorToString::operator()(const String & x) const
 }
 String FieldVisitorToString::operator()(const DecimalField<Decimal32> & x) const
 {
-    return formatQuoted(x);
+    if (isDecimalWithQuoted)
+        return formatQuoted(x);
+    return format(x);
 }
 String FieldVisitorToString::operator()(const DecimalField<Decimal64> & x) const
 {
-    return formatQuoted(x);
+    if (isDecimalWithQuoted)
+        return formatQuoted(x);
+    return format(x);
 }
 String FieldVisitorToString::operator()(const DecimalField<Decimal128> & x) const
 {
-    return formatQuoted(x);
+    if (isDecimalWithQuoted)
+        return formatQuoted(x);
+    return format(x);
 }
 String FieldVisitorToString::operator()(const DecimalField<Decimal256> & x) const
 {
-    return formatQuoted(x);
+    if (isDecimalWithQuoted)
+        return formatQuoted(x);
+    return format(x);
 }
 
 String FieldVisitorToString::operator()(const Array & x) const
@@ -190,7 +208,7 @@ String FieldVisitorToString::operator()(const Array & x) const
     WriteBufferFromOwnString wb;
 
     writeChar('[', wb);
-    for (Array::const_iterator it = x.begin(); it != x.end(); ++it)
+    for (auto it = x.begin(); it != x.end(); ++it)
     {
         if (it != x.begin())
             wb.write(", ", 2);
@@ -221,57 +239,121 @@ String FieldVisitorToString::operator()(const Tuple & x_def) const
 
 String FieldVisitorToDebugString::operator()(const Null &) const
 {
-    if (Redact::REDACT_LOG.load(std::memory_order_relaxed))
+    const auto v = Redact::REDACT_LOG.load(std::memory_order_relaxed);
+    switch (v)
+    {
+    case RedactMode::Enable:
         return "?";
-    return "NULL";
+    case RedactMode::Disable:
+        return "NULL";
+    case RedactMode::Marker:
+        return Redact::toMarkerString("NULL", /*ignore_escape*/ true);
+    }
 }
 String FieldVisitorToDebugString::operator()(const UInt64 & x) const
 {
-    if (Redact::REDACT_LOG.load(std::memory_order_relaxed))
+    const auto v = Redact::REDACT_LOG.load(std::memory_order_relaxed);
+    switch (v)
+    {
+    case RedactMode::Enable:
         return "?";
-    return formatQuoted(x);
+    case RedactMode::Disable:
+        return formatQuoted(x);
+    case RedactMode::Marker:
+        return Redact::toMarkerString(formatQuoted(x), /*ignore_escape*/ true);
+    }
 }
 String FieldVisitorToDebugString::operator()(const Int64 & x) const
 {
-    if (Redact::REDACT_LOG.load(std::memory_order_relaxed))
+    const auto v = Redact::REDACT_LOG.load(std::memory_order_relaxed);
+    switch (v)
+    {
+    case RedactMode::Enable:
         return "?";
-    return formatQuoted(x);
+    case RedactMode::Disable:
+        return formatQuoted(x);
+    case RedactMode::Marker:
+        return Redact::toMarkerString(formatQuoted(x), /*ignore_escape*/ true);
+    }
 }
 String FieldVisitorToDebugString::operator()(const Float64 & x) const
 {
-    if (Redact::REDACT_LOG.load(std::memory_order_relaxed))
+    const auto v = Redact::REDACT_LOG.load(std::memory_order_relaxed);
+    switch (v)
+    {
+    case RedactMode::Enable:
         return "?";
-    return formatFloat(x);
+    case RedactMode::Disable:
+        return formatFloat(x);
+    case RedactMode::Marker:
+        return Redact::toMarkerString(formatFloat(x), /*ignore_escape*/ true);
+    }
 }
 String FieldVisitorToDebugString::operator()(const String & x) const
 {
-    if (Redact::REDACT_LOG.load(std::memory_order_relaxed))
+    const auto v = Redact::REDACT_LOG.load(std::memory_order_relaxed);
+    switch (v)
+    {
+    case RedactMode::Enable:
         return "?";
-    return formatQuoted(x);
+    case RedactMode::Disable:
+        return formatQuoted(x);
+    case RedactMode::Marker:
+        // The string may contains utf-8 char that need to be escaped
+        return Redact::toMarkerString(formatQuoted(x), /*ignore_escape*/ false);
+    }
 }
 String FieldVisitorToDebugString::operator()(const DecimalField<Decimal32> & x) const
 {
-    if (Redact::REDACT_LOG.load(std::memory_order_relaxed))
+    const auto v = Redact::REDACT_LOG.load(std::memory_order_relaxed);
+    switch (v)
+    {
+    case RedactMode::Enable:
         return "?";
-    return formatQuoted(x);
+    case RedactMode::Disable:
+        return formatQuoted(x);
+    case RedactMode::Marker:
+        return Redact::toMarkerString(formatQuoted(x), /*ignore_escape*/ true);
+    }
 }
 String FieldVisitorToDebugString::operator()(const DecimalField<Decimal64> & x) const
 {
-    if (Redact::REDACT_LOG.load(std::memory_order_relaxed))
+    const auto v = Redact::REDACT_LOG.load(std::memory_order_relaxed);
+    switch (v)
+    {
+    case RedactMode::Enable:
         return "?";
-    return formatQuoted(x);
+    case RedactMode::Disable:
+        return formatQuoted(x);
+    case RedactMode::Marker:
+        return Redact::toMarkerString(formatQuoted(x), /*ignore_escape*/ true);
+    }
 }
 String FieldVisitorToDebugString::operator()(const DecimalField<Decimal128> & x) const
 {
-    if (Redact::REDACT_LOG.load(std::memory_order_relaxed))
+    const auto v = Redact::REDACT_LOG.load(std::memory_order_relaxed);
+    switch (v)
+    {
+    case RedactMode::Enable:
         return "?";
-    return formatQuoted(x);
+    case RedactMode::Disable:
+        return formatQuoted(x);
+    case RedactMode::Marker:
+        return Redact::toMarkerString(formatQuoted(x), /*ignore_escape*/ true);
+    }
 }
 String FieldVisitorToDebugString::operator()(const DecimalField<Decimal256> & x) const
 {
-    if (Redact::REDACT_LOG.load(std::memory_order_relaxed))
+    const auto v = Redact::REDACT_LOG.load(std::memory_order_relaxed);
+    switch (v)
+    {
+    case RedactMode::Enable:
         return "?";
-    return formatQuoted(x);
+    case RedactMode::Disable:
+        return formatQuoted(x);
+    case RedactMode::Marker:
+        return Redact::toMarkerString(formatQuoted(x), /*ignore_escape*/ true);
+    }
 }
 
 String FieldVisitorToDebugString::operator()(const Array & x) const
@@ -279,7 +361,7 @@ String FieldVisitorToDebugString::operator()(const Array & x) const
     WriteBufferFromOwnString wb;
 
     writeChar('[', wb);
-    for (Array::const_iterator it = x.begin(); it != x.end(); ++it)
+    for (auto it = x.begin(); it != x.end(); ++it)
     {
         if (it != x.begin())
             wb.write(", ", 2);

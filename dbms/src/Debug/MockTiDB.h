@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,10 +15,11 @@
 #pragma once
 
 #include <Storages/ColumnsDescription.h>
-#include <Storages/Transaction/TiDB.h>
-#include <Storages/Transaction/Types.h>
+#include <Storages/IStorage.h>
+#include <Storages/KVStore/Types.h>
 #include <TiDB/Schema/SchemaGetter.h>
 #include <TiDB/Schema/SchemaSyncer.h>
+#include <TiDB/Schema/TiDB.h>
 
 #include <atomic>
 
@@ -35,7 +36,11 @@ public:
         friend class MockTiDB;
 
     public:
-        Table(const String & database_name, DatabaseID database_id, const String & table_name, TiDB::TableInfo && table_info);
+        Table(
+            const String & database_name,
+            DatabaseID database_id,
+            const String & table_name,
+            TiDB::TableInfo && table_info);
 
         TableID id() const { return table_info.id; }
         DatabaseID dbID() const { return database_id; }
@@ -79,33 +84,56 @@ public:
         const String & table_name,
         const ColumnsDescription & columns,
         Timestamp tso,
-        const String & handle_pk_name,
-        const String & engine_type);
+        const String & handle_pk_name);
 
-    int newTables(
+    // Mock to create a partition table with given partition names
+    // Return <logical_table_id, [physical_table_id0, physical_table_id1, ...]>
+    std::tuple<TableID, std::vector<TableID>> newPartitionTable(
+        const String & database_name,
+        const String & table_name,
+        const ColumnsDescription & columns,
+        Timestamp tso,
+        const String & handle_pk_name,
+        const Strings & part_names);
+
+    std::vector<TableID> newTables(
         const String & database_name,
         const std::vector<std::tuple<String, ColumnsDescription, String>> & tables,
-        Timestamp tso,
-        const String & engine_type);
+        Timestamp tso);
 
     TableID addTable(const String & database_name, TiDB::TableInfo && table_info);
 
     static TiDB::TableInfoPtr parseColumns(
         const String & tbl_name,
         const ColumnsDescription & columns,
-        const String & handle_pk_name,
-        String engine_type);
+        const String & handle_pk_name);
 
     DatabaseID newDataBase(const String & database_name);
 
-    TableID newPartition(const String & database_name, const String & table_name, TableID partition_id, Timestamp tso, bool);
+    TableID newPartition(
+        const String & database_name,
+        const String & table_name,
+        TableID partition_id,
+        Timestamp tso,
+        bool);
     TableID newPartition(TableID belong_logical_table, const String & partition_name, Timestamp tso, bool);
 
     void dropPartition(const String & database_name, const String & table_name, TableID partition_id);
 
     void dropTable(Context & context, const String & database_name, const String & table_name, bool drop_regions);
+    void dropTableById(Context & context, const TableID & table_id, bool drop_regions);
 
     void dropDB(Context & context, const String & database_name, bool drop_regions);
+
+    void addVectorIndexToTable(
+        const String & database_name,
+        const String & table_name,
+        IndexID index_id,
+        const NameAndTypePair & column_name,
+        Int32 offset,
+        TiDB::VectorIndexDefinitionPtr vector_index);
+
+    void dropVectorIndexFromTable(const String & database_name, const String & table_name, IndexID index_id);
 
     void addColumnToTable(
         const String & database_name,
@@ -124,10 +152,22 @@ public:
         const String & new_column_name);
 
     void renameTable(const String & database_name, const String & table_name, const String & new_table_name);
+    // Rename table to another database
+    void renameTableTo(
+        const String & database_name,
+        const String & table_name,
+        const String & new_database_name,
+        const String & new_table_name);
 
     void renameTables(const std::vector<std::tuple<std::string, std::string, std::string>> & table_name_map);
 
     void truncateTable(const String & database_name, const String & table_name);
+
+    // Mock that concurrent DDL meets conflict, it will retry with a new schema version
+    // Return the schema_version with empty SchemaDiff
+    Int64 skipSchemaVersion() { return ++version; }
+
+    Int64 regenerateSchemaMap();
 
     TablePtr getTableByName(const String & database_name, const String & table_name);
 
@@ -150,8 +190,19 @@ public:
     TableID newTableID() { return table_id_allocator++; }
 
 private:
-    TableID newPartitionImpl(const TablePtr & logical_table, TableID partition_id, const String & partition_name, Timestamp tso, bool is_add_part);
-    TablePtr dropTableInternal(Context & context, const String & database_name, const String & table_name, bool drop_regions);
+    TableID newPartitionImpl(
+        const TablePtr & logical_table,
+        TableID partition_id,
+        const String & partition_name,
+        Timestamp tso,
+        bool is_add_part);
+    TablePtr dropTableByNameImpl(
+        Context & context,
+        const String & database_name,
+        const String & table_name,
+        bool drop_regions);
+    TablePtr dropTableByIdImpl(Context & context, TableID table_id, bool drop_regions);
+    TablePtr dropTableInternal(Context & context, const TablePtr & table, bool drop_regions);
     TablePtr getTableByNameInternal(const String & database_name, const String & table_name);
     TablePtr getTableByID(TableID table_id);
 

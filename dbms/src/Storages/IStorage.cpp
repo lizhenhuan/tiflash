@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Storages/IStorage.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,6 +16,10 @@
 
 #include <Storages/IStorage.h>
 
+namespace CurrentMetrics
+{
+extern const Metric NumIStorage;
+} // namespace CurrentMetrics
 
 namespace DB
 {
@@ -24,15 +30,27 @@ extern const int DEADLOCK_AVOIDED;
 extern const int TABLE_IS_DROPPED;
 } // namespace ErrorCodes
 
+IStorage::IStorage()
+    : holder_counter(CurrentMetrics::NumIStorage, 1)
+{}
+
+IStorage::IStorage(ColumnsDescription columns_)
+    : ITableDeclaration(std::move(columns_))
+    , holder_counter(CurrentMetrics::NumIStorage, 1)
+{}
 
 RWLock::LockHolder IStorage::tryLockTimed(
-    const RWLockPtr & rwlock, RWLock::Type type, const String & query_id, const std::chrono::milliseconds & acquire_timeout) const
+    const RWLockPtr & rwlock,
+    RWLock::Type type,
+    const String & query_id,
+    const std::chrono::milliseconds & acquire_timeout) const
 {
     auto lock_holder = rwlock->getLock(type, query_id, acquire_timeout);
     if (!lock_holder)
     {
         const String type_str = type == RWLock::Type::Read ? "READ" : "WRITE";
-        throw Exception(type_str + " locking attempt on \"" + getTableName() + "\" has timed out! ("
+        throw Exception(
+            type_str + " locking attempt on \"" + getTableName() + "\" has timed out! ("
                 + std::to_string(acquire_timeout.count())
                 + "ms) "
                   "Possible deadlock avoided. Client should retry.",
@@ -61,7 +79,9 @@ TableLockHolder IStorage::lockForAlter(const String & query_id, const std::chron
     return result;
 }
 
-TableStructureLockHolder IStorage::lockStructureForShare(const String & query_id, const std::chrono::milliseconds & acquire_timeout)
+TableStructureLockHolder IStorage::lockStructureForShare(
+    const String & query_id,
+    const std::chrono::milliseconds & acquire_timeout)
 {
     TableStructureLockHolder result;
     result.alter_lock = tryLockTimed(alter_lock, RWLock::Read, query_id, acquire_timeout);
@@ -74,7 +94,9 @@ TableStructureLockHolder IStorage::lockStructureForShare(const String & query_id
     return result;
 }
 
-TableExclusiveLockHolder IStorage::lockExclusively(const String & query_id, const std::chrono::milliseconds & acquire_timeout)
+TableExclusiveLockHolder IStorage::lockExclusively(
+    const String & query_id,
+    const std::chrono::milliseconds & acquire_timeout)
 {
     TableExclusiveLockHolder result;
     result.alter_lock = tryLockTimed(alter_lock, RWLock::Write, query_id, acquire_timeout);

@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/libs/libcommon/include/ext/size.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,10 +21,17 @@
 
 namespace ext
 {
-    /** \brief Returns number of elements in an automatic array. */
-    template <typename T, std::size_t N>
-    constexpr std::size_t size(const T (&)[N]) noexcept { return N; }
-
-    /** \brief Returns number of in a container providing size() member function. */
-    template <typename T> constexpr auto size(const T & t) { return t.size(); }
+/** \brief Returns number of elements in an automatic array. */
+template <typename T, std::size_t N>
+constexpr std::size_t size(const T (&)[N]) noexcept
+{
+    return N;
 }
+
+/** \brief Returns number of in a container providing size() member function. */
+template <typename T>
+constexpr auto size(const T & t)
+{
+    return t.size();
+}
+} // namespace ext

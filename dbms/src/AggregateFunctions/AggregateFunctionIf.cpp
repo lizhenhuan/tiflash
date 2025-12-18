@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/AggregateFunctions/AggregateFunctionIf.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -26,17 +28,20 @@ extern const int NUMBER_OF_ARGUMENTS_DOESNT_MATCH;
 class AggregateFunctionCombinatorIf final : public IAggregateFunctionCombinator
 {
 public:
-    String getName() const override { return "If"; };
+    String getName() const override { return "If"; }
 
     DataTypes transformArguments(const DataTypes & arguments) const override
     {
         if (arguments.empty())
-            throw Exception("Incorrect number of arguments for aggregate function with " + getName() + " suffix",
-                            ErrorCodes::NUMBER_OF_ARGUMENTS_DOESNT_MATCH);
+            throw Exception(
+                "Incorrect number of arguments for aggregate function with " + getName() + " suffix",
+                ErrorCodes::NUMBER_OF_ARGUMENTS_DOESNT_MATCH);
 
         if (!typeid_cast<const DataTypeUInt8 *>(arguments.back().get()))
-            throw Exception("Illegal type " + arguments.back()->getName() + " of last argument for aggregate function with " + getName() + " suffix",
-                            ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT);
+            throw Exception(
+                "Illegal type " + arguments.back()->getName() + " of last argument for aggregate function with "
+                    + getName() + " suffix",
+                ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT);
 
         return DataTypes(arguments.begin(), std::prev(arguments.end()));
     }

@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/AggregateFunctions/AggregateFunctionCount.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,7 +18,7 @@
 
 #include <AggregateFunctions/IAggregateFunction.h>
 #include <Columns/ColumnNullable.h>
-#include <Columns/ColumnsCommon.h>
+#include <Columns/countBytesInFilter.h>
 #include <DataTypes/DataTypesNumber.h>
 #include <IO/VarInt.h>
 #include <IO/WriteHelpers.h>
@@ -29,6 +31,8 @@ namespace DB
 struct AggregateFunctionCountData
 {
     UInt64 count = 0;
+
+    inline void reset() noexcept { count = 0; }
 };
 
 namespace ErrorCodes
@@ -39,22 +43,28 @@ extern const int NUMBER_OF_ARGUMENTS_DOESNT_MATCH;
 
 
 /// Simply count number of calls.
-class AggregateFunctionCount final : public IAggregateFunctionDataHelper<AggregateFunctionCountData, AggregateFunctionCount>
+class AggregateFunctionCount final
+    : public IAggregateFunctionDataHelper<AggregateFunctionCountData, AggregateFunctionCount>
 {
 public:
     String getName() const override { return "count"; }
 
-    DataTypePtr getReturnType() const override
-    {
-        return std::make_shared<DataTypeUInt64>();
-    }
+    DataTypePtr getReturnType() const override { return std::make_shared<DataTypeUInt64>(); }
 
     void add(AggregateDataPtr __restrict place, const IColumn **, size_t, Arena *) const override
     {
         ++data(place).count;
     }
 
+    void decrease(AggregateDataPtr __restrict place, const IColumn **, size_t, Arena *) const override
+    {
+        --data(place).count;
+    }
+
+    void reset(AggregateDataPtr __restrict place) const override { data(place).reset(); }
+
     void addBatchSinglePlace(
+        size_t start_offset,
         size_t batch_size,
         AggregateDataPtr place,
         const IColumn ** columns,
@@ -64,7 +74,7 @@ public:
         if (if_argument_pos >= 0)
         {
             const auto & flags = assert_cast<const ColumnUInt8 &>(*columns[if_argument_pos]).getData();
-            data(place).count += countBytesInFilter(flags);
+            data(place).count += countBytesInFilter(flags, start_offset, batch_size);
         }
         else
         {
@@ -73,6 +83,7 @@ public:
     }
 
     void addBatchSinglePlaceNotNull(
+        size_t start_offset,
         size_t batch_size,
         AggregateDataPtr place,
         const IColumn ** columns,
@@ -83,11 +94,11 @@ public:
         if (if_argument_pos >= 0)
         {
             const auto & flags = assert_cast<const ColumnUInt8 &>(*columns[if_argument_pos]).getData();
-            data(place).count += countBytesInFilterWithNull(flags, null_map);
+            data(place).count += countBytesInFilterWithNull(flags, null_map, start_offset, batch_size);
         }
         else
         {
-            data(place).count += batch_size - countBytesInFilter(null_map, batch_size);
+            data(place).count += batch_size - countBytesInFilter(null_map, start_offset, batch_size);
         }
     }
 
@@ -111,21 +122,25 @@ public:
         static_cast<ColumnUInt64 &>(to).getData().push_back(data(place).count);
     }
 
-    /// May be used for optimization.
-    void addDelta(AggregateDataPtr __restrict place, UInt64 x) const
+    void batchInsertSameResultInto(ConstAggregateDataPtr __restrict place, IColumn & to, size_t num) const override
     {
-        data(place).count += x;
+        auto & container = static_cast<ColumnUInt64 &>(to).getData();
+        container.resize_fill(container.size() + num, data(place).count);
     }
+
+    /// May be used for optimization.
+    static void addDelta(AggregateDataPtr __restrict place, UInt64 x) { data(place).count += x; }
 
     const char * getHeaderFilePath() const override { return __FILE__; }
 };
 
 
 /// Simply count number of not-NULL values.
-class AggregateFunctionCountNotNullUnary final : public IAggregateFunctionDataHelper<AggregateFunctionCountData, AggregateFunctionCountNotNullUnary>
+class AggregateFunctionCountNotNullUnary final
+    : public IAggregateFunctionDataHelper<AggregateFunctionCountData, AggregateFunctionCountNotNullUnary>
 {
 public:
-    AggregateFunctionCountNotNullUnary(const DataTypePtr & argument)
+    explicit AggregateFunctionCountNotNullUnary(const DataTypePtr & argument)
     {
         if (!argument->isNullable())
             throw Exception(
@@ -133,17 +148,54 @@ public:
                 ErrorCodes::LOGICAL_ERROR);
     }
 
+    void addBatchSinglePlace(
+        size_t start_offset,
+        size_t batch_size,
+        AggregateDataPtr place,
+        const IColumn ** columns,
+        Arena * arena,
+        ssize_t if_argument_pos) const override
+    {
+        const auto & nc = assert_cast<const ColumnNullable &>(*columns[0]);
+        const UInt8 * null_map = nc.getNullMapData().data();
+        addBatchSinglePlaceNotNull(start_offset, batch_size, place, columns, null_map, arena, if_argument_pos);
+    }
+
+    void addBatchSinglePlaceNotNull(
+        size_t start_offset,
+        size_t batch_size,
+        AggregateDataPtr place,
+        const IColumn ** columns,
+        const UInt8 * null_map,
+        Arena *,
+        ssize_t if_argument_pos) const override
+    {
+        if (if_argument_pos >= 0)
+        {
+            const auto & flags = assert_cast<const ColumnUInt8 &>(*columns[if_argument_pos]).getData();
+            data(place).count += countBytesInFilterWithNull(flags, null_map, start_offset, batch_size);
+        }
+        else
+        {
+            data(place).count += batch_size - countBytesInFilter(null_map, start_offset, batch_size);
+        }
+    }
+
     String getName() const override { return "count"; }
 
-    DataTypePtr getReturnType() const override
-    {
-        return std::make_shared<DataTypeUInt64>();
-    }
+    DataTypePtr getReturnType() const override { return std::make_shared<DataTypeUInt64>(); }
 
     void add(AggregateDataPtr __restrict place, const IColumn ** columns, size_t row_num, Arena *) const override
     {
         data(place).count += !static_cast<const ColumnNullable &>(*columns[0]).isNullAt(row_num);
     }
+
+    void decrease(AggregateDataPtr __restrict place, const IColumn ** columns, size_t row_num, Arena *) const override
+    {
+        data(place).count -= !static_cast<const ColumnNullable &>(*columns[0]).isNullAt(row_num);
+    }
+
+    void reset(AggregateDataPtr __restrict place) const override { data(place).reset(); }
 
     void merge(AggregateDataPtr __restrict place, ConstAggregateDataPtr rhs, Arena *) const override
     {
@@ -165,24 +217,34 @@ public:
         static_cast<ColumnUInt64 &>(to).getData().push_back(data(place).count);
     }
 
+    void batchInsertSameResultInto(ConstAggregateDataPtr __restrict place, IColumn & to, size_t num) const override
+    {
+        auto & container = static_cast<ColumnUInt64 &>(to).getData();
+        container.resize_fill(container.size() + num, data(place).count);
+    }
+
     const char * getHeaderFilePath() const override { return __FILE__; }
 };
 
 
 /// Count number of calls where all arguments are not NULL.
-class AggregateFunctionCountNotNullVariadic final : public IAggregateFunctionDataHelper<AggregateFunctionCountData, AggregateFunctionCountNotNullVariadic>
+class AggregateFunctionCountNotNullVariadic final
+    : public IAggregateFunctionDataHelper<AggregateFunctionCountData, AggregateFunctionCountNotNullVariadic>
 {
 public:
-    AggregateFunctionCountNotNullVariadic(const DataTypes & arguments)
+    explicit AggregateFunctionCountNotNullVariadic(const DataTypes & arguments)
     {
         number_of_arguments = arguments.size();
 
         if (number_of_arguments == 1)
-            throw Exception("Logical error: single argument is passed to AggregateFunctionCountNotNullVariadic", ErrorCodes::LOGICAL_ERROR);
+            throw Exception(
+                "Logical error: single argument is passed to AggregateFunctionCountNotNullVariadic",
+                ErrorCodes::LOGICAL_ERROR);
 
         if (number_of_arguments > MAX_ARGS)
             throw Exception(
-                "Maximum number of arguments for aggregate function with Nullable types is " + toString(size_t(MAX_ARGS)),
+                "Maximum number of arguments for aggregate function with Nullable types is "
+                    + toString(static_cast<size_t>(MAX_ARGS)),
                 ErrorCodes::NUMBER_OF_ARGUMENTS_DOESNT_MATCH);
 
         for (size_t i = 0; i < number_of_arguments; ++i)
@@ -191,10 +253,7 @@ public:
 
     String getName() const override { return "count"; }
 
-    DataTypePtr getReturnType() const override
-    {
-        return std::make_shared<DataTypeUInt64>();
-    }
+    DataTypePtr getReturnType() const override { return std::make_shared<DataTypeUInt64>(); }
 
     void add(AggregateDataPtr __restrict place, const IColumn ** columns, size_t row_num, Arena *) const override
     {
@@ -205,6 +264,18 @@ public:
         ++data(place).count;
     }
 
+    void decrease(AggregateDataPtr __restrict place, const IColumn ** columns, size_t row_num, Arena *) const override
+    {
+        for (size_t i = 0; i < number_of_arguments; ++i)
+            if (is_nullable[i] && static_cast<const ColumnNullable &>(*columns[i]).isNullAt(row_num))
+                return;
+
+        --data(place).count;
+        assert(data(place).count >= 0);
+    }
+
+    void reset(AggregateDataPtr __restrict place) const override { data(place).reset(); }
+
     void merge(AggregateDataPtr __restrict place, ConstAggregateDataPtr rhs, Arena *) const override
     {
         data(place).count += data(rhs).count;
@@ -225,6 +296,12 @@ public:
         static_cast<ColumnUInt64 &>(to).getData().push_back(data(place).count);
     }
 
+    void batchInsertSameResultInto(ConstAggregateDataPtr __restrict place, IColumn & to, size_t num) const override
+    {
+        auto & container = static_cast<ColumnUInt64 &>(to).getData();
+        container.resize_fill(container.size() + num, data(place).count);
+    }
+
     const char * getHeaderFilePath() const override { return __FILE__; }
 
 private:
@@ -233,7 +310,7 @@ private:
         MAX_ARGS = 8
     };
     size_t number_of_arguments = 0;
-    std::array<char, MAX_ARGS> is_nullable; /// Plain array is better than std::vector due to one indirection less.
+    std::array<char, MAX_ARGS> is_nullable{}; /// Plain array is better than std::vector due to one indirection less.
 };
 
 } // namespace DB

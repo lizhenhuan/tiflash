@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,8 +13,8 @@
 // limitations under the License.
 
 #include <Flash/Coprocessor/DAGCodec.h>
-#include <Storages/Transaction/DatumCodec.h>
-#include <Storages/Transaction/TiKVRecordFormat.h>
+#include <Storages/KVStore/TiKVHelpers/TiKVRecordFormat.h>
+#include <TiDB/Decode/DatumCodec.h>
 
 namespace DB
 {
@@ -51,6 +51,11 @@ void encodeDAGBytes(const String & bytes, WriteBuffer & ss)
 void encodeDAGDecimal(const Field & field, WriteBuffer & ss)
 {
     EncodeDecimal(field, ss);
+}
+
+void encodeDAGVectorFloat32(const Array & v, WriteBuffer & ss)
+{
+    EncodeVectorFloat32(v, ss);
 }
 
 Int64 decodeDAGInt64(const String & s)
@@ -91,6 +96,12 @@ Field decodeDAGDecimal(const String & s)
 {
     size_t cursor = 0;
     return DecodeDecimal(cursor, s);
+}
+
+Field decodeDAGVectorFloat32(const String & s)
+{
+    size_t cursor = 0;
+    return DecodeVectorFloat32(cursor, s);
 }
 
 } // namespace DB

@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/libs/libcommon/include/ext/unlock_guard.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,15 +23,13 @@ template <typename T>
 class unlock_guard
 {
 public:
-    unlock_guard(T & mutex_) : mutex(mutex_)
+    unlock_guard(T & mutex_)
+        : mutex(mutex_)
     {
         mutex.unlock();
     }
 
-    ~unlock_guard()
-    {
-        mutex.lock();
-    }
+    ~unlock_guard() { mutex.lock(); }
 
     unlock_guard(const unlock_guard &) = delete;
     unlock_guard & operator=(const unlock_guard &) = delete;
@@ -38,4 +38,4 @@ private:
     T & mutex;
 };
 
-}
+} // namespace ext

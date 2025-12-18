@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/AggregateFunctions/AggregateFunctionForEach.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,9 +20,9 @@
 #include <Columns/ColumnArray.h>
 #include <Common/typeid_cast.h>
 #include <DataTypes/DataTypeArray.h>
-#include <IO/ReadBuffer.h>
+#include <IO/Buffer/ReadBuffer.h>
+#include <IO/Buffer/WriteBuffer.h>
 #include <IO/ReadHelpers.h>
-#include <IO/WriteBuffer.h>
 #include <IO/WriteHelpers.h>
 
 
@@ -55,14 +57,18 @@ struct AggregateFunctionForEachData
   *
   * TODO Allow variable number of arguments.
   */
-class AggregateFunctionForEach final : public IAggregateFunctionDataHelper<AggregateFunctionForEachData, AggregateFunctionForEach>
+class AggregateFunctionForEach final
+    : public IAggregateFunctionDataHelper<AggregateFunctionForEachData, AggregateFunctionForEach>
 {
 private:
     AggregateFunctionPtr nested_func;
     size_t nested_size_of_data = 0;
     size_t num_arguments;
 
-    AggregateFunctionForEachData & ensureAggregateData(AggregateDataPtr __restrict place, size_t new_size, Arena & arena) const
+    AggregateFunctionForEachData & ensureAggregateData(
+        AggregateDataPtr __restrict place,
+        size_t new_size,
+        Arena & arena) const
     {
         AggregateFunctionForEachData & state = data(place);
 
@@ -115,22 +121,20 @@ public:
         nested_size_of_data = nested_func->sizeOfData();
 
         if (arguments.empty())
-            throw Exception("Aggregate function " + getName() + " require at least one argument", ErrorCodes::NUMBER_OF_ARGUMENTS_DOESNT_MATCH);
+            throw Exception(
+                "Aggregate function " + getName() + " require at least one argument",
+                ErrorCodes::NUMBER_OF_ARGUMENTS_DOESNT_MATCH);
 
         for (const auto & type : arguments)
             if (!typeid_cast<const DataTypeArray *>(type.get()))
-                throw Exception("All arguments for aggregate function " + getName() + " must be arrays", ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT);
+                throw Exception(
+                    "All arguments for aggregate function " + getName() + " must be arrays",
+                    ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT);
     }
 
-    String getName() const override
-    {
-        return nested_func->getName() + "ForEach";
-    }
+    String getName() const override { return nested_func->getName() + "ForEach"; }
 
-    DataTypePtr getReturnType() const override
-    {
-        return std::make_shared<DataTypeArray>(nested_func->getReturnType());
-    }
+    DataTypePtr getReturnType() const override { return std::make_shared<DataTypeArray>(nested_func->getReturnType()); }
 
     void destroy(AggregateDataPtr __restrict place) const noexcept override
     {
@@ -144,10 +148,7 @@ public:
         }
     }
 
-    bool hasTrivialDestructor() const override
-    {
-        return nested_func->hasTrivialDestructor();
-    }
+    bool hasTrivialDestructor() const override { return nested_func->hasTrivialDestructor(); }
 
     void add(AggregateDataPtr __restrict place, const IColumn ** columns, size_t row_num, Arena * arena) const override
     {
@@ -156,7 +157,7 @@ public:
         for (size_t i = 0; i < num_arguments; ++i)
             nested[i] = &static_cast<const ColumnArray &>(*columns[i]).getData();
 
-        const ColumnArray & first_array_column = static_cast<const ColumnArray &>(*columns[0]);
+        const auto & first_array_column = static_cast<const ColumnArray &>(*columns[0]);
         const IColumn::Offsets & offsets = first_array_column.getOffsets();
 
         size_t begin = row_num == 0 ? 0 : offsets[row_num - 1];
@@ -165,11 +166,13 @@ public:
         /// Sanity check. NOTE We can implement specialization for a case with single argument, if the check will hurt performance.
         for (size_t i = 1; i < num_arguments; ++i)
         {
-            const ColumnArray & ith_column = static_cast<const ColumnArray &>(*columns[i]);
+            const auto & ith_column = static_cast<const ColumnArray &>(*columns[i]);
             const IColumn::Offsets & ith_offsets = ith_column.getOffsets();
 
             if (ith_offsets[row_num] != end || (row_num != 0 && ith_offsets[row_num - 1] != begin))
-                throw Exception("Arrays passed to " + getName() + " aggregate function have different sizes", ErrorCodes::SIZES_OF_ARRAYS_DOESNT_MATCH);
+                throw Exception(
+                    "Arrays passed to " + getName() + " aggregate function have different sizes",
+                    ErrorCodes::SIZES_OF_ARRAYS_DOESNT_MATCH);
         }
 
         AggregateFunctionForEachData & state = ensureAggregateData(place, end - begin, *arena);
@@ -233,7 +236,7 @@ public:
     {
         const AggregateFunctionForEachData & state = data(place);
 
-        ColumnArray & arr_to = static_cast<ColumnArray &>(to);
+        auto & arr_to = static_cast<ColumnArray &>(to);
         ColumnArray::Offsets & offsets_to = arr_to.getOffsets();
         IColumn & elems_to = arr_to.getData();
 
@@ -244,13 +247,11 @@ public:
             nested_state += nested_size_of_data;
         }
 
-        offsets_to.push_back(offsets_to.empty() ? state.dynamic_array_size : offsets_to.back() + state.dynamic_array_size);
+        offsets_to.push_back(
+            offsets_to.empty() ? state.dynamic_array_size : offsets_to.back() + state.dynamic_array_size);
     }
 
-    bool allocatesMemoryInArena() const override
-    {
-        return true;
-    }
+    bool allocatesMemoryInArena() const override { return true; }
 
     const char * getHeaderFilePath() const override { return __FILE__; }
 };

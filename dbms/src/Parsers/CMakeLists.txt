@@ -1,4 +1,6 @@
-# Copyright 2022 PingCAP, Ltd.
+# Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Parsers/CMakeLists.txt
+#
+# Copyright 2023 PingCAP, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,11 +15,7 @@
 # limitations under the License.
 
 include(${TiFlash_SOURCE_DIR}/cmake/dbms_glob_sources.cmake)
-add_headers_and_sources(clickhouse_parsers .)
-add_library(clickhouse_parsers ${SPLIT_SHARED} ${clickhouse_parsers_headers} ${clickhouse_parsers_sources})
-target_link_libraries (clickhouse_parsers clickhouse_common_io)
-target_include_directories (clickhouse_parsers PUBLIC ${DBMS_INCLUDE_DIR})
-
-if (ENABLE_TESTS)
-    add_subdirectory (tests EXCLUDE_FROM_ALL)
-endif ()
+add_headers_and_sources(tiflash_parsers .)
+add_library(tiflash_parsers ${SPLIT_SHARED} ${tiflash_parsers_headers} ${tiflash_parsers_sources})
+target_link_libraries (tiflash_parsers tiflash_common_io)
+target_include_directories (tiflash_parsers PUBLIC ${DBMS_INCLUDE_DIR})

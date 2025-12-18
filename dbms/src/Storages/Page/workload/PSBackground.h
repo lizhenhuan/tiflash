@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,6 +18,11 @@
 #include <Poco/Timer.h>
 #include <Storages/Page/workload/PSStressEnv.h>
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-parameter"
+#include <Poco/JSON/Object.h>
+#pragma GCC diagnostic pop
+
 namespace CurrentMetrics
 {
 extern const Metric PSMVCCSnapshotsList;
@@ -28,13 +33,14 @@ namespace DB::PS::tests
 class PSMetricsDumper
 {
 public:
-    explicit PSMetricsDumper(size_t status_interval_)
+    explicit PSMetricsDumper(size_t status_interval_, const LoggerPtr & log)
         : status_interval(status_interval_)
+        , logger(log)
     {
 #define REGISTER_METRICS(metric, desc) \
     metrics.insert(metrics.end(), std::pair<CurrentMetrics::Metric, MetricInfo>(metric, {desc}));
-        REGISTER_METRICS(CurrentMetrics::MemoryTracking, "Memory");
-        REGISTER_METRICS(CurrentMetrics::PSMVCCSnapshotsList, "SnapshotsList");
+        REGISTER_METRICS(CurrentMetrics::MemoryTracking, "memory");
+        REGISTER_METRICS(CurrentMetrics::PSMVCCSnapshotsList, "snapshots");
 
 #undef REGISTER_METRICS
         timer_status.setStartInterval(1000);
@@ -43,20 +49,11 @@ public:
 
     void onTime(Poco::Timer & timer);
 
-    String toString() const
-    {
-        String str;
-        for (const auto & metric : metrics)
-        {
-            if (likely(metric.second.loop_times != 0))
-            {
-                str += (metric.second.toString() + "\n");
-            }
-        }
-        return str;
-    }
+    void addJSONSummaryTo(Poco::JSON::Object::Ptr & root) const;
 
     void start();
+
+    void stop() { timer_status.stop(); }
 
     UInt32 getMemoryPeak() const
     {
@@ -73,7 +70,7 @@ private:
     {
         String name;
         UInt32 loop_times = 0;
-        UInt32 lastest = 0;
+        UInt32 latest = 0;
         UInt32 biggest = 0;
         UInt32 summary = 0;
 
@@ -82,7 +79,7 @@ private:
             return fmt::format(
                 "{} lastest used: {}, avg used: {}, top used: {}.",
                 name,
-                lastest,
+                latest,
                 loop_times == 0 ? 0 : (summary / loop_times),
                 biggest);
         }
@@ -91,6 +88,8 @@ private:
     std::map<CurrentMetrics::Metric, MetricInfo> metrics;
 
     Poco::Timer timer_status;
+
+    LoggerPtr logger;
 };
 using PSMetricsDumperPtr = std::shared_ptr<PSMetricsDumper>;
 
@@ -99,12 +98,12 @@ class PSGc
     PSPtr ps;
 
 public:
-    explicit PSGc(const PSPtr & ps_)
+    explicit PSGc(const PSPtr & ps_, uint64_t interval)
         : ps(ps_)
     {
         assert(ps != nullptr);
         gc_timer.setStartInterval(1000);
-        gc_timer.setPeriodicInterval(30 * 1000);
+        gc_timer.setPeriodicInterval(interval * 1000);
     }
 
     void doGcOnce();
@@ -113,10 +112,9 @@ public:
 
     void start();
 
-    UInt64 getElapsedMilliseconds()
-    {
-        return gc_stop_watch.elapsedMilliseconds();
-    }
+    void stop() { gc_timer.stop(); }
+
+    UInt64 getElapsedMilliseconds() { return gc_stop_watch.elapsedMilliseconds(); }
 
 private:
     Poco::Timer gc_timer;
@@ -124,13 +122,14 @@ private:
 };
 using PSGcPtr = std::shared_ptr<PSGc>;
 
-class PSScanner
+class PSSnapStatGetter
 {
     PSPtr ps;
 
 public:
-    explicit PSScanner(const PSPtr & ps_)
+    PSSnapStatGetter(const PSPtr & ps_, const LoggerPtr & log)
         : ps(ps_)
+        , logger(log)
     {
         assert(ps != nullptr);
 
@@ -142,26 +141,32 @@ public:
 
     void start();
 
+    void stop() { scanner_timer.stop(); }
+
 private:
     Poco::Timer scanner_timer;
+    LoggerPtr logger;
 };
-using PSScannerPtr = std::shared_ptr<PSScanner>;
+using PSSnapStatGetterPtr = std::shared_ptr<PSSnapStatGetter>;
 
 class StressTimeout
 {
 public:
-    explicit StressTimeout(size_t timeout_s)
+    StressTimeout(size_t timeout_s, const LoggerPtr & log)
+        : logger(log)
     {
         StressEnvStatus::getInstance().setStat(STATUS_LOOP);
-        LOG_INFO(StressEnv::logger, fmt::format("Timeout: {}s", timeout_s));
+        LOG_INFO(logger, "Timeout: {}s", timeout_s);
         timeout_timer.setStartInterval(timeout_s * 1000);
     }
 
     void onTime(Poco::Timer & timer);
     void start();
+    void stop() { timeout_timer.stop(); }
 
 private:
     Poco::Timer timeout_timer;
+    LoggerPtr logger;
 };
 using StressTimeoutPtr = std::shared_ptr<StressTimeout>;
 } // namespace DB::PS::tests

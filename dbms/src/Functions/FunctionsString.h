@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Functions/FunctionsString.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -65,7 +67,7 @@ template <bool>
 UInt8 xor_or_identity(const UInt8 c, const int mask)
 {
     return c ^ mask;
-};
+}
 template <>
 inline UInt8 xor_or_identity<false>(const UInt8 c, const int)
 {
@@ -120,16 +122,18 @@ inline void UTF8CyrillicToCase(const UInt8 *& src, UInt8 *& dst)
   *  the length of its multibyte sequence in UTF-8 does not change.
   * Otherwise, the behavior is undefined.
   */
-template <char not_case_lower_bound,
-          char not_case_upper_bound,
-          int to_case(int),
-          void cyrillic_to_case(const UInt8 *&, UInt8 *&)>
+template <
+    char not_case_lower_bound,
+    char not_case_upper_bound,
+    int to_case(int),
+    void cyrillic_to_case(const UInt8 *&, UInt8 *&)>
 struct LowerUpperUTF8Impl
 {
-    static void vector(const ColumnString::Chars_t & data,
-                       const ColumnString::Offsets & offsets,
-                       ColumnString::Chars_t & res_data,
-                       ColumnString::Offsets & res_offsets);
+    static void vector(
+        const ColumnString::Chars_t & data,
+        const ColumnString::Offsets & offsets,
+        ColumnString::Chars_t & res_data,
+        ColumnString::Offsets & res_offsets);
 
     static void vectorFixed(const ColumnString::Chars_t & data, size_t n, ColumnString::Chars_t & res_data);
 
@@ -154,25 +158,13 @@ class FunctionStringToString : public IFunction
 {
 public:
     static constexpr auto name = Name::name;
-    static FunctionPtr create(const Context &)
-    {
-        return std::make_shared<FunctionStringToString>();
-    }
+    static FunctionPtr create(const Context &) { return std::make_shared<FunctionStringToString>(); }
 
-    String getName() const override
-    {
-        return name;
-    }
+    String getName() const override { return name; }
 
-    size_t getNumberOfArguments() const override
-    {
-        return 1;
-    }
+    size_t getNumberOfArguments() const override { return 1; }
 
-    bool isInjective(const Block &) const override
-    {
-        return is_injective;
-    }
+    bool isInjective(const Block &) const override { return is_injective; }
 
     DataTypePtr getReturnTypeImpl(const DataTypes & arguments) const override
     {
@@ -189,13 +181,13 @@ public:
     void executeImpl(Block & block, const ColumnNumbers & arguments, size_t result) const override
     {
         const ColumnPtr column = block.getByPosition(arguments[0]).column;
-        if (const ColumnString * col = checkAndGetColumn<ColumnString>(column.get()))
+        if (const auto * col = checkAndGetColumn<ColumnString>(column.get()))
         {
             auto col_res = ColumnString::create();
             Impl::vector(col->getChars(), col->getOffsets(), col_res->getChars(), col_res->getOffsets());
             block.getByPosition(result).column = std::move(col_res);
         }
-        else if (const ColumnFixedString * col = checkAndGetColumn<ColumnFixedString>(column.get()))
+        else if (const auto * col = checkAndGetColumn<ColumnFixedString>(column.get()))
         {
             auto col_res = ColumnFixedString::create(col->getN());
             Impl::vectorFixed(col->getChars(), col->getN(), col_res->getChars());
@@ -203,42 +195,37 @@ public:
         }
         else
             throw Exception(
-                fmt::format("Illegal column {} of argument of function {}", block.getByPosition(arguments[0]).column->getName(), getName()),
+                fmt::format(
+                    "Illegal column {} of argument of function {}",
+                    block.getByPosition(arguments[0]).column->getName(),
+                    getName()),
                 ErrorCodes::ILLEGAL_COLUMN);
     }
 };
 
-template <char not_case_lower_bound,
-          char not_case_upper_bound,
-          int to_case(int)>
+template <char not_case_lower_bound, char not_case_upper_bound, int to_case(int)>
 struct TiDBLowerUpperUTF8Impl
 {
-    static void vector(const ColumnString::Chars_t & data,
-                       const ColumnString::Offsets & offsets,
-                       ColumnString::Chars_t & res_data,
-                       ColumnString::Offsets & res_offsets);
+    static void vector(
+        const ColumnString::Chars_t & data,
+        const ColumnString::Offsets & offsets,
+        ColumnString::Chars_t & res_data,
+        ColumnString::Offsets & res_offsets);
 
     static void vectorFixed(const ColumnString::Chars_t & data, size_t n, ColumnString::Chars_t & res_data);
-
-    static void constant(const std::string & data, std::string & res_data);
-
-    /** Converts a single code point starting at `src` to desired case, storing result starting at `dst`.
-     *    `src` and `dst` are incremented by corresponding sequence lengths. */
-    static void toCase(const UInt8 *& src, const UInt8 * src_end, UInt8 *& dst);
 
 private:
     static constexpr auto ascii_upper_bound = '\x7f';
     static constexpr auto flip_case_mask = 'A' ^ 'a';
-
-    static void array(const UInt8 * src, const UInt8 * src_end, UInt8 * dst);
 };
 
 struct TiDBLowerUpperBinaryImpl
 {
-    static void vector(const ColumnString::Chars_t &,
-                       const ColumnString::Offsets &,
-                       ColumnString::Chars_t &,
-                       ColumnString::Offsets &)
+    static void vector(
+        const ColumnString::Chars_t &,
+        const ColumnString::Offsets &,
+        ColumnString::Chars_t &,
+        ColumnString::Offsets &)
     {
         throw Exception("the TiDB function of lower or upper for binary should do nothing.");
     }
@@ -254,25 +241,13 @@ class FunctionStringToString<TiDBLowerUpperBinaryImpl, Name, is_injective> : pub
 {
 public:
     static constexpr auto name = Name::name;
-    static FunctionPtr create(const Context &)
-    {
-        return std::make_shared<FunctionStringToString>();
-    }
+    static FunctionPtr create(const Context &) { return std::make_shared<FunctionStringToString>(); }
 
-    String getName() const override
-    {
-        return name;
-    }
+    String getName() const override { return name; }
 
-    size_t getNumberOfArguments() const override
-    {
-        return 1;
-    }
+    size_t getNumberOfArguments() const override { return 1; }
 
-    bool isInjective(const Block &) const override
-    {
-        return is_injective;
-    }
+    bool isInjective(const Block &) const override { return is_injective; }
 
     DataTypePtr getReturnTypeImpl(const DataTypes & arguments) const override
     {
@@ -295,7 +270,10 @@ public:
         }
         else
             throw Exception(
-                fmt::format("Illegal column {} of argument of function {}", block.getByPosition(arguments[0]).column->getName(), getName()),
+                fmt::format(
+                    "Illegal column {} of argument of function {}",
+                    block.getByPosition(arguments[0]).column->getName(),
+                    getName()),
                 ErrorCodes::ILLEGAL_COLUMN);
     }
 };

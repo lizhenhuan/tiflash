@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/libs/libpocoext/src/LevelFilterChannel.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -49,11 +51,13 @@
 
 
 #include "Poco/Ext/LevelFilterChannel.h"
+
 #include "Poco/LoggingRegistry.h"
 #include "Poco/String.h"
 
 
-namespace Poco {
+namespace Poco
+{
 
 
 LevelFilterChannel::~LevelFilterChannel()
@@ -63,7 +67,7 @@ LevelFilterChannel::~LevelFilterChannel()
 }
 
 
-void LevelFilterChannel::setChannel(Channel* channel)
+void LevelFilterChannel::setChannel(Channel * channel)
 {
     if (_channel)
         _channel->release();
@@ -73,7 +77,7 @@ void LevelFilterChannel::setChannel(Channel* channel)
 }
 
 
-Channel* LevelFilterChannel::getChannel() const
+Channel * LevelFilterChannel::getChannel() const
 {
     return _channel;
 }
@@ -98,7 +102,7 @@ void LevelFilterChannel::setLevel(Message::Priority priority)
 }
 
 
-void LevelFilterChannel::setLevel(const std::string& value)
+void LevelFilterChannel::setLevel(const std::string & value)
 {
     if (icompare(value, "fatal") == 0)
         setLevel(Message::PRIO_FATAL);
@@ -127,7 +131,7 @@ Message::Priority LevelFilterChannel::getLevel() const
 }
 
 
-void LevelFilterChannel::setProperty(const std::string& name, const std::string& value)
+void LevelFilterChannel::setProperty(const std::string & name, const std::string & value)
 {
     if (icompare(name, "level") == 0)
         setLevel(value);
@@ -138,11 +142,11 @@ void LevelFilterChannel::setProperty(const std::string& name, const std::string&
 }
 
 
-void LevelFilterChannel::log(const Message& msg)
+void LevelFilterChannel::log(const Message & msg)
 {
     if ((_priority >= msg.getPriority()) && _channel)
         _channel->log(msg);
 }
 
 
-}
+} // namespace Poco

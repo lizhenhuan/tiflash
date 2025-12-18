@@ -1,4 +1,6 @@
-# Copyright 2022 PingCAP, Ltd.
+# Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/cmake/find_rt.cmake
+#
+# Copyright 2023 PingCAP, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-if (APPLE)
+if (OS_DARWIN)
     # lib from libs/libcommon
     set (RT_LIBRARY "apple_rt")
 else ()
@@ -22,7 +24,7 @@ endif ()
 message(STATUS "Using rt: ${RT_LIBRARY}")
 
 function (target_link_rt_by_force TARGET)
-    if (NOT APPLE)
+    if (NOT OS_DARWIN)
         set (FLAGS "-Wl,-no-as-needed -lrt -Wl,-as-needed")
         set_property (TARGET ${TARGET} APPEND PROPERTY LINK_FLAGS "${FLAGS}")
     endif ()

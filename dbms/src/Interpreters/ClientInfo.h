@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Interpreters/ClientInfo.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -36,15 +38,7 @@ public:
     enum class Interface : UInt8
     {
         TCP = 1,
-        HTTP = 2,
-        GRPC = 3,
-    };
-
-    enum class HTTPMethod : UInt8
-    {
-        UNKNOWN = 0,
-        GET = 1,
-        POST = 2,
+        GRPC = 2,
     };
 
     enum class QueryKind : UInt8
@@ -79,11 +73,7 @@ public:
     String client_name;
     UInt64 client_version_major = 0;
     UInt64 client_version_minor = 0;
-    unsigned client_revision = 0;
-
-    /// For http
-    HTTPMethod http_method = HTTPMethod::UNKNOWN;
-    String http_user_agent;
+    UInt64 client_version_patch = 0;
 
     /// Common
     String quota_key;
@@ -92,10 +82,9 @@ public:
 
     /** Serialization and deserialization.
       * Only values that are not calculated automatically or passed separately are serialized.
-      * Revisions are passed to use format that server will understand or client was used.
       */
-    void write(WriteBuffer & out, const UInt64 server_protocol_revision) const;
-    void read(ReadBuffer & in, const UInt64 client_protocol_revision);
+    void write(WriteBuffer & out) const;
+    void read(ReadBuffer & in);
 
     void fillOSUserHostNameAndVersionInfo();
 };

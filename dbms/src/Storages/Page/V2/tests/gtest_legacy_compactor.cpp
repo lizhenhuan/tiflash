@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,7 +13,8 @@
 // limitations under the License.
 
 #include <Common/CurrentMetrics.h>
-#include <IO/ReadBufferFromMemory.h>
+#include <IO/Buffer/ReadBufferFromMemory.h>
+#include <Interpreters/Context.h>
 #include <Poco/AutoPtr.h>
 #include <Poco/ConsoleChannel.h>
 #include <Poco/File.h>
@@ -21,22 +22,22 @@
 #include <Poco/Logger.h>
 #include <Poco/PatternFormatter.h>
 #include <Storages/Page/Page.h>
-#include <Storages/Page/PageDefines.h>
+#include <Storages/Page/V2/PageDefines.h>
 #include <Storages/Page/V2/PageFile.h>
 #include <Storages/Page/V2/gc/LegacyCompactor.h>
 #include <Storages/Page/V2/gc/restoreFromCheckpoints.h>
-#include <Storages/Page/WriteBatch.h>
+#include <Storages/Page/WriteBatchImpl.h>
 #include <Storages/PathPool.h>
 #include <TestUtils/TiFlashTestBasic.h>
 #include <common/logger_useful.h>
 
 namespace DB::PS::V2::tests
 {
-TEST(LegacyCompactor_test, WriteMultipleBatchRead)
+TEST(LegacyCompactorTest, WriteMultipleBatchRead)
 try
 {
-    PageStorage::Config config;
-    Poco::Logger * log = &Poco::Logger::get("LegacyCompactor_test");
+    PageStorageConfig config;
+    auto log = Logger::get("LegacyCompactor_test");
 
     PageEntriesVersionSetWithDelta original_version("test", config.version_set_config, log);
 
@@ -72,16 +73,16 @@ try
     // Restore a new version set with snapshot WriteBatch
     WriteBatch::SequenceID seq_write = 0x1234;
     {
-        auto snapshot = original_version.getSnapshot();
+        auto snapshot = original_version.getSnapshot("", nullptr);
         WriteBatch wb = LegacyCompactor::prepareCheckpointWriteBatch(snapshot, seq_write);
         EXPECT_EQ(wb.getSequence(), seq_write);
 
         PageEntriesEdit edit;
 
         auto writes = wb.getWrites();
-        for (auto w : writes)
+        for (const auto & w : writes)
         {
-            if (w.type == WriteBatch::WriteType::UPSERT)
+            if (w.type == WriteBatchWriteType::UPSERT)
             {
                 auto entry = snapshot->version()->findNormalPageEntry(w.page_id);
                 if (entry)
@@ -89,7 +90,7 @@ try
                 else
                     FAIL() << "Cannot find specified page";
             }
-            else if (w.type == WriteBatch::WriteType::REF)
+            else if (w.type == WriteBatchWriteType::REF)
                 edit.ref(w.page_id, w.ori_page_id);
             else
                 FAIL() << "Snapshot writes should only contain UPSERT and REF";
@@ -100,10 +101,10 @@ try
 
     // Compare the two versions above
     {
-        auto original_snapshot = original_version.getSnapshot();
-        auto original = original_snapshot->version();
-        auto restored_snapshot = version_restored_with_snapshot.getSnapshot();
-        auto restored = restored_snapshot->version();
+        auto original_snapshot = original_version.getSnapshot("", nullptr);
+        const auto * original = original_snapshot->version();
+        auto restored_snapshot = version_restored_with_snapshot.getSnapshot("", nullptr);
+        const auto * restored = restored_snapshot->version();
 
         auto original_normal_page_ids = original->validNormalPageIds();
         auto restored_normal_page_ids = restored->validNormalPageIds();
@@ -166,14 +167,16 @@ try
 CATCH
 
 // TODO: enable this test
-TEST(LegacyCompactor_test, DISABLED_CompactAndRestore)
+TEST(LegacyCompactorTest, DISABLED_CompactAndRestore)
 try
 {
     auto ctx = DB::tests::TiFlashTestEnv::getContext();
-    const FileProviderPtr file_provider = ctx.getFileProvider();
-    StoragePathPool spool = ctx.getPathPool().withTable("test", "t", false);
+    const FileProviderPtr file_provider = ctx->getFileProvider();
+    StoragePathPool spool = ctx->getPathPool().withTable("test", "t", false);
     auto delegator = spool.getPSDiskDelegatorSingle("meta");
-    PageStorage storage("compact_test", delegator, PageStorage::Config{}, file_provider);
+    auto bkg_pool
+        = std::make_shared<DB::BackgroundProcessingPool>(4, "bg-page-", std::make_shared<JointThreadInfoJeallocMap>());
+    PageStorage storage("compact_test", delegator, PageStorageConfig{}, file_provider, *bkg_pool);
 
     PageStorage::ListPageFilesOption opt;
     opt.ignore_checkpoint = false;
@@ -188,14 +191,18 @@ try
     ASSERT_EQ(page_files_compacted.size(), 4UL);
 
     // TODO:
-    PageFile page_file
-        = PageFile::openPageFileForRead(7, 0, delegator->defaultPath(), file_provider, PageFile::Type::Checkpoint, storage.page_file_log);
+    PageFile page_file = PageFile::openPageFileForRead(
+        7,
+        0,
+        delegator->defaultPath(),
+        file_provider,
+        PageFile::Type::Checkpoint,
+        storage.page_file_log);
     ASSERT_TRUE(page_file.isExist());
 
     PageStorage::MetaMergingQueue mergine_queue;
     {
-        if (auto reader = PageFile::MetaMergingReader::createFrom(page_file, ctx.getReadLimiter());
-            reader->hasNext())
+        if (auto reader = PageFile::MetaMergingReader::createFrom(page_file, ctx->getReadLimiter()); reader->hasNext())
         {
             reader->moveNext();
             mergine_queue.push(std::move(reader));
@@ -211,8 +218,8 @@ try
     (void)page_files_to_remove;
 
     {
-        auto s0 = compactor.version_set.getSnapshot();
-        auto s1 = vset_restored.getSnapshot();
+        auto s0 = compactor.version_set.getSnapshot("", nullptr);
+        auto s1 = vset_restored.getSnapshot("", nullptr);
         ASSERT_EQ(s0->version()->numPages(), s1->version()->numPages());
         ASSERT_EQ(s0->version()->numNormalPages(), s1->version()->numNormalPages());
 
@@ -234,7 +241,7 @@ try
             num_pages += 1;
         }
 
-        LOG_FMT_INFO(storage.log, "All {} are consist.", num_pages);
+        LOG_INFO(storage.log, "All {} are consist.", num_pages);
     }
 }
 CATCH

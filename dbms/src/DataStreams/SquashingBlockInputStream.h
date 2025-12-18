@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/DataStreams/SquashingBlockInputStream.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,7 +16,7 @@
 
 #pragma once
 
-#include <DataStreams/IProfilingBlockInputStream.h>
+#include <DataStreams/IBlockInputStream.h>
 #include <DataStreams/SquashingTransform.h>
 
 
@@ -22,7 +24,7 @@ namespace DB
 {
 /** Merging consecutive blocks of stream to specified minimum size.
   */
-class SquashingBlockInputStream : public IProfilingBlockInputStream
+class SquashingBlockInputStream : public IBlockInputStream
 {
     static constexpr auto NAME = "Squashing";
 
@@ -37,8 +39,7 @@ public:
 
     Block getHeader() const override { return children.at(0)->getHeader(); }
 
-protected:
-    Block readImpl() override;
+    Block read() override;
 
 private:
     const LoggerPtr log;

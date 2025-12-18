@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/DataStreams/SquashingTransform.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,9 +23,13 @@ namespace DB
 SquashingTransform::SquashingTransform(size_t min_block_size_rows, size_t min_block_size_bytes, const String & req_id)
     : min_block_size_rows(min_block_size_rows)
     , min_block_size_bytes(min_block_size_bytes)
-    , log(Logger::get("SquashingTransform", req_id))
+    , log(Logger::get(req_id))
 {
-    LOG_FMT_DEBUG(log, "Squashing config - min_block_size_rows: {} min_block_size_bytes: {}", min_block_size_rows, min_block_size_bytes);
+    LOG_TRACE(
+        log,
+        "Squashing config - min_block_size_rows: {} min_block_size_bytes: {}",
+        min_block_size_rows,
+        min_block_size_bytes);
 }
 
 
@@ -38,7 +44,7 @@ SquashingTransform::Result SquashingTransform::add(Block && block)
     /// Just read block is alredy enough.
     if (isEnoughSize(block_rows, block_bytes))
     {
-        LOG_FMT_DEBUG(log, "Block size enough - rows: {} bytes: {}", block_rows, block_bytes);
+        LOG_DEBUG(log, "Block size enough - rows: {} bytes: {}", block_rows, block_bytes);
         /// If no accumulated data, return just read block.
         if (!accumulated_block)
             return Result(std::move(block));
@@ -54,7 +60,11 @@ SquashingTransform::Result SquashingTransform::add(Block && block)
     /// Accumulated block is already enough.
     if (accumulated_block && isEnoughSize(accumulated_block_rows, accumulated_block_bytes))
     {
-        LOG_FMT_DEBUG(log, "Accumulated block size enough - rows: {} bytes: {}", accumulated_block_rows, accumulated_block_bytes);
+        LOG_DEBUG(
+            log,
+            "Accumulated block size enough - rows: {} bytes: {}",
+            accumulated_block_rows,
+            accumulated_block_bytes);
         /// Return accumulated data and place new block to accumulated data.
         accumulated_block.swap(block);
         return Result(std::move(block));
@@ -67,7 +77,11 @@ SquashingTransform::Result SquashingTransform::add(Block && block)
 
     if (isEnoughSize(accumulated_block_rows, accumulated_block_bytes))
     {
-        LOG_FMT_DEBUG(log, "Combined block size enough - rows: {} bytes: {}", accumulated_block_rows, accumulated_block_bytes);
+        LOG_DEBUG(
+            log,
+            "Combined block size enough - rows: {} bytes: {}",
+            accumulated_block_rows,
+            accumulated_block_bytes);
         Block res;
         res.swap(accumulated_block);
         return Result(std::move(res));
@@ -100,8 +114,7 @@ void SquashingTransform::append(Block && block)
 
 bool SquashingTransform::isEnoughSize(size_t rows, size_t bytes) const
 {
-    return (!min_block_size_rows && !min_block_size_bytes)
-        || (min_block_size_rows && rows >= min_block_size_rows)
+    return (!min_block_size_rows && !min_block_size_bytes) || (min_block_size_rows && rows >= min_block_size_rows)
         || (min_block_size_bytes && bytes >= min_block_size_bytes);
 }
 

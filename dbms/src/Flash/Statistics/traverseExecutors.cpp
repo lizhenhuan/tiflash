@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,6 +14,7 @@
 
 #include <Common/TiFlashException.h>
 #include <Flash/Statistics/traverseExecutors.h>
+#include <tipb/executor.pb.h>
 
 namespace DB
 {
@@ -41,11 +42,19 @@ Children getChildren(const tipb::Executor & executor)
         return Children{&executor.topn().child()};
     case tipb::ExecType::TypeLimit:
         return Children{&executor.limit().child()};
+    case tipb::ExecType::TypeExpand:
+        return Children{&executor.expand().child()};
+    case tipb::ExecType::TypeExpand2:
+        return Children{&executor.expand2().child()};
     case tipb::ExecType::TypeProjection:
         return Children{&executor.projection().child()};
     case tipb::ExecType::TypeExchangeSender:
         return Children{&executor.exchange_sender().child()};
     case tipb::ExecType::TypeExchangeReceiver:
+        return {};
+    case tipb::ExecType::TypeCTESink:
+        return Children{&executor.cte_sink().child()};
+    case tipb::ExecType::TypeCTESource:
         return {};
     case tipb::ExecType::TypeKill:
         throw TiFlashException("Kill executor is not supported", Errors::Coprocessor::Unimplemented);

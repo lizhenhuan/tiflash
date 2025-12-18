@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Storages/System/StorageSystemTables.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,6 +16,7 @@
 
 #include <Columns/ColumnString.h>
 #include <Columns/ColumnsNumber.h>
+#include <Columns/VirtualColumnUtils.h>
 #include <Common/typeid_cast.h>
 #include <DataStreams/OneBlockInputStream.h>
 #include <DataTypes/DataTypeDateTime.h>
@@ -25,12 +28,11 @@
 #include <Parsers/ASTCreateQuery.h>
 #include <Parsers/queryToString.h>
 #include <Storages/IManageableStorage.h>
+#include <Storages/KVStore/Types.h>
 #include <Storages/MutableSupport.h>
 #include <Storages/System/StorageSystemTables.h>
-#include <Storages/Transaction/TiDB.h>
-#include <Storages/Transaction/Types.h>
-#include <Storages/VirtualColumnUtils.h>
 #include <TiDB/Schema/SchemaNameMapper.h>
+#include <TiDB/Schema/TiDB.h>
 
 namespace DB
 {
@@ -148,9 +150,10 @@ StorageSystemTables::StorageSystemTables(const std::string & name_)
         {"metadata_path", std::make_shared<DataTypeString>()},
     }));
 
-    virtual_columns = {{std::make_shared<DataTypeDateTime>(), "metadata_modification_time"},
-                       {std::make_shared<DataTypeString>(), "create_table_query"},
-                       {std::make_shared<DataTypeString>(), "engine_full"}};
+    virtual_columns
+        = {{std::make_shared<DataTypeDateTime>(), "metadata_modification_time"},
+           {std::make_shared<DataTypeString>(), "create_table_query"},
+           {std::make_shared<DataTypeString>(), "engine_full"}};
 }
 
 
@@ -166,12 +169,13 @@ static ColumnPtr getFilteredDatabases(const ASTPtr & query, const Context & cont
 }
 
 
-BlockInputStreams StorageSystemTables::read(const Names & column_names,
-                                            const SelectQueryInfo & query_info,
-                                            const Context & context,
-                                            QueryProcessingStage::Enum & processed_stage,
-                                            const size_t /*max_block_size*/,
-                                            const unsigned /*num_streams*/)
+BlockInputStreams StorageSystemTables::read(
+    const Names & column_names,
+    const SelectQueryInfo & query_info,
+    const Context & context,
+    QueryProcessingStage::Enum & processed_stage,
+    const size_t /*max_block_size*/,
+    const unsigned /*num_streams*/)
 {
     processed_stage = QueryProcessingStage::FetchColumns;
 
@@ -181,8 +185,9 @@ BlockInputStreams StorageSystemTables::read(const Names & column_names,
     bool has_engine_full = false;
 
     VirtualColumnsProcessor virtual_columns_processor(virtual_columns);
-    real_column_names
-        = virtual_columns_processor.process(column_names, {&has_metadata_modification_time, &has_create_table_query, &has_engine_full});
+    real_column_names = virtual_columns_processor.process(
+        column_names,
+        {&has_metadata_modification_time, &has_create_table_query, &has_engine_full});
     check(real_column_names);
 
     Block res_block = getSampleBlock();
@@ -222,7 +227,7 @@ BlockInputStreams StorageSystemTables::read(const Names & column_names,
             String tidb_table_name;
             TableID table_id = -1;
             Timestamp tombstone = 0;
-            if (engine_name == MutableSupport::txn_storage_name || engine_name == MutableSupport::delta_tree_storage_name)
+            if (engine_name == MutSup::delta_tree_storage_name)
             {
                 auto managed_storage = std::dynamic_pointer_cast<IManageableStorage>(iterator->table());
                 if (managed_storage)
@@ -238,15 +243,16 @@ BlockInputStreams StorageSystemTables::read(const Names & column_names,
 
             res_columns[j++]->insert(tidb_database_name);
             res_columns[j++]->insert(tidb_table_name);
-            res_columns[j++]->insert(Int64(table_id));
-            res_columns[j++]->insert(UInt64(tombstone));
+            res_columns[j++]->insert(static_cast<Int64>(table_id));
+            res_columns[j++]->insert(static_cast<UInt64>(tombstone));
 
-            res_columns[j++]->insert(UInt64(0));
+            res_columns[j++]->insert(static_cast<UInt64>(0));
             res_columns[j++]->insert(iterator->table()->getDataPath());
             res_columns[j++]->insert(database->getTableMetadataPath(table_name));
 
             if (has_metadata_modification_time)
-                res_columns[j++]->insert(static_cast<UInt64>(database->getTableMetadataModificationTime(context, table_name)));
+                res_columns[j++]->insert(
+                    static_cast<UInt64>(database->getTableMetadataModificationTime(context, table_name)));
 
             if (has_create_table_query || has_engine_full)
             {
@@ -275,31 +281,6 @@ BlockInputStreams StorageSystemTables::read(const Names & column_names,
                     res_columns[j++]->insert(engine_full);
                 }
             }
-        }
-    }
-
-    if (context.hasSessionContext())
-    {
-        Tables external_tables = context.getSessionContext().getExternalTables();
-
-        for (const auto & table : external_tables)
-        {
-            size_t j = 0;
-            res_columns[j++]->insertDefault();
-            res_columns[j++]->insert(table.first);
-            res_columns[j++]->insert(table.second->getName());
-            res_columns[j++]->insert(UInt64(1));
-            res_columns[j++]->insertDefault();
-            res_columns[j++]->insertDefault();
-
-            if (has_metadata_modification_time)
-                res_columns[j++]->insertDefault();
-
-            if (has_create_table_query)
-                res_columns[j++]->insertDefault();
-
-            if (has_engine_full)
-                res_columns[j++]->insert(table.second->getName());
         }
     }
 

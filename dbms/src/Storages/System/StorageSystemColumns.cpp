@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Storages/System/StorageSystemColumns.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,6 +17,7 @@
 #include <Columns/ColumnString.h>
 #include <Columns/ColumnsNumber.h>
 #include <Columns/IColumn.h>
+#include <Columns/VirtualColumnUtils.h>
 #include <DataStreams/OneBlockInputStream.h>
 #include <DataTypes/DataTypeString.h>
 #include <DataTypes/DataTypesNumber.h>
@@ -23,7 +26,6 @@
 #include <Parsers/queryToString.h>
 #include <Storages/ColumnDefault.h>
 #include <Storages/System/StorageSystemColumns.h>
-#include <Storages/VirtualColumnUtils.h>
 
 
 namespace DB
@@ -50,12 +52,13 @@ StorageSystemColumns::StorageSystemColumns(const std::string & name_)
 }
 
 
-BlockInputStreams StorageSystemColumns::read(const Names & column_names,
-                                             const SelectQueryInfo & query_info,
-                                             const Context & context,
-                                             QueryProcessingStage::Enum & processed_stage,
-                                             const size_t /*max_block_size*/,
-                                             const unsigned /*num_streams*/)
+BlockInputStreams StorageSystemColumns::read(
+    const Names & column_names,
+    const SelectQueryInfo & query_info,
+    const Context & context,
+    QueryProcessingStage::Enum & processed_stage,
+    const size_t /*max_block_size*/,
+    const unsigned /*num_streams*/)
 {
     check(column_names);
     processed_stage = QueryProcessingStage::FetchColumns;
@@ -71,7 +74,8 @@ BlockInputStreams StorageSystemColumns::read(const Names & column_names,
         MutableColumnPtr database_column_mut = ColumnString::create();
         for (const auto & database : databases)
             database_column_mut->insert(database.first);
-        block_to_filter.insert(ColumnWithTypeAndName(std::move(database_column_mut), std::make_shared<DataTypeString>(), "database"));
+        block_to_filter.insert(
+            ColumnWithTypeAndName(std::move(database_column_mut), std::make_shared<DataTypeString>(), "database"));
 
         /// Filter block with `database` column.
         VirtualColumnUtils::filterBlockWithQuery(query_info.query, block_to_filter, context);
@@ -109,7 +113,8 @@ BlockInputStreams StorageSystemColumns::read(const Names & column_names,
             column = column->replicate(offsets);
         }
 
-        block_to_filter.insert(ColumnWithTypeAndName(std::move(table_column_mut), std::make_shared<DataTypeString>(), "table"));
+        block_to_filter.insert(
+            ColumnWithTypeAndName(std::move(table_column_mut), std::make_shared<DataTypeString>(), "table"));
     }
 
     /// Filter block with `database` and `table` columns.
@@ -189,7 +194,9 @@ BlockInputStreams StorageSystemColumns::read(const Names & column_names,
         }
     }
 
-    return BlockInputStreams(1, std::make_shared<OneBlockInputStream>(getSampleBlock().cloneWithColumns(std::move(res_columns))));
+    return BlockInputStreams(
+        1,
+        std::make_shared<OneBlockInputStream>(getSampleBlock().cloneWithColumns(std::move(res_columns))));
 }
 
 } // namespace DB

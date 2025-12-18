@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Parsers/ParserRenameQuery.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -22,10 +24,7 @@
 namespace DB
 {
 /// Parse database.table or table.
-static bool parseDatabaseAndTable(
-    ASTRenameQuery::Table & db_and_table,
-    IParser::Pos & pos,
-    Expected & expected)
+static bool parseDatabaseAndTable(ASTRenameQuery::Table & db_and_table, IParser::Pos & pos, Expected & expected)
 {
     ParserIdentifier name_p;
     ParserToken s_dot(TokenType::Dot);
@@ -68,8 +67,7 @@ bool ParserRenameQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
 
         elements.push_back(ASTRenameQuery::Element());
 
-        if (!parseDatabaseAndTable(elements.back().from, pos, expected)
-            || !s_to.ignore(pos)
+        if (!parseDatabaseAndTable(elements.back().from, pos, expected) || !s_to.ignore(pos)
             || !parseDatabaseAndTable(elements.back().to, pos, expected))
             return false;
     }

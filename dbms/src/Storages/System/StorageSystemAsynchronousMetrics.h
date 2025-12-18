@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Storages/System/StorageSystemAsynchronousMetrics.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -27,7 +29,8 @@ class Context;
 
 /** Implements system table asynchronous_metrics, which allows to get values of periodically (asynchronously) updated metrics.
   */
-class StorageSystemAsynchronousMetrics : public ext::SharedPtrHelper<StorageSystemAsynchronousMetrics>
+class StorageSystemAsynchronousMetrics
+    : public ext::SharedPtrHelper<StorageSystemAsynchronousMetrics>
     , public IStorage
 {
 public:

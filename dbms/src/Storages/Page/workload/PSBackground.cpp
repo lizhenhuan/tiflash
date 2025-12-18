@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,22 +18,40 @@
 #include <Storages/Page/workload/PSBackground.h>
 #include <fmt/format.h>
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-parameter"
+#include <Poco/JSON/Object.h>
+#pragma GCC diagnostic pop
 
 namespace DB::PS::tests
 {
+void PSMetricsDumper::addJSONSummaryTo(Poco::JSON::Object::Ptr & root) const
+{
+    for (const auto & m : metrics)
+    {
+        Poco::JSON::Object::Ptr metrics_obj = new Poco::JSON::Object();
+        metrics_obj->set("latest", m.second.latest);
+        double avg = m.second.loop_times == 0 ? 0.0 : (1.0 * m.second.summary / m.second.loop_times);
+        metrics_obj->set("avg", avg);
+        metrics_obj->set("top", m.second.biggest);
+
+        root->set(m.second.name, metrics_obj);
+    }
+}
+
 void PSMetricsDumper::onTime(Poco::Timer & /*timer*/)
 {
     for (auto & metric : metrics)
     {
-        auto lastest = CurrentMetrics::get(metric.first);
-        if (likely(lastest != 0))
+        auto latest = CurrentMetrics::get(metric.first);
+        if (likely(latest != 0))
         {
             auto & info = metric.second;
             info.loop_times++;
-            info.lastest = lastest;
-            info.summary += lastest;
-            info.biggest = std::max(info.biggest, lastest);
-            LOG_INFO(StressEnv::logger, info.toString());
+            info.latest = latest;
+            info.summary += latest;
+            info.biggest = std::max(info.biggest, latest);
+            LOG_INFO(logger, info.toString());
         }
     }
 }
@@ -71,14 +89,14 @@ void PSGc::start()
     gc_timer.start(Poco::TimerCallback<PSGc>(*this, &PSGc::onTime));
 }
 
-void PSScanner::onTime(Poco::Timer & /*timer*/)
+void PSSnapStatGetter::onTime(Poco::Timer & /*timer*/)
 {
     try
     {
-        LOG_FMT_INFO(StressEnv::logger, "Scanner start");
+        LOG_INFO(logger, "Scanner start");
         auto stat = ps->getSnapshotsStat();
-        LOG_FMT_INFO(
-            StressEnv::logger,
+        LOG_INFO(
+            logger,
             "Scanner get {} snapshots, longest lifetime: {:.3f}s longest from thread: {}, tracing_id: {}",
             stat.num_snapshots,
             stat.longest_living_seconds,
@@ -94,15 +112,15 @@ void PSScanner::onTime(Poco::Timer & /*timer*/)
     }
 }
 
-void PSScanner::start()
+void PSSnapStatGetter::start()
 {
-    scanner_timer.start(Poco::TimerCallback<PSScanner>(*this, &PSScanner::onTime));
+    scanner_timer.start(Poco::TimerCallback<PSSnapStatGetter>(*this, &PSSnapStatGetter::onTime));
 }
 
 // NOLINTNEXTLINE(readability-convert-member-functions-to-static)
 void StressTimeout::onTime(Poco::Timer & /* t */)
 {
-    LOG_INFO(StressEnv::logger, "timeout.");
+    LOG_INFO(logger, "timeout.");
     StressEnvStatus::getInstance().setStat(STATUS_TIMEOUT);
 }
 

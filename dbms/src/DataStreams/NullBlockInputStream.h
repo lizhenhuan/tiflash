@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/DataStreams/NullBlockInputStream.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -25,7 +27,9 @@ namespace DB
 class NullBlockInputStream : public IBlockInputStream
 {
 public:
-    NullBlockInputStream(const Block & header) : header(header) {}
+    explicit NullBlockInputStream(const Block & header)
+        : header(header)
+    {}
 
     Block read() override { return {}; }
     Block getHeader() const override { return header; }
@@ -35,4 +39,4 @@ private:
     Block header;
 };
 
-}
+} // namespace DB

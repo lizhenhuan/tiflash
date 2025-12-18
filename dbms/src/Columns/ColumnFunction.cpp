@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Columns/ColumnFunction.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,7 +15,8 @@
 // limitations under the License.
 
 #include <Columns/ColumnFunction.h>
-#include <Columns/ColumnsCommon.h>
+#include <Columns/countBytesInFilter.h>
+#include <Columns/filterColumn.h>
 #include <Functions/IFunction.h>
 #include <Interpreters/ExpressionActions.h>
 #include <fmt/format.h>
@@ -25,10 +28,7 @@ namespace ErrorCodes
 extern const int LOGICAL_ERROR;
 }
 
-ColumnFunction::ColumnFunction(
-    size_t size,
-    FunctionBasePtr function,
-    const ColumnsWithTypeAndName & columns_to_capture)
+ColumnFunction::ColumnFunction(size_t size, FunctionBasePtr function, const ColumnsWithTypeAndName & columns_to_capture)
     : column_size(size)
     , function(function)
 {
@@ -44,18 +44,21 @@ MutableColumnPtr ColumnFunction::cloneResized(size_t size) const
     return ColumnFunction::create(size, function, capture);
 }
 
-ColumnPtr ColumnFunction::replicate(const Offsets & offsets) const
+ColumnPtr ColumnFunction::replicateRange(size_t start_row, size_t end_row, const IColumn::Offsets & offsets) const
 {
     if (column_size != offsets.size())
         throw Exception(
             fmt::format("Size of offsets ({}) doesn't match size of column ({})", offsets.size(), column_size),
             ErrorCodes::SIZES_OF_COLUMNS_DOESNT_MATCH);
 
+    assert(start_row < end_row);
+    assert(end_row <= column_size);
+
     ColumnsWithTypeAndName capture = captured_columns;
     for (auto & column : capture)
-        column.column = column.column->replicate(offsets);
+        column.column = column.column->replicateRange(start_row, end_row, offsets);
 
-    size_t replicated_size = 0 == column_size ? 0 : offsets.back();
+    size_t replicated_size = 0 == column_size ? 0 : (offsets[end_row - 1]);
     return ColumnFunction::create(replicated_size, function, capture);
 }
 
@@ -68,20 +71,20 @@ ColumnPtr ColumnFunction::cut(size_t start, size_t length) const
     return ColumnFunction::create(length, function, capture);
 }
 
-ColumnPtr ColumnFunction::filter(const Filter & filt, ssize_t result_size_hint) const
+ColumnPtr ColumnFunction::filter(const Filter & filter, ssize_t result_size_hint) const
 {
-    if (column_size != filt.size())
+    if (column_size != filter.size())
         throw Exception(
-            fmt::format("Size of filter ({}) doesn't match size of column ({})", filt.size(), column_size),
+            fmt::format("Size of filter ({}) doesn't match size of column ({})", filter.size(), column_size),
             ErrorCodes::SIZES_OF_COLUMNS_DOESNT_MATCH);
 
     ColumnsWithTypeAndName capture = captured_columns;
     for (auto & column : capture)
-        column.column = column.column->filter(filt, result_size_hint);
+        column.column = column.column->filter(filter, result_size_hint);
 
     size_t filtered_size = 0;
     if (capture.empty())
-        filtered_size = countBytesInFilter(filt);
+        filtered_size = countBytesInFilter(filter);
     else
         filtered_size = capture.front().column->size();
 
@@ -139,6 +142,24 @@ std::vector<MutableColumnPtr> ColumnFunction::scatter(
     }
 
     return columns;
+}
+
+std::vector<MutableColumnPtr> ColumnFunction::scatter(
+    IColumn::ColumnIndex,
+    const IColumn::Selector &,
+    const BlockSelective &) const
+{
+    throw TiFlashException("ColumnFunction does not support scatter", Errors::Coprocessor::Unimplemented);
+}
+
+void ColumnFunction::scatterTo(ScatterColumns &, const Selector &) const
+{
+    throw TiFlashException("ColumnFunction does not support scatterTo", Errors::Coprocessor::Unimplemented);
+}
+
+void ColumnFunction::scatterTo(ScatterColumns &, const Selector &, const BlockSelective &) const
+{
+    throw TiFlashException("ColumnFunction does not support scatterTo", Errors::Coprocessor::Unimplemented);
 }
 
 void ColumnFunction::insertDefault()

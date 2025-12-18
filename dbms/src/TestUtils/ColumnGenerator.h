@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -25,6 +25,7 @@ namespace DB::tests
 enum DataDistribution
 {
     RANDOM,
+    FIXED,
     // TODO support zipf and more distribution.
 };
 
@@ -33,7 +34,15 @@ struct ColumnGeneratorOpts
     size_t size;
     String type_name;
     DataDistribution distribution;
+    String name = ""; // NOLINT
     size_t string_max_size = 128;
+    // - `array_elems_distribution == RANDOM` generate array with random num of elems
+    //    the range for num of elems is [0, array_elems_max_size)
+    // - `array_elems_distribution == FIXED` generate array with fixed num of elems
+    //    the num of elems == array_elems_max_size
+    DataDistribution array_elems_distribution = DataDistribution::RANDOM;
+    size_t array_elems_max_size = 10;
+    bool gen_bool = false;
 };
 
 class ColumnGenerator : public ext::Singleton<ColumnGenerator>
@@ -42,27 +51,25 @@ public:
     ColumnWithTypeAndName generate(const ColumnGeneratorOpts & opts);
 
 private:
+    ColumnWithTypeAndName generateNullMapColumn(const ColumnGeneratorOpts & opts);
     std::mt19937_64 rand_gen;
-    std::uniform_int_distribution<Int64> int_rand_gen = std::uniform_int_distribution<Int64>(0, 128);
     std::uniform_real_distribution<double> real_rand_gen;
-    const std::string charset{"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz!@#$%^&*()、｜【】[]{}「」；：:;'‘,<《.>》。？·～`~"};
-
-    String randomString();
-    int randomTimeOffset();
-    time_t randomUTCTimestamp();
-    struct tm randomLocalTime();
-    String randomDate();
-    String randomDateTime();
-    String randomDecimal(uint64_t prec, uint64_t scale);
 
     DataTypePtr createDecimalType();
 
+    template <bool two_value = true>
+    void genBool(MutableColumnPtr & col);
+    template <typename IntegerType>
     void genInt(MutableColumnPtr & col);
+    template <typename IntegerType>
     void genUInt(MutableColumnPtr & col);
     void genFloat(MutableColumnPtr & col);
-    void genString(MutableColumnPtr & col);
-    void genDate(MutableColumnPtr & col);
-    void genDateTime(MutableColumnPtr & col);
+    static void genString(MutableColumnPtr & col, UInt64 max_size);
+    static void genDate(MutableColumnPtr & col);
+    static void genDateTime(MutableColumnPtr & col);
+    static void genDuration(MutableColumnPtr & col);
     void genDecimal(MutableColumnPtr & col, DataTypePtr & data_type);
+    void genEnumValue(MutableColumnPtr & col, DataTypePtr & enum_type);
+    void genVector(MutableColumnPtr & col, DataTypePtr & nested_type, size_t num_vals);
 };
 } // namespace DB::tests

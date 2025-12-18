@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/IO/VarInt.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,8 +17,8 @@
 #pragma once
 
 #include <Core/Types.h>
-#include <IO/ReadBuffer.h>
-#include <IO/WriteBuffer.h>
+#include <IO/Buffer/ReadBuffer.h>
+#include <IO/Buffer/WriteBuffer.h>
 
 #include <iostream>
 
@@ -153,8 +155,7 @@ inline void readVarInt(Int16 & x, ReadBuffer & istr)
 }
 
 template <typename T>
-inline std::enable_if_t<!std::is_same_v<T, UInt64>, void>
-readVarUInt(T & x, ReadBuffer & istr)
+inline std::enable_if_t<!std::is_same_v<T, UInt64>, void> readVarUInt(T & x, ReadBuffer & istr)
 {
     UInt64 tmp;
     readVarUInt(tmp, istr);

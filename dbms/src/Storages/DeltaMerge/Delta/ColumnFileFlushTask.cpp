@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,18 +14,23 @@
 
 #include <Common/SyncPoint/SyncPoint.h>
 #include <Common/TiFlashMetrics.h>
+#include <Interpreters/Context.h>
 #include <Storages/DeltaMerge/ColumnFile/ColumnFileInMemory.h>
 #include <Storages/DeltaMerge/ColumnFile/ColumnFileTiny.h>
 #include <Storages/DeltaMerge/DMContext.h>
 #include <Storages/DeltaMerge/Delta/ColumnFileFlushTask.h>
 #include <Storages/DeltaMerge/Delta/ColumnFilePersistedSet.h>
 #include <Storages/DeltaMerge/Delta/MemTableSet.h>
+#include <Storages/DeltaMerge/WriteBatchesImpl.h>
 
 namespace DB
 {
 namespace DM
 {
-ColumnFileFlushTask::ColumnFileFlushTask(DMContext & context_, const MemTableSetPtr & mem_table_set_, size_t flush_version_)
+ColumnFileFlushTask::ColumnFileFlushTask(
+    DMContext & context_,
+    const MemTableSetPtr & mem_table_set_,
+    size_t flush_version_)
     : context{context_}
     , mem_table_set{mem_table_set_}
     , flush_version{flush_version_}
@@ -40,10 +45,17 @@ DeltaIndex::Updates ColumnFileFlushTask::prepare(WriteBatches & wbs)
         if (!task.block_data)
             continue;
 
-        IColumn::Permutation perm;
-        task.sorted = sortBlockByPk(getExtraHandleColumnDefine(context.is_common_handle), task.block_data, perm);
-        if (task.sorted)
-            delta_index_updates.emplace_back(task.deletes_offset, task.rows_offset, perm);
+        // Data sorting alters the sequence of data, requiring updates to the VersionChain,
+        // like `cloneWithUpdates` of DeltaIndex, yet it provides no benefit for VersionChain's data scanning.
+        // Meanwhile, the DeltaIndex inherently supports unordered delta data, such as unflushed or compacted data.
+        // Therefore, only perform data sorting when the VersionChain is disabled.
+        if (!context.isVersionChainEnabled())
+        {
+            IColumn::Permutation perm;
+            task.sorted = sortBlockByPk(getExtraHandleColumnDefine(context.is_common_handle), task.block_data, perm);
+            if (task.sorted)
+                delta_index_updates.emplace_back(task.deletes_offset, task.rows_offset, perm);
+        }
 
         task.data_page = ColumnFileTiny::writeColumnFileData(context, task.block_data, 0, task.block_data.rows(), wbs);
     }
@@ -66,10 +78,12 @@ bool ColumnFileFlushTask::commit(ColumnFilePersistedSetPtr & persisted_file_set,
         ColumnFilePersistedPtr new_column_file;
         if (auto * m_file = task.column_file->tryToInMemoryFile(); m_file)
         {
-            new_column_file = std::make_shared<ColumnFileTiny>(m_file->getSchema(),
-                                                               m_file->getRows(),
-                                                               m_file->getBytes(),
-                                                               task.data_page);
+            new_column_file = std::make_shared<ColumnFileTiny>(
+                m_file->getSchema(),
+                m_file->getRows(),
+                m_file->getBytes(),
+                task.data_page,
+                context);
         }
         else if (auto * t_file = task.column_file->tryToTinyFile(); t_file)
         {
@@ -91,7 +105,7 @@ bool ColumnFileFlushTask::commit(ColumnFilePersistedSetPtr & persisted_file_set,
     }
 
     // serialize metadata and update persisted_file_set
-    if (!persisted_file_set->appendPersistedColumnFilesToLevel0(new_column_files, wbs))
+    if (!persisted_file_set->appendPersistedColumnFiles(new_column_files, wbs))
         return false;
 
     mem_table_set->removeColumnFilesInFlushTask(*this);

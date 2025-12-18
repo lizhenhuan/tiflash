@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,9 +14,9 @@
 
 #pragma once
 
-#include <Common/Exception.h>
 #include <Core/Types.h>
-#include <IO/WriteHelpers.h>
+
+#include <span>
 
 namespace DB
 {
@@ -29,6 +29,7 @@ using Version = UInt32;
 
 inline static constexpr Version V1 = 1;
 inline static constexpr Version V2 = 2; // Support clustered index
+inline static constexpr Version V3 = 3; // Meta using protobuf
 
 } // namespace SegmentFormat
 
@@ -39,6 +40,7 @@ using Version = UInt32;
 inline static constexpr Version V0 = 0;
 inline static constexpr Version V1 = 1; // Add column stats
 inline static constexpr Version V2 = 2; // Add checksum and configuration
+inline static constexpr Version V3 = 3; // Use Meta V2
 } // namespace DMFileFormat
 
 namespace StableFormat
@@ -46,6 +48,7 @@ namespace StableFormat
 using Version = Int64;
 
 inline static constexpr Version V1 = 1;
+inline static constexpr Version V2 = 2; // Meta using protobuf
 } // namespace StableFormat
 
 namespace DeltaFormat
@@ -55,6 +58,7 @@ using Version = UInt64;
 inline static constexpr Version V1 = 1;
 inline static constexpr Version V2 = 2; // Support clustered index
 inline static constexpr Version V3 = 3; // Support DeltaPackFile
+inline static constexpr Version V4 = 4; // Meta using protobuf
 } // namespace DeltaFormat
 
 namespace PageFormat
@@ -69,6 +73,8 @@ inline static constexpr Version V2 = 2;
 // - If we already have V2 data in disk. It will turn PageStorage into MIX_MODE
 // - If we don't have any v2 data in disk. It will turn PageStorage into ONLY_V3
 inline static constexpr Version V3 = 3;
+// Store all data in one ps instance.
+inline static constexpr Version V4 = 4;
 } // namespace PageFormat
 
 struct StorageFormatVersion
@@ -118,33 +124,93 @@ inline static const StorageFormatVersion STORAGE_FORMAT_V4 = StorageFormatVersio
     .identifier = 4,
 };
 
-inline StorageFormatVersion STORAGE_FORMAT_CURRENT = STORAGE_FORMAT_V4;
+inline static const StorageFormatVersion STORAGE_FORMAT_V5 = StorageFormatVersion{
+    .segment = SegmentFormat::V2,
+    .dm_file = DMFileFormat::V3, // diff
+    .stable = StableFormat::V1,
+    .delta = DeltaFormat::V3,
+    .page = PageFormat::V3,
+    .identifier = 5,
+};
 
-inline const StorageFormatVersion & toStorageFormat(UInt64 setting)
-{
-    switch (setting)
-    {
-    case 1:
-        return STORAGE_FORMAT_V1;
-    case 2:
-        return STORAGE_FORMAT_V2;
-    case 3:
-        return STORAGE_FORMAT_V3;
-    case 4:
-        return STORAGE_FORMAT_V4;
-    default:
-        throw Exception("Illegal setting value: " + DB::toString(setting));
-    }
-}
+inline static const StorageFormatVersion STORAGE_FORMAT_V6 = StorageFormatVersion{
+    .segment = SegmentFormat::V2,
+    .dm_file = DMFileFormat::V3,
+    .stable = StableFormat::V2, // diff
+    .delta = DeltaFormat::V3,
+    .page = PageFormat::V3,
+    .identifier = 6,
+};
 
-inline void setStorageFormat(UInt64 setting)
-{
-    STORAGE_FORMAT_CURRENT = toStorageFormat(setting);
-}
+inline static const StorageFormatVersion STORAGE_FORMAT_V7 = StorageFormatVersion{
+    .segment = SegmentFormat::V3, // diff
+    .dm_file = DMFileFormat::V3,
+    .stable = StableFormat::V2,
+    .delta = DeltaFormat::V4, // diff
+    .page = PageFormat::V3,
+    .identifier = 7,
+};
 
-inline void setStorageFormat(const StorageFormatVersion & version)
-{
-    STORAGE_FORMAT_CURRENT = version;
-}
+inline static const StorageFormatVersion STORAGE_FORMAT_V8 = StorageFormatVersion{
+    // diff is DataTypeString.DefaultName
+    .segment = SegmentFormat::V3,
+    .dm_file = DMFileFormat::V3,
+    .stable = StableFormat::V2,
+    .delta = DeltaFormat::V4,
+    .page = PageFormat::V3,
+    .identifier = 8,
+};
+
+// STORAGE_FORMAT_V100 is used for S3 only
+inline static const StorageFormatVersion STORAGE_FORMAT_V100 = StorageFormatVersion{
+    .segment = SegmentFormat::V2,
+    .dm_file = DMFileFormat::V3,
+    .stable = StableFormat::V1,
+    .delta = DeltaFormat::V3,
+    .page = PageFormat::V4, // diff
+    .identifier = 100,
+};
+
+// STORAGE_FORMAT_V101 is used for S3 only
+inline static const StorageFormatVersion STORAGE_FORMAT_V101 = StorageFormatVersion{
+    .segment = SegmentFormat::V2,
+    .dm_file = DMFileFormat::V3,
+    .stable = StableFormat::V2, // diff
+    .delta = DeltaFormat::V3,
+    .page = PageFormat::V4,
+    .identifier = 101,
+};
+
+// STORAGE_FORMAT_V102 is used for S3 only
+inline static const StorageFormatVersion STORAGE_FORMAT_V102 = StorageFormatVersion{
+    .segment = SegmentFormat::V3, // diff
+    .dm_file = DMFileFormat::V3,
+    .stable = StableFormat::V2,
+    .delta = DeltaFormat::V4, // diff
+    .page = PageFormat::V4,
+    .identifier = 102,
+};
+
+// STORAGE_FORMAT_V103 is used for S3 only
+inline static const StorageFormatVersion STORAGE_FORMAT_V103 = StorageFormatVersion{
+    // diff is DataTypeString.DefaultName
+    .segment = SegmentFormat::V3,
+    .dm_file = DMFileFormat::V3,
+    .stable = StableFormat::V2,
+    .delta = DeltaFormat::V4,
+    .page = PageFormat::V4,
+    .identifier = 103,
+};
+
+// Default storage format for non-disaggregated mode
+inline StorageFormatVersion STORAGE_FORMAT_CURRENT = STORAGE_FORMAT_V8;
+// Default storage format for disaggregated mode
+inline static const StorageFormatVersion DEFAULT_STORAGE_FORMAT_FOR_DISAGG = STORAGE_FORMAT_V103;
+
+bool isStorageFormatForDisagg(UInt64 version);
+std::span<const size_t> getStorageFormatsForDisagg();
+
+void setStorageFormat(UInt64 setting);
+void setStorageFormat(const StorageFormatVersion & version);
 
 } // namespace DB

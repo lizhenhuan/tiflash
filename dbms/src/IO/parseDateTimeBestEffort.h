@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/IO/parseDateTimeBestEffort.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -68,7 +70,15 @@ class ReadBuffer;
   * Mon/Tue/Wed/Thu/Fri/Sat/Sun - simply ignored.
   */
 
-void parseDateTimeBestEffort(time_t & res, ReadBuffer & in, const DateLUTImpl & local_time_zone, const DateLUTImpl & utc_time_zone);
-bool tryParseDateTimeBestEffort(time_t & res, ReadBuffer & in, const DateLUTImpl & local_time_zone, const DateLUTImpl & utc_time_zone);
+void parseDateTimeBestEffort(
+    time_t & res,
+    ReadBuffer & in,
+    const DateLUTImpl & local_time_zone,
+    const DateLUTImpl & utc_time_zone);
+bool tryParseDateTimeBestEffort(
+    time_t & res,
+    ReadBuffer & in,
+    const DateLUTImpl & local_time_zone,
+    const DateLUTImpl & utc_time_zone);
 
 } // namespace DB

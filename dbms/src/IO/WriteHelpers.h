@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/IO/WriteHelpers.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,10 +22,10 @@
 #include <Common/StringUtils/StringUtils.h>
 #include <Core/Types.h>
 #include <Core/UUID.h>
+#include <IO/Buffer/WriteBuffer.h>
+#include <IO/Buffer/WriteBufferFromString.h>
 #include <IO/DoubleConverter.h>
 #include <IO/VarInt.h>
-#include <IO/WriteBuffer.h>
-#include <IO/WriteBufferFromString.h>
 #include <IO/WriteIntText.h>
 #include <common/DateLUT.h>
 #include <common/LocalDate.h>
@@ -31,12 +33,9 @@
 #include <common/StringRef.h>
 #include <common/find_symbols.h>
 
-#include <algorithm>
 #include <cstdio>
 #include <cstring>
-#include <iomanip>
 #include <iterator>
-#include <limits>
 
 namespace DB
 {
@@ -113,7 +112,9 @@ inline void writeBoolText(bool x, WriteBuffer & buf)
 template <typename T>
 inline void writeFloatText(T x, WriteBuffer & buf)
 {
-    static_assert(std::is_same_v<T, double> || std::is_same_v<T, float>, "Argument for writeFloatText must be float or double");
+    static_assert(
+        std::is_same_v<T, double> || std::is_same_v<T, float>,
+        "Argument for writeFloatText must be float or double");
 
     using Converter = DoubleConverter<false>;
 
@@ -148,8 +149,7 @@ inline void writeString(const StringRef & ref, WriteBuffer & buf)
 /** Writes a C-string without creating a temporary object. If the string is a literal, then `strlen` is executed at the compilation stage.
   * Use when the string is a literal.
   */
-#define writeCString(s, buf) \
-    (buf).write((s), strlen(s))
+#define writeCString(s, buf) (buf).write((s), strlen(s))
 
 /** Writes a string for use in the JSON format:
  *  - the string is written in double quotes
@@ -398,104 +398,18 @@ inline void writeProbablyBackQuotedString(const String & s, WriteBuffer & buf)
     }
 }
 
-
-/** Outputs the string in for the CSV format.
-  * Rules:
-  * - the string is outputted in quotation marks;
-  * - the quotation mark inside the string is outputted as two quotation marks in sequence.
-  */
-template <char quote = '"'>
-void writeCSVString(const char * begin, const char * end, WriteBuffer & buf)
-{
-    writeChar(quote, buf);
-
-    const char * pos = begin;
-    while (true)
-    {
-        const char * next_pos = find_first_symbols<quote>(pos, end);
-
-        if (next_pos == end)
-        {
-            buf.write(pos, end - pos);
-            break;
-        }
-        else /// Quotation.
-        {
-            ++next_pos;
-            buf.write(pos, next_pos - pos);
-            writeChar(quote, buf);
-        }
-
-        pos = next_pos;
-    }
-
-    writeChar(quote, buf);
-}
-
-template <char quote = '"'>
-void writeCSVString(const String & s, WriteBuffer & buf)
-{
-    writeCSVString<quote>(s.data(), s.data() + s.size(), buf);
-}
-
-template <char quote = '"'>
-void writeCSVString(const StringRef & s, WriteBuffer & buf)
-{
-    writeCSVString<quote>(s.data, s.data + s.size, buf);
-}
-
-
-/// Writing a string to a text node in XML (not into an attribute - otherwise you need more escaping).
-inline void writeXMLString(const char * begin, const char * end, WriteBuffer & buf)
-{
-    const char * pos = begin;
-    while (true)
-    {
-        /// NOTE Perhaps for some XML parsers, you need to escape the zero byte and some control characters.
-        const char * next_pos = find_first_symbols<'<', '&'>(pos, end);
-
-        if (next_pos == end)
-        {
-            buf.write(pos, end - pos);
-            break;
-        }
-        else if (*next_pos == '<')
-        {
-            buf.write(pos, next_pos - pos);
-            ++next_pos;
-            writeCString("&lt;", buf);
-        }
-        else if (*next_pos == '&')
-        {
-            buf.write(pos, next_pos - pos);
-            ++next_pos;
-            writeCString("&amp;", buf);
-        }
-
-        pos = next_pos;
-    }
-}
-
-inline void writeXMLString(const String & s, WriteBuffer & buf)
-{
-    writeXMLString(s.data(), s.data() + s.size(), buf);
-}
-
-inline void writeXMLString(const StringRef & s, WriteBuffer & buf)
-{
-    writeXMLString(s.data, s.data + s.size, buf);
-}
-
 template <typename IteratorSrc, typename IteratorDst>
-void formatHex(IteratorSrc src, IteratorDst dst, const size_t num_bytes);
+void formatHex(IteratorSrc src, IteratorDst dst, size_t num_bytes);
 void formatUUID(const UInt8 * src16, UInt8 * dst36);
-void formatUUID(std::reverse_iterator<const UInt8 *> dst16, UInt8 * dst36);
+void formatUUID(std::reverse_iterator<const UInt8 *> src16, UInt8 * dst36);
 
 inline void writeUUIDText(const UUID & uuid, WriteBuffer & buf)
 {
     char s[36];
 
-    formatUUID(std::reverse_iterator<const UInt8 *>(reinterpret_cast<const UInt8 *>(&uuid) + 16), reinterpret_cast<UInt8 *>(s));
+    formatUUID(
+        std::reverse_iterator<const UInt8 *>(reinterpret_cast<const UInt8 *>(&uuid) + 16),
+        reinterpret_cast<UInt8 *>(s));
     buf.write(s, sizeof(s));
 }
 
@@ -626,7 +540,11 @@ inline void writeDateTimeText(const LocalDateTime & datetime, WriteBuffer & buf)
     }
 }
 
-inline void writeMyDateTimeTextWithFormat(UInt64 packed, WriteBuffer & buf, MyDateTimeFormatter & formatter, String & result)
+inline void writeMyDateTimeTextWithFormat(
+    UInt64 packed,
+    WriteBuffer & buf,
+    MyDateTimeFormatter & formatter,
+    String & result)
 {
     result.clear();
     formatter.format(MyDateTime(packed), result);
@@ -658,15 +576,20 @@ inline void writeDateTimeText(time_t datetime, WriteBuffer & buf, const DateLUTI
 
     const auto & values = date_lut.getValues(datetime);
     writeDateTimeText<date_delimeter, time_delimeter, between_date_time_delimiter>(
-        LocalDateTime(values.year, values.month, values.day_of_month, date_lut.toHour(datetime), date_lut.toMinute(datetime), date_lut.toSecond(datetime)),
+        LocalDateTime(
+            values.year,
+            values.month,
+            values.day_of_month,
+            date_lut.toHour(datetime),
+            date_lut.toMinute(datetime),
+            date_lut.toSecond(datetime)),
         buf);
 }
 
 
 /// Methods for output in binary format.
 template <typename T>
-inline std::enable_if_t<std::is_arithmetic_v<T>, void>
-writeBinary(const T & x, WriteBuffer & buf)
+inline std::enable_if_t<std::is_arithmetic_v<T>, void> writeBinary(const T & x, WriteBuffer & buf)
 {
     writePODBinary(x, buf);
 }
@@ -704,15 +627,13 @@ inline void writeBinary(const Decimal<T> & x, WriteBuffer & buf)
 
 /// Methods for outputting the value in text form for a tab-separated format.
 template <typename T>
-inline std::enable_if_t<std::is_integral_v<T>, void>
-writeText(const T & x, WriteBuffer & buf)
+inline std::enable_if_t<std::is_integral_v<T>, void> writeText(const T & x, WriteBuffer & buf)
 {
     writeIntText(x, buf);
 }
 
 template <typename T>
-inline std::enable_if_t<std::is_floating_point_v<T>, void>
-writeText(const T & x, WriteBuffer & buf)
+inline std::enable_if_t<std::is_floating_point_v<T>, void> writeText(const T & x, WriteBuffer & buf)
 {
     writeFloatText(x, buf);
 }
@@ -762,8 +683,7 @@ inline void writeText(const UInt128 &, WriteBuffer &)
 
 /// String, date, datetime are in single quotes with C-style escaping. Numbers - without.
 template <typename T>
-inline std::enable_if_t<std::is_arithmetic_v<T>, void>
-writeQuoted(const T & x, WriteBuffer & buf)
+inline std::enable_if_t<std::is_arithmetic_v<T>, void> writeQuoted(const T & x, WriteBuffer & buf)
 {
     writeText(x, buf);
 }
@@ -790,8 +710,7 @@ inline void writeQuoted(const LocalDateTime & x, WriteBuffer & buf)
 
 /// String, date, datetime are in double quotes with C-style escaping. Numbers - without.
 template <typename T>
-inline std::enable_if_t<std::is_arithmetic_v<T>, void>
-writeDoubleQuoted(const T & x, WriteBuffer & buf)
+inline std::enable_if_t<std::is_arithmetic_v<T>, void> writeDoubleQuoted(const T & x, WriteBuffer & buf)
 {
     writeText(x, buf);
 }
@@ -820,39 +739,6 @@ inline void writeDoubleQuoted(const UUID & x, WriteBuffer & buf)
     writeChar('"', buf);
     writeText(x, buf);
     writeChar('"', buf);
-}
-
-
-/// String - in double quotes and with CSV-escaping; date, datetime - in double quotes. Numbers - without.
-template <typename T>
-inline std::enable_if_t<std::is_arithmetic_v<T>, void>
-writeCSV(const T & x, WriteBuffer & buf)
-{
-    writeText(x, buf);
-}
-
-inline void writeCSV(const String & x, WriteBuffer & buf)
-{
-    writeCSVString<>(x, buf);
-}
-inline void writeCSV(const LocalDate & x, WriteBuffer & buf)
-{
-    writeDoubleQuoted(x, buf);
-}
-inline void writeCSV(const LocalDateTime & x, WriteBuffer & buf)
-{
-    writeDoubleQuoted(x, buf);
-}
-inline void writeCSV(const UUID & x, WriteBuffer & buf)
-{
-    writeDoubleQuoted(x, buf);
-}
-inline void writeCSV(const UInt128, WriteBuffer &)
-{
-    /** Because UInt128 isn't a natural type, without arithmetic operator and only use as an intermediary type -for UUID-
-     *  it should never arrive here. But because we used the DataTypeNumber class we should have at least a definition of it.
-     */
-    throw Exception("UInt128 cannot be write as a text", ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT);
 }
 
 template <typename T>
@@ -911,8 +797,7 @@ inline String toString(const T & x)
 }
 
 template <typename T>
-inline std::enable_if_t<std::is_floating_point_v<T>, String>
-toString(const T & x, int precision)
+inline std::enable_if_t<std::is_floating_point_v<T>, String> toString(const T & x, int precision)
 {
     DB::DoubleConverter<false>::BufferType buffer;
     double_conversion::StringBuilder builder{buffer, sizeof(buffer)};

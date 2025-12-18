@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/DataStreams/PrettyCompactBlockOutputStream.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,9 +14,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <IO/WriteBuffer.h>
-#include <IO/WriteHelpers.h>
 #include <DataStreams/PrettyCompactBlockOutputStream.h>
+#include <IO/Buffer/WriteBuffer.h>
+#include <IO/WriteHelpers.h>
 
 
 namespace DB
@@ -101,7 +103,11 @@ void PrettyCompactBlockOutputStream::writeRow(
         if (j != 0)
             writeCString(" │ ", ostr);
 
-        writeValueWithPadding(block.getByPosition(j), row_num, widths[j].empty() ? max_widths[j] : widths[j][row_num], max_widths[j]);
+        writeValueWithPadding(
+            block.getByPosition(j),
+            row_num,
+            widths[j].empty() ? max_widths[j] : widths[j][row_num],
+            max_widths[j]);
     }
 
     writeCString(" │\n", ostr);
@@ -132,4 +138,4 @@ void PrettyCompactBlockOutputStream::write(const Block & block)
     total_rows += rows;
 }
 
-}
+} // namespace DB

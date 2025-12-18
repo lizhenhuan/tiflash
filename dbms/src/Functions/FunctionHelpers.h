@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Functions/FunctionHelpers.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,6 +23,7 @@
 #include <Common/typeid_cast.h>
 #include <Core/Block.h>
 #include <Core/ColumnNumbers.h>
+#include <DataTypes/DataTypeArray.h>
 #include <DataTypes/IDataType.h>
 
 #include <memory>
@@ -42,6 +45,16 @@ bool checkDataType(const IDataType * data_type)
     return checkAndGetDataType<Type>(data_type);
 }
 
+template <typename InnerType>
+bool checkDataTypeArray(const IDataType * data_type)
+{
+    const auto * array_type = checkAndGetDataType<DataTypeArray>(data_type);
+    if unlikely (!array_type)
+        return false;
+
+    const DataTypePtr & inner_type = array_type->getNestedType();
+    return checkDataType<InnerType>(inner_type.get());
+}
 
 template <typename Type>
 const Type * checkAndGetColumn(const IColumn * column)
@@ -150,10 +163,7 @@ struct GetVecHelper : public IGetVecHelper<T>
     explicit GetVecHelper(const ColumnVector<T> * p_)
         : p(p_)
     {}
-    T get(size_t i) const override
-    {
-        return p->getElement(i);
-    }
+    T get(size_t i) const override { return p->getElement(i); }
 
 private:
     const ColumnVector<T> * p;
@@ -165,10 +175,7 @@ struct GetConstVecHelper : public IGetVecHelper<T>
     explicit GetConstVecHelper(const ColumnConst * p_)
         : value(p_->getValue<T>())
     {}
-    T get(size_t) const override
-    {
-        return value;
-    }
+    T get(size_t) const override { return value; }
 
 private:
     T value;
@@ -186,6 +193,7 @@ std::unique_ptr<IGetVecHelper<T>> IGetVecHelper<T>::getHelper(const ColumnConst 
     return std::unique_ptr<IGetVecHelper<T>>{new GetConstVecHelper<T>{p}};
 }
 
+static Field FIELD_NULL = toField(Null{});
 static Field FIELD_INT8_1 = toField(Int8(1));
 static Field FIELD_INT8_0 = toField(Int8(0));
 

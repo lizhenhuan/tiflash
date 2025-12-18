@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Storages/StorageLog.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -29,7 +31,8 @@ namespace DB
 /** Implements simple table engine without support of indices.
   * The data is stored in a compressed form.
   */
-class StorageLog : public ext::SharedPtrHelper<StorageLog>
+class StorageLog
+    : public ext::SharedPtrHelper<StorageLog>
     , public IStorage
 {
     friend class LogBlockInputStream;
@@ -49,7 +52,8 @@ public:
 
     BlockOutputStreamPtr write(const ASTPtr & query, const Settings & settings) override;
 
-    void rename(const String & new_path_to_db, const String & new_database_name, const String & new_table_name) override;
+    void rename(const String & new_path_to_db, const String & new_database_name, const String & new_table_name)
+        override;
 
     bool checkData() const override;
 

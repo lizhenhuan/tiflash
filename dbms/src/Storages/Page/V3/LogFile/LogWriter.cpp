@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,8 +15,9 @@
 #include <Common/Checksum.h>
 #include <Common/Exception.h>
 #include <Common/Logger.h>
-#include <IO/ReadBuffer.h>
-#include <IO/WriteBufferFromFile.h>
+#include <IO/BaseFile/WritableFile.h>
+#include <IO/Buffer/ReadBuffer.h>
+#include <IO/Buffer/WriteBufferFromFile.h>
 #include <IO/WriteHelpers.h>
 #include <Storages/Page/PageUtil.h>
 #include <Storages/Page/V3/LogFile/LogFormat.h>
@@ -31,13 +32,13 @@ LogWriter::LogWriter(
     const FileProviderPtr & file_provider_,
     Format::LogNumberType log_number_,
     bool recycle_log_files_,
-    bool manual_flush_)
+    bool manual_sync_)
     : path(path_)
     , file_provider(file_provider_)
     , block_offset(0)
     , log_number(log_number_)
     , recycle_log_files(recycle_log_files_)
-    , manual_flush(manual_flush_)
+    , manual_sync(manual_sync_)
     , write_buffer(nullptr, 0)
 {
     log_file = file_provider->newWritableFile(
@@ -69,26 +70,9 @@ size_t LogWriter::writtenBytes() const
     return written_bytes;
 }
 
-void LogWriter::flush(const WriteLimiterPtr & write_limiter, bool background)
+void LogWriter::sync()
 {
-    if (write_buffer.offset() == 0)
-    {
-        return;
-    }
-
-    PageUtil::writeFile(log_file,
-                        written_bytes,
-                        write_buffer.buffer().begin(),
-                        write_buffer.offset(),
-                        write_limiter,
-                        /*background=*/background,
-                        /*truncate_if_failed=*/false,
-                        /*enable_failpoint=*/false);
     log_file->fsync();
-    written_bytes += write_buffer.offset();
-
-    // reset the write_buffer
-    resetBuffer();
 }
 
 void LogWriter::close()
@@ -96,7 +80,11 @@ void LogWriter::close()
     log_file->close();
 }
 
-void LogWriter::addRecord(ReadBuffer & payload, const size_t payload_size, const WriteLimiterPtr & write_limiter, bool background)
+void LogWriter::addRecord(
+    ReadBuffer & payload,
+    const size_t payload_size,
+    const WriteLimiterPtr & write_limiter,
+    bool background)
 {
     // Header size varies depending on whether we are recycling or not.
     const UInt32 header_size = recycle_log_files ? Format::RECYCLABLE_HEADER_SIZE : Format::HEADER_SIZE;
@@ -150,7 +138,7 @@ void LogWriter::addRecord(ReadBuffer & payload, const size_t payload_size, const
         catch (...)
         {
             auto message = getCurrentExceptionMessage(true);
-            LOG_FATAL(&Poco::Logger::get("LogWriter"), "Write physical record failed with message: {}", message);
+            LOG_FATAL(Logger::get(), "Write physical record failed with message: {}", message);
             std::terminate();
         }
         payload.ignore(fragment_length);
@@ -158,9 +146,10 @@ void LogWriter::addRecord(ReadBuffer & payload, const size_t payload_size, const
         begin = false;
     } while (payload.hasPendingData());
 
-    if (!manual_flush)
+    flush(write_limiter, background);
+    if (!manual_sync)
     {
-        flush(write_limiter, background);
+        sync();
     }
 }
 
@@ -169,8 +158,12 @@ void LogWriter::emitPhysicalRecord(Format::RecordType type, ReadBuffer & payload
     assert(length <= 0xFFFF); // The length of payload must fit in two bytes (less than `BLOCK_SIZE`)
 
     // Create a header buffer without the checksum field
-    static_assert(Format::RECYCLABLE_HEADER_SIZE > Format::CHECKSUM_FIELD_SIZE, "Header size must be greater than the checksum size");
-    static_assert(Format::RECYCLABLE_HEADER_SIZE > Format::HEADER_SIZE, "Ensure the min buffer size for physical record");
+    static_assert(
+        Format::RECYCLABLE_HEADER_SIZE > Format::CHECKSUM_FIELD_SIZE,
+        "Header size must be greater than the checksum size");
+    static_assert(
+        Format::RECYCLABLE_HEADER_SIZE > Format::HEADER_SIZE,
+        "Ensure the min buffer size for physical record");
     constexpr static size_t HEADER_BUFF_SIZE = Format::RECYCLABLE_HEADER_SIZE - Format::CHECKSUM_FIELD_SIZE;
     char buf[HEADER_BUFF_SIZE] = {0};
     WriteBuffer header_buff(buf, HEADER_BUFF_SIZE);
@@ -215,5 +208,28 @@ void LogWriter::emitPhysicalRecord(Format::RecordType type, ReadBuffer & payload
     writeString(payload.position(), length, write_buffer);
 
     block_offset += header_size + length;
+}
+
+void LogWriter::flush(const WriteLimiterPtr & write_limiter, bool background)
+{
+    if (write_buffer.offset() == 0)
+    {
+        return;
+    }
+
+    PageUtil::writeFile(
+        log_file,
+        written_bytes,
+        write_buffer.buffer().begin(),
+        write_buffer.offset(),
+        write_limiter,
+        /*background=*/background,
+        /*truncate_if_failed=*/false,
+        /*enable_failpoint=*/false);
+
+    written_bytes += write_buffer.offset();
+
+    // reset the write_buffer
+    resetBuffer();
 }
 } // namespace DB::PS::V3

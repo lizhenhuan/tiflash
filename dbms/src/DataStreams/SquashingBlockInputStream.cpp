@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/DataStreams/SquashingBlockInputStream.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,19 +18,20 @@
 
 namespace DB
 {
+
 SquashingBlockInputStream::SquashingBlockInputStream(
     const BlockInputStreamPtr & src,
     size_t min_block_size_rows,
     size_t min_block_size_bytes,
     const String & req_id)
-    : log(Logger::get(NAME, req_id))
+    : log(Logger::get(req_id))
     , transform(min_block_size_rows, min_block_size_bytes, req_id)
 {
     children.emplace_back(src);
 }
 
 
-Block SquashingBlockInputStream::readImpl()
+Block SquashingBlockInputStream::read()
 {
     if (all_read)
         return {};

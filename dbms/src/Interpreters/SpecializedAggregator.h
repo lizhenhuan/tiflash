@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Interpreters/SpecializedAggregator.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -46,8 +48,7 @@ struct AggregateFunctionsUpdater
         , value(value_)
         , row_num(row_num_)
         , arena(arena_)
-    {
-    }
+    {}
 
     template <typename AggregateFunction, size_t column_num>
     void operator()() ALWAYS_INLINE;
@@ -63,7 +64,8 @@ struct AggregateFunctionsUpdater
 template <typename AggregateFunction, size_t column_num>
 void AggregateFunctionsUpdater::operator()()
 {
-    static_cast<AggregateFunction *>(aggregate_functions[column_num])->add(value + offsets_of_aggregate_states[column_num], &aggregate_columns[column_num][0], row_num, arena);
+    static_cast<AggregateFunction *>(aggregate_functions[column_num])
+        ->add(value + offsets_of_aggregate_states[column_num], &aggregate_columns[column_num][0], row_num, arena);
 }
 
 struct AggregateFunctionsCreator
@@ -75,8 +77,7 @@ struct AggregateFunctionsCreator
         : aggregate_functions(aggregate_functions_)
         , offsets_of_aggregate_states(offsets_of_aggregate_states_)
         , aggregate_data(aggregate_data_)
-    {
-    }
+    {}
 
     template <typename AggregateFunction, size_t column_num>
     void operator()() ALWAYS_INLINE;
@@ -225,12 +226,11 @@ void NO_INLINE Aggregator::executeSpecializedCase(
 
             method.onNewKey(*it, params.keys_size, keys, *aggregates_pool);
 
-            AggregateDataPtr place = aggregates_pool->alloc(total_size_of_aggregate_states);
+            AggregateDataPtr place
+                = aggregates_pool->alignedAlloc(total_size_of_aggregate_states, align_aggregate_states);
 
-            AggregateFunctionsList::forEach(AggregateFunctionsCreator(
-                aggregate_functions,
-                offsets_of_aggregate_states,
-                place));
+            AggregateFunctionsList::forEach(
+                AggregateFunctionsCreator(aggregate_functions, offsets_of_aggregate_states, place));
 
             aggregate_data = place;
         }
@@ -260,9 +260,8 @@ void NO_INLINE Aggregator::executeSpecializedWithoutKey(
     Arena * arena) const
 {
     /// Optimization in the case of a single aggregate function `count`.
-    AggregateFunctionCount * agg_count = params.aggregates_size == 1
-        ? typeid_cast<AggregateFunctionCount *>(aggregate_functions[0])
-        : nullptr;
+    AggregateFunctionCount * agg_count
+        = params.aggregates_size == 1 ? typeid_cast<AggregateFunctionCount *>(aggregate_functions[0]) : nullptr;
 
     if (agg_count)
         agg_count->addDelta(res, rows);
@@ -308,4 +307,4 @@ void NO_INLINE Aggregator::executeSpecializedWithoutKey(
 extern "C" void __attribute__((__visibility__("default"), __noreturn__)) __cxa_pure_virtual()
 {
     abort();
-};
+}

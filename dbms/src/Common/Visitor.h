@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Common/Visitor.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -121,15 +123,15 @@ protected:
     template <typename T>
     void visitImpl(Type &)
     {
-        throw Exception("visitImpl(" + demangle(typeid(T).name()) + " &)" + " is not implemented for class"
-                            + demangle(typeid(Derived).name()),
-                        ErrorCodes::LOGICAL_ERROR);
+        throw Exception(
+            "visitImpl(" + demangle(typeid(T).name()) + " &)" + " is not implemented for class"
+                + demangle(typeid(Derived).name()),
+            ErrorCodes::LOGICAL_ERROR);
     }
 };
 
 template <typename Derived, typename VisitorBase, typename Type, typename... Types>
-class VisitorImplHelper<Derived, VisitorBase, Type, Types...>
-    : public VisitorImplHelper<Derived, VisitorBase, Types...>
+class VisitorImplHelper<Derived, VisitorBase, Type, Types...> : public VisitorImplHelper<Derived, VisitorBase, Types...>
 {
 public:
     using VisitorImplHelper<Derived, VisitorBase, Types...>::visit;
@@ -139,14 +141,18 @@ protected:
     template <typename T>
     void visitImpl(Type &)
     {
-        throw Exception("visitImpl(" + demangle(typeid(T).name()) + " &)" + " is not implemented for class"
-                            + demangle(typeid(Derived).name()),
-                        ErrorCodes::LOGICAL_ERROR);
+        throw Exception(
+            "visitImpl(" + demangle(typeid(T).name()) + " &)" + " is not implemented for class"
+                + demangle(typeid(Derived).name()),
+            ErrorCodes::LOGICAL_ERROR);
     }
 };
 
 template <typename Derived, typename VisitorBase>
-class VisitorImpl : public ApplyTypeListForClass<VisitorImplHelper, typename TypeListConcat<TypeList<Derived, VisitorBase>, typename VisitorBase::List>::Type>::Type
+class VisitorImpl
+    : public ApplyTypeListForClass<
+          VisitorImplHelper,
+          typename TypeListConcat<TypeList<Derived, VisitorBase>, typename VisitorBase::List>::Type>::Type
 {
 };
 

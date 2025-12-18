@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -24,29 +24,37 @@
 
 namespace DB
 {
+class Pipeline;
+using PipelinePtr = std::shared_ptr<Pipeline>;
+using Pipelines = std::vector<PipelinePtr>;
+
 class PhysicalPlan
 {
 public:
-    explicit PhysicalPlan(Context & context_, const String & req_id)
+    PhysicalPlan(Context & context_, const String & req_id)
         : context(context_)
-        , log(Logger::get("PhysicalPlan", req_id))
+        , log(Logger::get(req_id))
     {}
 
     void build(const tipb::DAGRequest * dag_request);
 
     // after outputAndOptimize, the physical plan node tree is done.
-    void outputAndOptimize();
+    PhysicalPlanNodePtr outputAndOptimize();
 
     String toString() const;
 
-    void transform(DAGPipeline & pipeline, Context & context, size_t max_streams);
+    void buildBlockInputStream(DAGPipeline & pipeline, Context & context, size_t max_streams);
+
+    PipelinePtr toPipeline(PipelineExecutorContext & exec_context, Context & context);
 
 private:
     void addRootFinalProjectionIfNeed();
 
-    void build(const String & executor_id, const tipb::Executor * executor);
+    void build(const tipb::Executor * executor);
 
     void buildFinalProjection(const String & column_prefix, bool is_root);
+
+    void buildFinalProjectionForCTE(const tipb::CTESink &);
 
     PhysicalPlanNodePtr popBack();
 
@@ -54,8 +62,10 @@ private:
 
     DAGContext & dagContext() const;
 
+    void buildTableScan(const String & executor_id, const tipb::Executor * executor);
+
 private:
-    std::vector<PhysicalPlanNodePtr> cur_plan_nodes{};
+    std::vector<PhysicalPlanNodePtr> cur_plan_nodes;
 
     // hold the root node of physical plan node tree after `outputAndOptimize`.
     PhysicalPlanNodePtr root_node;

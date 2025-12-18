@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/AggregateFunctions/AggregateFunctionArray.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -47,43 +49,24 @@ public:
     {
         for (const auto & type : arguments)
             if (!typeid_cast<const DataTypeArray *>(type.get()))
-                throw Exception("All arguments for aggregate function " + getName() + " must be arrays", ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT);
+                throw Exception(
+                    "All arguments for aggregate function " + getName() + " must be arrays",
+                    ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT);
     }
 
-    String getName() const override
-    {
-        return nested_func->getName() + "Array";
-    }
+    String getName() const override { return nested_func->getName() + "Array"; }
 
-    DataTypePtr getReturnType() const override
-    {
-        return nested_func->getReturnType();
-    }
+    DataTypePtr getReturnType() const override { return nested_func->getReturnType(); }
 
-    void create(AggregateDataPtr __restrict place) const override
-    {
-        nested_func->create(place);
-    }
+    void create(AggregateDataPtr __restrict place) const override { nested_func->create(place); }
 
-    void destroy(AggregateDataPtr __restrict place) const noexcept override
-    {
-        nested_func->destroy(place);
-    }
+    void destroy(AggregateDataPtr __restrict place) const noexcept override { nested_func->destroy(place); }
 
-    bool hasTrivialDestructor() const override
-    {
-        return nested_func->hasTrivialDestructor();
-    }
+    bool hasTrivialDestructor() const override { return nested_func->hasTrivialDestructor(); }
 
-    size_t sizeOfData() const override
-    {
-        return nested_func->sizeOfData();
-    }
+    size_t sizeOfData() const override { return nested_func->sizeOfData(); }
 
-    size_t alignOfData() const override
-    {
-        return nested_func->alignOfData();
-    }
+    size_t alignOfData() const override { return nested_func->alignOfData(); }
 
     void add(AggregateDataPtr __restrict place, const IColumn ** columns, size_t row_num, Arena * arena) const override
     {
@@ -92,7 +75,7 @@ public:
         for (size_t i = 0; i < num_arguments; ++i)
             nested[i] = &static_cast<const ColumnArray &>(*columns[i]).getData();
 
-        const ColumnArray & first_array_column = static_cast<const ColumnArray &>(*columns[0]);
+        const auto & first_array_column = static_cast<const ColumnArray &>(*columns[0]);
         const IColumn::Offsets & offsets = first_array_column.getOffsets();
 
         size_t begin = row_num == 0 ? 0 : offsets[row_num - 1];
@@ -101,16 +84,19 @@ public:
         /// Sanity check. NOTE We can implement specialization for a case with single argument, if the check will hurt performance.
         for (size_t i = 1; i < num_arguments; ++i)
         {
-            const ColumnArray & ith_column = static_cast<const ColumnArray &>(*columns[i]);
+            const auto & ith_column = static_cast<const ColumnArray &>(*columns[i]);
             const IColumn::Offsets & ith_offsets = ith_column.getOffsets();
 
             if (ith_offsets[row_num] != end || (row_num != 0 && ith_offsets[row_num - 1] != begin))
-                throw Exception("Arrays passed to " + getName() + " aggregate function have different sizes", ErrorCodes::SIZES_OF_ARRAYS_DOESNT_MATCH);
+                throw Exception(
+                    "Arrays passed to " + getName() + " aggregate function have different sizes",
+                    ErrorCodes::SIZES_OF_ARRAYS_DOESNT_MATCH);
         }
 
         for (size_t i = begin; i < end; ++i)
             nested_func->add(place, nested, i, arena);
     }
+
 
     void merge(AggregateDataPtr __restrict place, ConstAggregateDataPtr rhs, Arena * arena) const override
     {
@@ -132,10 +118,7 @@ public:
         nested_func->insertResultInto(place, to, arena);
     }
 
-    bool allocatesMemoryInArena() const override
-    {
-        return nested_func->allocatesMemoryInArena();
-    }
+    bool allocatesMemoryInArena() const override { return nested_func->allocatesMemoryInArena(); }
 
     const char * getHeaderFilePath() const override { return __FILE__; }
 };

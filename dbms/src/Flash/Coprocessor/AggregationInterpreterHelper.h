@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -33,14 +33,18 @@ bool isFinalAgg(const tipb::Aggregation & aggregation);
 
 bool isGroupByCollationSensitive(const Context & context);
 
-Aggregator::Params buildParams(
+std::unique_ptr<Aggregator::Params> buildParams(
     const Context & context,
     const Block & before_agg_header,
     size_t before_agg_streams_size,
+    size_t agg_streams_size,
     const Names & key_names,
-    const TiDB::TiDBCollators & collators,
+    const KeyRefAggFuncMap & key_ref_agg_func,
+    const AggFuncRefKeyMap & agg_func_ref_key,
+    const std::unordered_map<String, TiDB::TiDBCollatorPtr> & collators,
     const AggregateDescriptions & aggregate_descriptions,
-    bool is_final_agg);
+    bool is_final_agg,
+    const SpillConfig & spill_config);
 
 void fillArgColumnNumbers(AggregateDescriptions & aggregate_descriptions, const Block & before_agg_header);
 } // namespace AggregationInterpreterHelper

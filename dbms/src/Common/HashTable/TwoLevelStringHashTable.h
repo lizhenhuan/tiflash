@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -30,10 +30,21 @@ public:
     static constexpr size_t NUM_BUCKETS = 1ULL << BITS_FOR_BUCKET;
     static constexpr size_t MAX_BUCKET = NUM_BUCKETS - 1;
 
+    static constexpr bool is_string_hash_map = true;
+    static constexpr bool is_two_level = true;
+
     // TODO: currently hashing contains redundant computations when doing distributed or external aggregations
     size_t hash(const Key & x) const
     {
-        return const_cast<Self &>(*this).dispatch(*this, x, [&](const auto &, const auto &, size_t hash) { return hash; });
+        return const_cast<Self &>(*this).dispatch(*this, x, [&](const auto &, const auto &, size_t hash) {
+            return hash;
+        });
+    }
+
+    void setResizeCallback(const ResizeCallback & resize_callback)
+    {
+        for (auto & impl : impls)
+            impl.setResizeCallback(resize_callback);
     }
 
     size_t operator()(const Key & x) const { return hash(x); }
@@ -88,9 +99,14 @@ public:
     // This function is mostly the same as StringHashTable::dispatch, but with
     // added bucket computation. See the comments there.
     template <typename Self, typename Func, typename KeyHolder>
-    static auto ALWAYS_INLINE dispatch(Self & self, KeyHolder && key_holder, Func && func)
+    static auto
+#if defined(ADDRESS_SANITIZER) || defined(THREAD_SANITIZER)
+        NO_INLINE NO_SANITIZE_ADDRESS NO_SANITIZE_THREAD
+#else
+        ALWAYS_INLINE
+#endif
+        dispatch(Self & self, KeyHolder && key_holder, Func && func)
     {
-        StringHashTableHash hash;
         const StringRef & x = keyHolderGetKey(key_holder);
         const size_t sz = x.size;
         if (sz == 0)
@@ -103,7 +119,7 @@ public:
         {
             // Strings with trailing zeros are not representable as fixed-size
             // string keys. Put them to the generic table.
-            auto res = hash(x);
+            auto res = SubMaps::Hash::operator()(x);
             auto buck = getBucketFromHash(res);
             return func(self.impls[buck].ms, std::forward<KeyHolder>(key_holder), res);
         }
@@ -126,15 +142,21 @@ public:
             if ((reinterpret_cast<uintptr_t>(p) & 2048) == 0)
             {
                 memcpy(&n[0], p, 8);
-                n[0] &= -1ul >> s;
+                if constexpr (DB::isLittleEndian())
+                    n[0] &= (-1ULL >> s);
+                else
+                    n[0] &= (-1ULL << s);
             }
             else
             {
                 const char * lp = x.data + x.size - 8;
                 memcpy(&n[0], lp, 8);
-                n[0] >>= s;
+                if constexpr (DB::isLittleEndian())
+                    n[0] >>= s;
+                else
+                    n[0] <<= s;
             }
-            auto res = hash(k8);
+            auto res = SubMaps::Hash::operator()(k8);
             auto buck = getBucketFromHash(res);
             keyHolderDiscardKey(key_holder);
             return func(self.impls[buck].m1, k8, res);
@@ -144,8 +166,11 @@ public:
             memcpy(&n[0], p, 8);
             const char * lp = x.data + x.size - 8;
             memcpy(&n[1], lp, 8);
-            n[1] >>= s;
-            auto res = hash(k16);
+            if constexpr (DB::isLittleEndian())
+                n[1] >>= s;
+            else
+                n[1] <<= s;
+            auto res = SubMaps::Hash::operator()(k16);
             auto buck = getBucketFromHash(res);
             keyHolderDiscardKey(key_holder);
             return func(self.impls[buck].m2, k16, res);
@@ -155,15 +180,18 @@ public:
             memcpy(&n[0], p, 16);
             const char * lp = x.data + x.size - 8;
             memcpy(&n[2], lp, 8);
-            n[2] >>= s;
-            auto res = hash(k24);
+            if constexpr (DB::isLittleEndian())
+                n[2] >>= s;
+            else
+                n[2] <<= s;
+            auto res = SubMaps::Hash::operator()(k24);
             auto buck = getBucketFromHash(res);
             keyHolderDiscardKey(key_holder);
             return func(self.impls[buck].m3, k24, res);
         }
         default:
         {
-            auto res = hash(x);
+            auto res = SubMaps::Hash::operator()(x);
             auto buck = getBucketFromHash(res);
             return func(self.impls[buck].ms, std::forward<KeyHolder>(key_holder), res);
         }
@@ -176,12 +204,9 @@ public:
         dispatch(*this, key_holder, typename Impl::EmplaceCallable{it, inserted});
     }
 
-    LookupResult ALWAYS_INLINE find(const Key x)
-    {
-        return dispatch(*this, x, typename Impl::FindCallable{});
-    }
+    LookupResult ALWAYS_INLINE find(const Key & x) { return dispatch(*this, x, typename Impl::FindCallable{}); }
 
-    ConstLookupResult ALWAYS_INLINE find(const Key x) const
+    ConstLookupResult ALWAYS_INLINE find(const Key & x) const
     {
         return dispatch(*this, x, typename Impl::FindCallable{});
     }
@@ -236,6 +261,13 @@ public:
         return true;
     }
 
+    size_t getBufferSizeInCells() const
+    {
+        size_t res = 0;
+        for (const auto & impl : impls)
+            res += impl.getBufferSizeInCells();
+        return res;
+    }
     size_t getBufferSizeInBytes() const
     {
         size_t res = 0;

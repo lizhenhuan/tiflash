@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Common/Increment.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -44,16 +46,10 @@ public:
         return static_cast<UInt64>(counter.add(1, std::forward<Callback>(locked_callback), create_if_need));
     }
 
-    UInt64 get(bool create_if_need = false)
-    {
-        return getBunch(1, create_if_need);
-    }
+    UInt64 get(bool create_if_need = false) { return getBunch(1, create_if_need); }
 
     /// Peek the next value.
-    UInt64 peek(bool create_if_need = false)
-    {
-        return getBunch(0, create_if_need);
-    }
+    UInt64 peek(bool create_if_need = false) { return getBunch(0, create_if_need); }
 
     /** Get the next number and increase the counter by `count`.
       * If the `create_if_need` parameter is not set to true, then
@@ -68,15 +64,9 @@ public:
     }
 
     /// Change the path to the file.
-    void setPath(std::string path_)
-    {
-        counter.setPath(path_);
-    }
+    void setPath(std::string path_) { counter.setPath(path_); }
 
-    void fixIfBroken(UInt64 value)
-    {
-        counter.fixIfBroken(value);
-    }
+    void fixIfBroken(UInt64 value) { counter.fixIfBroken(value); }
 
 private:
     CounterInFile counter;

@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/DataTypes/DataTypeString.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,11 +15,9 @@
 // limitations under the License.
 
 #pragma once
-
 #include <DataTypes/IDataType.h>
 
-#include <ostream>
-
+#include <span>
 
 namespace DB
 {
@@ -27,10 +27,9 @@ public:
     using FieldType = String;
     static constexpr bool is_parametric = false;
 
-    const char * getFamilyName() const override
-    {
-        return "String";
-    }
+    const char * getFamilyName() const override { return "String"; }
+
+    String getName() const override { return serdes_fmt == SerdesFormat::SeparateSizeAndChars ? NameV2 : LegacyName; }
 
     TypeIndex getTypeId() const override { return TypeIndex::String; }
 
@@ -40,7 +39,8 @@ public:
     void deserializeBinary(IColumn & column, ReadBuffer & istr) const override;
 
     void serializeBinaryBulk(const IColumn & column, WriteBuffer & ostr, size_t offset, size_t limit) const override;
-    void deserializeBinaryBulk(IColumn & column, ReadBuffer & istr, size_t limit, double avg_value_size_hint) const override;
+    void deserializeBinaryBulk(IColumn & column, ReadBuffer & istr, size_t limit, double avg_value_size_hint)
+        const override;
 
     void serializeText(const IColumn & column, size_t row_num, WriteBuffer & ostr) const override;
 
@@ -50,31 +50,65 @@ public:
     void serializeTextQuoted(const IColumn & column, size_t row_num, WriteBuffer & ostr) const override;
     void deserializeTextQuoted(IColumn & column, ReadBuffer & istr) const override;
 
-    void serializeTextJSON(const IColumn & column, size_t row_num, WriteBuffer & ostr, const FormatSettingsJSON &) const override;
+    void serializeTextJSON(const IColumn & column, size_t row_num, WriteBuffer & ostr, const FormatSettingsJSON &)
+        const override;
     void deserializeTextJSON(IColumn & column, ReadBuffer & istr) const override;
-
-    void serializeTextXML(const IColumn & column, size_t row_num, WriteBuffer & ostr) const override;
-
-    void serializeTextCSV(const IColumn & column, size_t row_num, WriteBuffer & ostr) const override;
-    void deserializeTextCSV(IColumn & column, ReadBuffer & istr, const char delimiter) const override;
 
     MutableColumnPtr createColumn() const override;
 
-    Field getDefault() const override
-    {
-        return String();
-    }
+    Field getDefault() const override { return String(); }
 
     bool equals(const IDataType & rhs) const override;
 
     bool isParametric() const override { return false; }
     bool haveSubtypes() const override { return false; }
-    bool isComparable() const override { return true; };
+    bool isComparable() const override { return true; }
     bool canBeComparedWithCollation() const override { return true; }
     bool isValueUnambiguouslyRepresentedInContiguousMemoryRegion() const override { return true; }
-    bool isString() const override { return true; };
+    bool isString() const override { return true; }
     bool isCategorial() const override { return true; }
     bool canBeInsideNullable() const override { return true; }
+
+    void enumerateStreams(const StreamCallback & callback, SubstreamPath & path) const override;
+
+    void serializeBinaryBulkWithMultipleStreams(
+        const IColumn & column,
+        const OutputStreamGetter & getter,
+        size_t offset,
+        size_t limit,
+        bool position_independent_encoding,
+        SubstreamPath & path) const override;
+
+    void deserializeBinaryBulkWithMultipleStreams(
+        IColumn & column,
+        const InputStreamGetter & getter,
+        size_t limit,
+        double avg_value_size_hint,
+        bool position_independent_encoding,
+        SubstreamPath & path) const override;
+
+    enum class SerdesFormat
+    {
+        None = 0, // Decide by STORAGE_FORMAT_CURRENT
+        SizePrefix = 1, // Legacy format, corresponding to `LegacyName`
+        SeparateSizeAndChars = 2, // New format, corresponding to `NameV2`
+    };
+
+    inline static const String LegacyName{"String"}; // For compatibility of size-prefix format.
+    inline static const String NullableLegacyName{"Nullable(String)"};
+    inline static const String NameV2{"StringV2"}; // The separate size and chars format.
+    inline static const String NullableNameV2{"Nullable(StringV2)"};
+
+    // Both getDefaultName and getNullableDefaultName are unit-tests helpers.
+    static String getDefaultName();
+    static String getNullableDefaultName();
+
+    static std::span<const std::pair<String, DataTypePtr>> getTiDBPkColumnStringNameAndTypes();
+
+    explicit DataTypeString(SerdesFormat serdes_fmt_ = SerdesFormat::None);
+
+private:
+    const SerdesFormat serdes_fmt;
 };
 
 } // namespace DB

@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,7 +15,7 @@
 #include <Common/HashTable/Hash.h>
 #include <Common/HashTable/HashMap.h>
 #include <Common/HashTable/HashSet.h>
-#include <IO/ReadBufferFromString.h>
+#include <IO/Buffer/ReadBufferFromString.h>
 #include <IO/WriteHelpers.h>
 #include <Interpreters/AggregationCommon.h>
 #include <gtest/gtest.h>
@@ -31,7 +31,7 @@ using namespace DB;
 template <typename T>
 struct DummyHash
 {
-    size_t operator()(T key) const { return T(key); }
+    size_t operator()(T key) const { return (key); }
 };
 
 template <typename HashTable>

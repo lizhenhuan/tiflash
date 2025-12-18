@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/AggregateFunctions/AggregateFunctionMaxIntersections.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -31,11 +33,13 @@ AggregateFunctionPtr createAggregateFunctionMaxIntersections(
     assertBinary(name, argument_types);
     assertNoParameters(name, parameters);
 
-    AggregateFunctionPtr res(createWithNumericType<AggregateFunctionIntersectionsMax>(*argument_types[0], kind, argument_types));
+    AggregateFunctionPtr res(
+        createWithNumericType<AggregateFunctionIntersectionsMax>(*argument_types[0], kind, argument_types));
     if (!res)
-        throw Exception("Illegal types " + argument_types[0]->getName() + " and " + argument_types[1]->getName()
-                            + " of argument for aggregate function " + name,
-                        ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT);
+        throw Exception(
+            "Illegal types " + argument_types[0]->getName() + " and " + argument_types[1]->getName()
+                + " of argument for aggregate function " + name,
+            ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT);
 
     return res;
 }
@@ -43,9 +47,31 @@ AggregateFunctionPtr createAggregateFunctionMaxIntersections(
 
 void registerAggregateFunctionsMaxIntersections(AggregateFunctionFactory & factory)
 {
-    factory.registerFunction("maxIntersections", [](const std::string & name, const DataTypes & argument_types, const Array & parameters) { return createAggregateFunctionMaxIntersections(AggregateFunctionIntersectionsKind::Count, name, argument_types, parameters); });
+    factory.registerFunction(
+        "maxIntersections",
+        [](const Context & /* context not used */,
+           const std::string & name,
+           const DataTypes & argument_types,
+           const Array & parameters) {
+            return createAggregateFunctionMaxIntersections(
+                AggregateFunctionIntersectionsKind::Count,
+                name,
+                argument_types,
+                parameters);
+        });
 
-    factory.registerFunction("maxIntersectionsPosition", [](const std::string & name, const DataTypes & argument_types, const Array & parameters) { return createAggregateFunctionMaxIntersections(AggregateFunctionIntersectionsKind::Position, name, argument_types, parameters); });
+    factory.registerFunction(
+        "maxIntersectionsPosition",
+        [](const Context & /* context not used */,
+           const std::string & name,
+           const DataTypes & argument_types,
+           const Array & parameters) {
+            return createAggregateFunctionMaxIntersections(
+                AggregateFunctionIntersectionsKind::Position,
+                name,
+                argument_types,
+                parameters);
+        });
 }
 
 } // namespace DB

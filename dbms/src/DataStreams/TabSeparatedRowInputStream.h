@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/DataStreams/TabSeparatedRowInputStream.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -32,11 +34,15 @@ public:
     /** with_names - the first line is the header with the names of the columns
       * with_types - on the next line header with type names
       */
-    TabSeparatedRowInputStream(ReadBuffer & istr_, const Block & header_, bool with_names_ = false, bool with_types_ = false);
+    TabSeparatedRowInputStream(
+        ReadBuffer & istr_,
+        const Block & header_,
+        bool with_names_ = false,
+        bool with_types_ = false);
 
     bool read(MutableColumns & columns) override;
     void readPrefix() override;
-    bool allowSyncAfterError() const override { return true; };
+    bool allowSyncAfterError() const override { return true; }
     void syncAfterError() override;
 
     std::string getDiagnosticInfo() override;
@@ -61,8 +67,11 @@ private:
 
     void updateDiagnosticInfo();
 
-    bool parseRowAndPrintDiagnosticInfo(MutableColumns & columns,
-        WriteBuffer & out, size_t max_length_of_column_name, size_t max_length_of_data_type_name);
+    bool parseRowAndPrintDiagnosticInfo(
+        MutableColumns & columns,
+        WriteBuffer & out,
+        size_t max_length_of_column_name,
+        size_t max_length_of_data_type_name);
 };
 
-}
+} // namespace DB

@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/DataTypes/DataTypeTuple.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -39,7 +41,7 @@ private:
 public:
     static constexpr bool is_parametric = true;
 
-    DataTypeTuple(const DataTypes & elems);
+    explicit DataTypeTuple(const DataTypes & elems);
     DataTypeTuple(const DataTypes & elems, const Strings & names);
 
     std::string getName() const override;
@@ -59,13 +61,12 @@ public:
     void deserializeTextEscaped(IColumn & column, ReadBuffer & istr) const override;
     void serializeTextQuoted(const IColumn & column, size_t row_num, WriteBuffer & ostr) const override;
     void deserializeTextQuoted(IColumn & column, ReadBuffer & istr) const override;
-    void serializeTextJSON(const IColumn & column, size_t row_num, WriteBuffer & ostr, const FormatSettingsJSON & settings) const override;
+    void serializeTextJSON(
+        const IColumn & column,
+        size_t row_num,
+        WriteBuffer & ostr,
+        const FormatSettingsJSON & settings) const override;
     void deserializeTextJSON(IColumn & column, ReadBuffer & istr) const override;
-    void serializeTextXML(const IColumn & column, size_t row_num, WriteBuffer & ostr) const override;
-
-    /// Tuples in CSV format will be serialized as separate columns (that is, losing their nesting in the tuple).
-    void serializeTextCSV(const IColumn & column, size_t row_num, WriteBuffer & ostr) const override;
-    void deserializeTextCSV(IColumn & column, ReadBuffer & istr, const char delimiter) const override;
 
     /** Each sub-column in a tuple is serialized in separate stream.
       */

@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,28 +15,41 @@
 #pragma once
 
 #include <Storages/DeltaMerge/Filter/RSOperator.h>
+#include <Storages/DeltaMerge/Index/RoughCheck.h>
 
-namespace DB
+namespace DB::DM
 {
-namespace DM
-{
+
 class Equal : public ColCmpVal
 {
 public:
     Equal(const Attr & attr_, const Field & value_)
-        : ColCmpVal(attr_, value_, 0)
+        : ColCmpVal(attr_, value_)
     {}
 
     String name() override { return "equal"; }
 
-    RSResult roughCheck(size_t pack_id, const RSCheckParam & param) override
+    RSResults roughCheck(size_t start_pack, size_t pack_count, const RSCheckParam & param) override
     {
-        GET_RSINDEX_FROM_PARAM_NOT_FOUND_RETURN_SOME(param, attr, rsindex);
-        return rsindex.minmax->checkEqual(pack_id, value, rsindex.type);
+        return minMaxCheckCmp<RoughCheck::CheckEqual>(start_pack, pack_count, param, attr, value);
+    }
+
+    ColumnRangePtr buildSets(const google::protobuf::RepeatedPtrField<tipb::ColumnarIndexInfo> & index_infos) override
+    {
+        if (auto set = IntegerSet::createValueSet(attr.type, {value}); set)
+        {
+            auto iter = std::find_if(index_infos.begin(), index_infos.end(), [&](const auto & info) {
+                return info.index_type() == tipb::ColumnarIndexType::TypeInverted
+                    && info.inverted_query_info().column_id() == attr.col_id;
+            });
+            if (iter != index_infos.end())
+                return SingleColumnRange::create(
+                    iter->inverted_query_info().column_id(),
+                    iter->inverted_query_info().index_id(),
+                    set);
+        }
+        return UnsupportedColumnRange::create();
     }
 };
 
-
-} // namespace DM
-
-} // namespace DB
+} // namespace DB::DM

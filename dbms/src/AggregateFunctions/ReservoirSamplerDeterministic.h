@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/AggregateFunctions/ReservoirSamplerDeterministic.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,7 +20,7 @@
 #include <Common/HashTable/Hash.h>
 #include <Common/NaNUtils.h>
 #include <Common/PODArray.h>
-#include <IO/ReadBuffer.h>
+#include <IO/Buffer/ReadBuffer.h>
 #include <IO/ReadHelpers.h>
 #include <IO/WriteHelpers.h>
 #include <Poco/Exception.h>
@@ -58,20 +60,15 @@ enum class ReservoirSamplerDeterministicOnEmpty
     RETURN_NAN_OR_ZERO,
 };
 
-template <typename T,
-          ReservoirSamplerDeterministicOnEmpty OnEmpty = ReservoirSamplerDeterministicOnEmpty::THROW>
+template <typename T, ReservoirSamplerDeterministicOnEmpty OnEmpty = ReservoirSamplerDeterministicOnEmpty::THROW>
 class ReservoirSamplerDeterministic
 {
-    bool good(const UInt32 hash)
-    {
-        return hash == ((hash >> skip_degree) << skip_degree);
-    }
+    bool good(const UInt32 hash) { return hash == ((hash >> skip_degree) << skip_degree); }
 
 public:
     ReservoirSamplerDeterministic(const size_t sample_count = DEFAULT_SAMPLE_COUNT)
         : sample_count{sample_count}
-    {
-    }
+    {}
 
     void clear()
     {
@@ -94,10 +91,7 @@ public:
         ++total_values;
     }
 
-    size_t size() const
-    {
-        return total_values;
-    }
+    size_t size() const { return total_values; }
 
     T quantileNearest(double level)
     {
@@ -140,7 +134,7 @@ public:
     void merge(const ReservoirSamplerDeterministic & b)
     {
         if (sample_count != b.sample_count)
-            throw Poco::Exception("Cannot merge ReservoirSamplerDeterministic's with different sample_count");
+            throw DB::Exception("Cannot merge ReservoirSamplerDeterministic's with different sample_count");
         sorted = false;
 
         if (b.skip_degree > skip_degree)
@@ -181,7 +175,8 @@ private:
     /// We allocate some memory on the stack to avoid allocations when there are many objects with a small number of elements.
     static constexpr size_t bytes_on_stack = 64;
     using Element = std::pair<T, UInt32>;
-    using Array = DB::PODArray<Element, bytes_on_stack / sizeof(Element), AllocatorWithStackMemory<Allocator<false>, bytes_on_stack>>;
+    using Array = DB::
+        PODArray<Element, bytes_on_stack / sizeof(Element), AllocatorWithStackMemory<Allocator<false>, bytes_on_stack>>;
 
     size_t sample_count;
     size_t total_values{};
@@ -229,16 +224,17 @@ private:
         if (sorted)
             return;
         sorted = true;
-        std::sort(samples.begin(), samples.end(), [](const std::pair<T, UInt32> & lhs, const std::pair<T, UInt32> & rhs) {
-            return lhs.first < rhs.first;
-        });
+        std::sort(
+            samples.begin(),
+            samples.end(),
+            [](const std::pair<T, UInt32> & lhs, const std::pair<T, UInt32> & rhs) { return lhs.first < rhs.first; });
     }
 
     template <typename ResultType>
     ResultType onEmpty() const
     {
         if (OnEmpty == ReservoirSamplerDeterministicOnEmpty::THROW)
-            throw Poco::Exception("Quantile of empty ReservoirSamplerDeterministic");
+            throw DB::Exception("Quantile of empty ReservoirSamplerDeterministic");
         else
             return NanLikeValueConstructor<ResultType, std::is_floating_point_v<ResultType>>::getValue();
     }

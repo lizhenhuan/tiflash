@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/DataStreams/OneBlockInputStream.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -26,7 +28,9 @@ namespace DB
 class OneBlockInputStream : public IProfilingBlockInputStream
 {
 public:
-    OneBlockInputStream(const Block & block_) : block(block_) {}
+    explicit OneBlockInputStream(const Block & block_)
+        : block(block_)
+    {}
 
     String getName() const override { return "One"; }
 
@@ -34,7 +38,7 @@ public:
     {
         Block res;
         for (const auto & elem : block)
-            res.insert({ elem.column->cloneEmpty(), elem.type, elem.name });
+            res.insert({elem.column->cloneEmpty(), elem.type, elem.name});
         return res;
     }
 
@@ -53,4 +57,4 @@ private:
     bool has_been_read = false;
 };
 
-}
+} // namespace DB

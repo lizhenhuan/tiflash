@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/DataTypes/DataTypeDate.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -56,10 +58,15 @@ void DataTypeDate::deserializeTextQuoted(IColumn & column, ReadBuffer & istr) co
     assertChar('\'', istr);
     readDateText(x, istr);
     assertChar('\'', istr);
-    static_cast<ColumnUInt16 &>(column).getData().push_back(x); /// It's important to do this at the end - for exception safety.
+    static_cast<ColumnUInt16 &>(column).getData().push_back(
+        x); /// It's important to do this at the end - for exception safety.
 }
 
-void DataTypeDate::serializeTextJSON(const IColumn & column, size_t row_num, WriteBuffer & ostr, const FormatSettingsJSON &) const
+void DataTypeDate::serializeTextJSON(
+    const IColumn & column,
+    size_t row_num,
+    WriteBuffer & ostr,
+    const FormatSettingsJSON &) const
 {
     writeChar('"', ostr);
     serializeText(column, row_num, ostr);
@@ -73,20 +80,6 @@ void DataTypeDate::deserializeTextJSON(IColumn & column, ReadBuffer & istr) cons
     readDateText(x, istr);
     assertChar('"', istr);
     static_cast<ColumnUInt16 &>(column).getData().push_back(x);
-}
-
-void DataTypeDate::serializeTextCSV(const IColumn & column, size_t row_num, WriteBuffer & ostr) const
-{
-    writeChar('"', ostr);
-    serializeText(column, row_num, ostr);
-    writeChar('"', ostr);
-}
-
-void DataTypeDate::deserializeTextCSV(IColumn & column, ReadBuffer & istr, const char /*delimiter*/) const
-{
-    LocalDate value;
-    readCSV(value, istr);
-    static_cast<ColumnUInt16 &>(column).getData().push_back(value.getDayNum());
 }
 
 bool DataTypeDate::equals(const IDataType & rhs) const

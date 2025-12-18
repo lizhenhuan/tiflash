@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,15 +14,16 @@
 
 #pragma once
 
-#include <Common/Exception.h>
-#include <Common/Logger.h>
-#include <Common/TiFlashMetrics.h>
-#include <Encryption/ReadBufferFromFileProvider.h>
-#include <Encryption/createReadBufferFromFileBaseByFileProvider.h>
+#include <Interpreters/Context.h>
+#include <Storages/DeltaMerge/DMContext.h>
+#include <Storages/DeltaMerge/Delta/DeltaValueSpace.h>
 #include <Storages/DeltaMerge/File/DMFile.h>
-#include <Storages/DeltaMerge/Filter/FilterHelper.h>
-#include <Storages/DeltaMerge/Filter/RSOperator.h>
+#include <Storages/DeltaMerge/File/DMFilePackFilterResult.h>
+#include <Storages/DeltaMerge/File/DMFilePackFilter_fwd.h>
+#include <Storages/DeltaMerge/Filter/RSOperator_fwd.h>
 #include <Storages/DeltaMerge/RowKeyRange.h>
+#include <Storages/DeltaMerge/ScanContext_fwd.h>
+
 
 namespace ProfileEvents
 {
@@ -31,87 +32,145 @@ extern const Event DMFileFilterAftPKAndPackSet;
 extern const Event DMFileFilterAftRoughSet;
 } // namespace ProfileEvents
 
-namespace DB
+namespace DB::DM
 {
-namespace DM
-{
-using IdSet = std::set<UInt64>;
-using IdSetPtr = std::shared_ptr<IdSet>;
 
 class DMFilePackFilter
 {
+    friend class DMFilePackFilterResult;
+
 public:
-    // Empty `rowkey_ranges` means do not filter by rowkey_ranges
-    static DMFilePackFilter loadFrom(
+    struct MatchDetails
+    {
+        size_t match_packs = 0;
+        size_t match_rows = 0;
+        size_t match_bytes = 0;
+    };
+    // Get approximate valid rows and bytes after filter invalid packs by rowkey_ranges
+    static MatchDetails loadValidRowsAndBytes(
+        const DMContext & dm_context,
         const DMFilePtr & dmfile,
-        const MinMaxIndexCachePtr & index_cache,
+        bool set_cache_if_miss,
+        const RowKeyRanges & rowkey_ranges);
+
+    // Empty `rowkey_ranges` means do not filter by rowkey_ranges
+    static DMFilePackFilterResultPtr loadFrom(
+        const DMContext & dm_context,
+        const DMFilePtr & dmfile,
+        bool set_cache_if_miss,
+        const RowKeyRanges & rowkey_ranges,
+        const RSOperatorPtr & filter,
+        const IdSetPtr & read_packs)
+    {
+        DMFilePackFilter pack_filter(
+            dmfile,
+            dm_context.global_context.getMinMaxIndexCache(),
+            set_cache_if_miss,
+            rowkey_ranges,
+            filter,
+            read_packs,
+            dm_context.global_context.getFileProvider(),
+            dm_context.global_context.getReadLimiter(),
+            dm_context.scan_context,
+            dm_context.tracing_id);
+        return pack_filter.load();
+    }
+
+    static DMFilePackFilterResultPtr loadFrom(
+        const MinMaxIndexCachePtr & index_cache_,
+        const FileProviderPtr & file_provider_,
+        const ReadLimiterPtr & read_limiter_,
+        const ScanContextPtr & scan_context,
+        const DMFilePtr & dmfile,
         bool set_cache_if_miss,
         const RowKeyRanges & rowkey_ranges,
         const RSOperatorPtr & filter,
         const IdSetPtr & read_packs,
-        const FileProviderPtr & file_provider,
-        const ReadLimiterPtr & read_limiter,
         const String & tracing_id)
     {
-        auto pack_filter = DMFilePackFilter(dmfile, index_cache, set_cache_if_miss, rowkey_ranges, filter, read_packs, file_provider, read_limiter, tracing_id);
-        pack_filter.init();
-        return pack_filter;
+        DMFilePackFilter pack_filter(
+            dmfile,
+            index_cache_,
+            set_cache_if_miss,
+            rowkey_ranges,
+            filter,
+            read_packs,
+            file_provider_,
+            read_limiter_,
+            scan_context,
+            tracing_id);
+        return pack_filter.load();
     }
 
-    inline const std::vector<RSResult> & getHandleRes() const { return handle_res; }
-    inline const std::vector<UInt8> & getUsePacks() const { return use_packs; }
-
-    Handle getMinHandle(size_t pack_id)
+    struct Range
     {
-        if (!param.indexes.count(EXTRA_HANDLE_COLUMN_ID))
-            tryLoadIndex(EXTRA_HANDLE_COLUMN_ID);
-        auto & minmax_index = param.indexes.find(EXTRA_HANDLE_COLUMN_ID)->second.minmax;
-        return minmax_index->getIntMinMax(pack_id).first;
-    }
+        UInt64 offset;
+        UInt64 rows;
 
-    StringRef getMinStringHandle(size_t pack_id)
-    {
-        if (!param.indexes.count(EXTRA_HANDLE_COLUMN_ID))
-            tryLoadIndex(EXTRA_HANDLE_COLUMN_ID);
-        auto & minmax_index = param.indexes.find(EXTRA_HANDLE_COLUMN_ID)->second.minmax;
-        return minmax_index->getStringMinMax(pack_id).first;
-    }
+        Range(UInt64 offset_, UInt64 rows_)
+            : offset(offset_)
+            , rows(rows_)
+        {}
 
-    UInt64 getMaxVersion(size_t pack_id)
-    {
-        if (!param.indexes.count(VERSION_COLUMN_ID))
-            tryLoadIndex(VERSION_COLUMN_ID);
-        auto & minmax_index = param.indexes.find(VERSION_COLUMN_ID)->second.minmax;
-        return minmax_index->getUInt64MinMax(pack_id).second;
-    }
+        bool operator==(const Range &) const = default;
+    };
 
-    // Get valid rows and bytes after filter invalid packs by handle_range and filter
-    std::pair<size_t, size_t> validRowsAndBytes()
-    {
-        size_t rows = 0;
-        size_t bytes = 0;
-        const auto & pack_stats = dmfile->getPackStats();
-        for (size_t i = 0; i < pack_stats.size(); ++i)
-        {
-            if (use_packs[i])
-            {
-                rows += pack_stats[i].rows;
-                bytes += pack_stats[i].bytes;
-            }
-        }
-        return {rows, bytes};
-    }
+    /**
+    * @brief For all the packs in `pack_filter_results`, if all the rows in the pack
+    *        compliant with RowKey filter and MVCC filter (by `start_ts`) requirements, then
+    *        we skip reading the packs from disk and return the skipped ranges and new
+    *        PackFilterResults for building bitmap.
+    * @return <SkippedRanges, NewPackFilterResults>
+    *        - SkippedRanges: All the rows in the ranges compliant the requirements
+    *        - NewPackFilterResults: Those packs should be read from disk and go through the
+    *                                RowKey filter and MVCC filter
+    */
+    static std::pair<std::vector<Range>, DMFilePackFilterResults> getSkippedRangeAndFilter(
+        const DMContext & dm_context,
+        const DMFiles & dmfiles,
+        const DMFilePackFilterResults & pack_filter_results,
+        UInt64 start_ts);
+
+    /**
+    * @brief For all the packs in `pack_filter_results`, if all the rows in the pack
+    *        compliant with RowKey filter and MVCC filter (by `start_ts`) requirements,
+    *        and are continuously sorted in delta index, or are deleted, then we skip
+    *        reading the packs from disk and return the skipped ranges(not deleted), 
+    *        and new PackFilterResults for building bitmap.
+    * @return <SkippedRanges, NewPackFilterResults>
+    *        - SkippedRanges: All the rows in the ranges that comply with the requirements.
+    *        - NewPackFilterResults: Those packs should be read from disk and go through
+    *                                the delta merge, RowKey filter, and MVCC filter.
+    */
+    static std::pair<std::vector<Range>, DMFilePackFilterResults> getSkippedRangeAndFilterWithMultiVersion(
+        const DMContext & dm_context,
+        const DMFiles & dmfiles,
+        const DMFilePackFilterResults & pack_filter_results,
+        UInt64 start_ts,
+        const DeltaIndexIterator & delta_index_begin,
+        const DeltaIndexIterator & delta_index_end);
+
+    static std::pair<DataTypePtr, MinMaxIndexPtr> loadIndex(
+        const DMFile & dmfile,
+        const FileProviderPtr & file_provider,
+        const MinMaxIndexCachePtr & index_cache,
+        bool set_cache_if_miss,
+        ColId col_id,
+        const ReadLimiterPtr & read_limiter,
+        const ScanContextPtr & scan_context);
 
 private:
-    DMFilePackFilter(const DMFilePtr & dmfile_,
-                     const MinMaxIndexCachePtr & index_cache_,
-                     bool set_cache_if_miss_,
-                     const RowKeyRanges & rowkey_ranges_, // filter by handle range
-                     const RSOperatorPtr & filter_, // filter by push down where clause
-                     const IdSetPtr & read_packs_, // filter by pack index
-                     const FileProviderPtr & file_provider_,
-                     const ReadLimiterPtr & read_limiter_,
-                     const String & tracing_id)
+    DMFilePackFilter(
+        const DMFilePtr & dmfile_,
+        const MinMaxIndexCachePtr & index_cache_,
+        bool set_cache_if_miss_,
+        const RowKeyRanges & rowkey_ranges_, // filter by handle range
+        const RSOperatorPtr & filter_, // filter by push down where clause
+        const IdSetPtr & read_packs_, // filter by pack index
+        const FileProviderPtr & file_provider_,
+        const ReadLimiterPtr & read_limiter_,
+        const ScanContextPtr & scan_context_,
+        const String & tracing_id)
         : dmfile(dmfile_)
         , index_cache(index_cache_)
         , set_cache_if_miss(set_cache_if_miss_)
@@ -119,176 +178,28 @@ private:
         , filter(filter_)
         , read_packs(read_packs_)
         , file_provider(file_provider_)
-        , handle_res(dmfile->getPacks(), RSResult::All)
-        , use_packs(dmfile->getPacks())
-        , log(Logger::get("DMFilePackFilter", tracing_id))
+        , scan_context(scan_context_)
+        , log(Logger::get(tracing_id))
         , read_limiter(read_limiter_)
-    {
-    }
+    {}
 
-    void init()
-    {
-        size_t pack_count = dmfile->getPacks();
-        auto read_all_packs = (rowkey_ranges.size() == 1 && rowkey_ranges[0].all()) || rowkey_ranges.empty();
-        if (!read_all_packs)
-        {
-            tryLoadIndex(EXTRA_HANDLE_COLUMN_ID);
-            std::vector<RSOperatorPtr> handle_filters;
-            for (auto & rowkey_range : rowkey_ranges)
-                handle_filters.emplace_back(toFilter(rowkey_range));
-            for (size_t i = 0; i < pack_count; ++i)
-            {
-                handle_res[i] = RSResult::None;
-            }
-            for (size_t i = 0; i < pack_count; ++i)
-            {
-                for (auto & handle_filter : handle_filters)
-                {
-                    handle_res[i] = handle_res[i] || handle_filter->roughCheck(i, param);
-                    if (handle_res[i] == RSResult::All)
-                        break;
-                }
-            }
-        }
+    DMFilePackFilterResultPtr load();
 
-        ProfileEvents::increment(ProfileEvents::DMFileFilterNoFilter, pack_count);
+    static void loadIndex(
+        ColumnIndexes & indexes,
+        const DMFilePtr & dmfile,
+        const FileProviderPtr & file_provider,
+        const MinMaxIndexCachePtr & index_cache,
+        bool set_cache_if_miss,
+        ColId col_id,
+        const ReadLimiterPtr & read_limiter,
+        const ScanContextPtr & scan_context);
 
-        size_t after_pk = 0;
-        size_t after_read_packs = 0;
-        size_t after_filter = 0;
-
-        /// Check packs by handle_res
-        for (size_t i = 0; i < pack_count; ++i)
-        {
-            use_packs[i] = handle_res[i] != None;
-        }
-
-        for (auto u : use_packs)
-            after_pk += u;
-
-        /// Check packs by read_packs
-        if (read_packs)
-        {
-            for (size_t i = 0; i < pack_count; ++i)
-            {
-                use_packs[i] = (static_cast<bool>(use_packs[i])) && (static_cast<bool>(read_packs->count(i)));
-            }
-        }
-
-        for (auto u : use_packs)
-            after_read_packs += u;
-        ProfileEvents::increment(ProfileEvents::DMFileFilterAftPKAndPackSet, after_read_packs);
-
-
-        /// Check packs by filter in where clause
-        if (filter)
-        {
-            // Load index based on filter.
-            Attrs attrs = filter->getAttrs();
-            for (auto & attr : attrs)
-            {
-                tryLoadIndex(attr.col_id);
-            }
-
-            for (size_t i = 0; i < pack_count; ++i)
-            {
-                use_packs[i] = (static_cast<bool>(use_packs[i])) && (filter->roughCheck(i, param) != None);
-            }
-        }
-
-        for (auto u : use_packs)
-            after_filter += u;
-        ProfileEvents::increment(ProfileEvents::DMFileFilterAftRoughSet, after_filter);
-
-        Float64 filter_rate = 0.0;
-        if (after_read_packs != 0)
-        {
-            filter_rate = (after_read_packs - after_filter) * 100.0 / after_read_packs;
-            GET_METRIC(tiflash_storage_rough_set_filter_rate, type_dtfile_pack).Observe(filter_rate);
-        }
-        LOG_FMT_DEBUG(log,
-                      "RSFilter exclude rate: {:.2f}, after_pk: {}, after_read_packs: {}, after_filter: {}, handle_ranges: {}"
-                      ", read_packs: {}, pack_count: {}",
-                      ((after_read_packs == 0) ? std::numeric_limits<double>::quiet_NaN() : filter_rate),
-                      after_pk,
-                      after_read_packs,
-                      after_filter,
-                      toDebugString(rowkey_ranges),
-                      ((read_packs == nullptr) ? 0 : read_packs->size()),
-                      pack_count);
-    }
-
-    static void loadIndex(ColumnIndexes & indexes,
-                          const DMFilePtr & dmfile,
-                          const FileProviderPtr & file_provider,
-                          const MinMaxIndexCachePtr & index_cache,
-                          bool set_cache_if_miss,
-                          ColId col_id,
-                          const ReadLimiterPtr & read_limiter)
-    {
-        const auto & type = dmfile->getColumnStat(col_id).type;
-        const auto file_name_base = DMFile::getFileNameBase(col_id);
-
-        auto load = [&]() {
-            auto index_file_size = dmfile->colIndexSize(file_name_base);
-            if (index_file_size == 0)
-                return std::make_shared<MinMaxIndex>(*type);
-            if (!dmfile->configuration)
-            {
-                auto index_buf = ReadBufferFromFileProvider(
-                    file_provider,
-                    dmfile->colIndexPath(file_name_base),
-                    dmfile->encryptionIndexPath(file_name_base),
-                    std::min(static_cast<size_t>(DBMS_DEFAULT_BUFFER_SIZE), index_file_size),
-                    read_limiter);
-                index_buf.seek(dmfile->colIndexOffset(file_name_base));
-                return MinMaxIndex::read(*type, index_buf, dmfile->colIndexSize(file_name_base));
-            }
-            else
-            {
-                auto index_buf = createReadBufferFromFileBaseByFileProvider(file_provider,
-                                                                            dmfile->colIndexPath(file_name_base),
-                                                                            dmfile->encryptionIndexPath(file_name_base),
-                                                                            dmfile->colIndexSize(file_name_base),
-                                                                            read_limiter,
-                                                                            dmfile->configuration->getChecksumAlgorithm(),
-                                                                            dmfile->configuration->getChecksumFrameLength());
-                index_buf->seek(dmfile->colIndexOffset(file_name_base));
-                auto header_size = dmfile->configuration->getChecksumHeaderLength();
-                auto frame_total_size = dmfile->configuration->getChecksumFrameLength() + header_size;
-                auto frame_count = index_file_size / frame_total_size + (index_file_size % frame_total_size != 0);
-                return MinMaxIndex::read(*type, *index_buf, index_file_size - header_size * frame_count);
-            }
-        };
-        MinMaxIndexPtr minmax_index;
-        if (index_cache && set_cache_if_miss)
-        {
-            minmax_index = index_cache->getOrSet(dmfile->colIndexCacheKey(file_name_base), load);
-        }
-        else
-        {
-            // try load from the cache first
-            if (index_cache)
-                minmax_index = index_cache->get(dmfile->colIndexCacheKey(file_name_base));
-            if (minmax_index == nullptr)
-                minmax_index = load();
-        }
-        indexes.emplace(col_id, RSIndex(type, minmax_index));
-    }
-
-    void tryLoadIndex(const ColId col_id)
-    {
-        if (param.indexes.count(col_id))
-            return;
-
-        if (!dmfile->isColIndexExist(col_id))
-            return;
-
-        loadIndex(param.indexes, dmfile, file_provider, index_cache, set_cache_if_miss, col_id, read_limiter);
-    }
+    void tryLoadIndex(RSCheckParam & param, ColId col_id);
 
 private:
     DMFilePtr dmfile;
+
     MinMaxIndexCachePtr index_cache;
     bool set_cache_if_miss;
     RowKeyRanges rowkey_ranges;
@@ -296,14 +207,10 @@ private:
     IdSetPtr read_packs;
     FileProviderPtr file_provider;
 
-    RSCheckParam param;
-
-    std::vector<RSResult> handle_res;
-    std::vector<UInt8> use_packs;
+    const ScanContextPtr scan_context;
 
     LoggerPtr log;
     ReadLimiterPtr read_limiter;
 };
 
-} // namespace DM
-} // namespace DB
+} // namespace DB::DM

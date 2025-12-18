@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Common/FileUpdatesTracker.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -32,19 +34,10 @@ public:
         , known_time(0)
     {}
 
-    bool isModified() const
-    {
-        return getLastModificationTime() > known_time;
-    }
+    bool isModified() const { return getLastModificationTime() > known_time; }
 
-    void fixCurrentVersion()
-    {
-        known_time = getLastModificationTime();
-    }
+    void fixCurrentVersion() { known_time = getLastModificationTime(); }
 
 private:
-    Poco::Timestamp getLastModificationTime() const
-    {
-        return Poco::File(path).getLastModified();
-    }
+    Poco::Timestamp getLastModificationTime() const { return Poco::File(path).getLastModified(); }
 };

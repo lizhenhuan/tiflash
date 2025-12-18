@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/libs/libcommon/include/common/LocalDate.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -68,10 +70,7 @@ private:
     }
 
 public:
-    explicit LocalDate(time_t time)
-    {
-        init(time);
-    }
+    explicit LocalDate(time_t time) { init(time); }
 
     LocalDate(DayNum day_num)
     {
@@ -85,25 +84,17 @@ public:
         : m_year(year_)
         , m_month(month_)
         , m_day(day_)
-    {
-    }
+    {}
 
-    explicit LocalDate(const std::string & s)
-    {
-        init(s.data(), s.size());
-    }
+    explicit LocalDate(const std::string & s) { init(s.data(), s.size()); }
 
-    LocalDate(const char * data, size_t length)
-    {
-        init(data, length);
-    }
+    LocalDate(const char * data, size_t length) { init(data, length); }
 
     LocalDate()
         : m_year(0)
         , m_month(0)
         , m_day(0)
-    {
-    }
+    {}
 
     LocalDate(const LocalDate &) noexcept = default;
     LocalDate & operator=(const LocalDate &) noexcept = default;
@@ -114,10 +105,7 @@ public:
         return DayNum(lut.makeDayNum(m_year, m_month, m_day).toUnderType());
     }
 
-    operator DayNum() const
-    {
-        return getDayNum();
-    }
+    operator DayNum() const { return getDayNum(); }
 
     unsigned short year() const { return m_year; }
     unsigned char month() const { return m_month; }
@@ -127,41 +115,31 @@ public:
     void month(unsigned char x) { m_month = x; }
     void day(unsigned char x) { m_day = x; }
 
-    bool operator<(const LocalDate & other) const
-    {
-        return 0 > memcmp(this, &other, sizeof(*this));
-    }
+    bool operator<(const LocalDate & other) const { return 0 > memcmp(this, &other, sizeof(*this)); }
 
-    bool operator>(const LocalDate & other) const
-    {
-        return 0 < memcmp(this, &other, sizeof(*this));
-    }
+    bool operator>(const LocalDate & other) const { return 0 < memcmp(this, &other, sizeof(*this)); }
 
-    bool operator<=(const LocalDate & other) const
-    {
-        return 0 >= memcmp(this, &other, sizeof(*this));
-    }
+    bool operator<=(const LocalDate & other) const { return 0 >= memcmp(this, &other, sizeof(*this)); }
 
-    bool operator>=(const LocalDate & other) const
-    {
-        return 0 <= memcmp(this, &other, sizeof(*this));
-    }
+    bool operator>=(const LocalDate & other) const { return 0 <= memcmp(this, &other, sizeof(*this)); }
 
-    bool operator==(const LocalDate & other) const
-    {
-        return 0 == memcmp(this, &other, sizeof(*this));
-    }
+    bool operator==(const LocalDate & other) const { return 0 == memcmp(this, &other, sizeof(*this)); }
 
-    bool operator!=(const LocalDate & other) const
-    {
-        return !(*this == other);
-    }
+    bool operator!=(const LocalDate & other) const { return !(*this == other); }
 
     /// NOTE Inefficient.
     std::string toString(char separator = '-') const
     {
         if (separator)
-            return fmt::format("{}{}{}{}{}{}{}", year(), separator, month() / 10, month() % 10, separator, day() / 10, day() % 10);
+            return fmt::format(
+                "{}{}{}{}{}{}{}",
+                year(),
+                separator,
+                month() / 10,
+                month() % 10,
+                separator,
+                day() / 10,
+                day() % 10);
         else
             return fmt::format("{}{}{}{}{}", year(), month() / 10, month() % 10, day() / 10, day() % 10);
     }

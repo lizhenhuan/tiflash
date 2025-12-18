@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Columns/FilterDescription.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -44,10 +46,13 @@ ConstantFilterDescription::ConstantFilterDescription(const IColumn & column)
         if (!typeid_cast<const ColumnUInt8 *>(&column_nested))
         {
             const auto * column_nested_nullable = typeid_cast<const ColumnNullable *>(&column_nested);
-            if (!column_nested_nullable || !typeid_cast<const ColumnUInt8 *>(&column_nested_nullable->getNestedColumn()))
+            if (!column_nested_nullable
+                || !typeid_cast<const ColumnUInt8 *>(&column_nested_nullable->getNestedColumn()))
             {
                 throw Exception(
-                    fmt::format("Illegal type {} of column for constant filter. Must be UInt8 or Nullable(UInt8).", column_nested.getName()),
+                    fmt::format(
+                        "Illegal type {} of column for constant filter. Must be UInt8 or Nullable(UInt8).",
+                        column_nested.getName()),
                     ErrorCodes::ILLEGAL_TYPE_OF_COLUMN_FOR_FILTER);
             }
         }
@@ -77,7 +82,9 @@ FilterDescription::FilterDescription(const IColumn & column)
         auto * concrete_column = typeid_cast<ColumnUInt8 *>(mutable_holder.get());
         if (!concrete_column)
             throw Exception(
-                fmt::format("Illegal type {} of column for filter. Must be UInt8 or Nullable(UInt8).", column.getName()),
+                fmt::format(
+                    "Illegal type {} of column for filter. Must be UInt8 or Nullable(UInt8).",
+                    column.getName()),
                 ErrorCodes::ILLEGAL_TYPE_OF_COLUMN_FOR_FILTER);
 
         const NullMap & null_map = nullable_column->getNullMapData();
@@ -93,7 +100,9 @@ FilterDescription::FilterDescription(const IColumn & column)
     }
 
     throw Exception(
-        fmt::format("Illegal type {} of column for filter. Must be UInt8 or Nullable(UInt8) or Const variants of them.", column.getName()),
+        fmt::format(
+            "Illegal type {} of column for filter. Must be UInt8 or Nullable(UInt8) or Const variants of them.",
+            column.getName()),
         ErrorCodes::ILLEGAL_TYPE_OF_COLUMN_FOR_FILTER);
 }
 

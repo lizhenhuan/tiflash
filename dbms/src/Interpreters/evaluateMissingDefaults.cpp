@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Interpreters/evaluateMissingDefaults.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -25,10 +27,11 @@
 
 namespace DB
 {
-void evaluateMissingDefaults(Block & block,
-                             const NamesAndTypesList & required_columns,
-                             const ColumnDefaults & column_defaults,
-                             const Context & context)
+void evaluateMissingDefaults(
+    Block & block,
+    const NamesAndTypesList & required_columns,
+    const ColumnDefaults & column_defaults,
+    const Context & context)
 {
     if (column_defaults.empty())
         return;
@@ -44,8 +47,7 @@ void evaluateMissingDefaults(Block & block,
 
         /// expressions must be cloned to prevent modification by the ExpressionAnalyzer
         if (it != column_defaults.end())
-            default_expr_list->children.emplace_back(
-                setAlias(it->second.expression->clone(), it->first));
+            default_expr_list->children.emplace_back(setAlias(it->second.expression->clone(), it->first));
     }
 
     /// nothing to evaluate

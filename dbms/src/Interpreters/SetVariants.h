@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Interpreters/SetVariants.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -31,7 +33,10 @@ namespace DB
 
 
 /// For the case where there is one numeric key.
-template <typename FieldType, typename TData, bool use_cache = true> /// UInt8/16/32/64 for any types with corresponding bit width.
+template <
+    typename FieldType,
+    typename TData,
+    bool use_cache = true> /// UInt8/16/32/64 for any types with corresponding bit width.
 struct SetMethodOneNumber
 {
     using Data = TData;
@@ -39,16 +44,8 @@ struct SetMethodOneNumber
 
     Data data;
 
-    using State = ColumnsHashing::HashMethodOneNumber<typename Data::value_type,
-                                                      void,
-                                                      FieldType,
-                                                      use_cache>;
+    using State = ColumnsHashing::HashMethodOneNumber<typename Data::value_type, VoidMapped, FieldType, use_cache>;
 };
-
-namespace GeneralCI
-{
-using WeightType = uint16_t;
-} // namespace GeneralCI
 
 /// For the case where there is one string key.
 template <typename TData>
@@ -59,7 +56,18 @@ struct SetMethodString
 
     Data data;
 
-    using State = ColumnsHashing::HashMethodString<typename Data::value_type, void, true, false>;
+    using State = ColumnsHashing::HashMethodString<typename Data::value_type, VoidMapped, false>;
+};
+
+template <typename TData, bool padding>
+struct SetMethodStringBinNoCache
+{
+    using Data = TData;
+    using Key = typename Data::key_type;
+
+    Data data;
+
+    using State = ColumnsHashing::HashMethodStringBin<typename Data::value_type, VoidMapped, padding>;
 };
 
 /// For the case when there is one fixed-length string key.
@@ -71,7 +79,7 @@ struct SetMethodFixedString
 
     Data data;
 
-    using State = ColumnsHashing::HashMethodFixedString<typename Data::value_type, void, true, false>;
+    using State = ColumnsHashing::HashMethodFixedString<typename Data::value_type, VoidMapped, false>;
 };
 
 namespace set_impl
@@ -111,10 +119,7 @@ protected:
     /// Return the columns which actually contain the values of the keys.
     /// For a given key column, if it is nullable, we return its nested
     /// column. Otherwise we return the key column itself.
-    inline const ColumnRawPtrs & getActualColumns() const
-    {
-        return actual_columns;
-    }
+    inline const ColumnRawPtrs & getActualColumns() const { return actual_columns; }
 
     /// Create a bitmap that indicates whether, for a particular row,
     /// a key column bears a null value or not.
@@ -151,23 +156,26 @@ class BaseStateKeysFixed<Key, false>
 protected:
     void init(const ColumnRawPtrs &)
     {
-        throw Exception{"Internal error: calling init() for non-nullable"
-                        " keys is forbidden",
-                        ErrorCodes::LOGICAL_ERROR};
+        throw Exception{
+            "Internal error: calling init() for non-nullable"
+            " keys is forbidden",
+            ErrorCodes::LOGICAL_ERROR};
     }
 
     const ColumnRawPtrs & getActualColumns() const
     {
-        throw Exception{"Internal error: calling getActualColumns() for non-nullable"
-                        " keys is forbidden",
-                        ErrorCodes::LOGICAL_ERROR};
+        throw Exception{
+            "Internal error: calling getActualColumns() for non-nullable"
+            " keys is forbidden",
+            ErrorCodes::LOGICAL_ERROR};
     }
 
     KeysNullMap<Key> createBitmap(size_t) const
     {
-        throw Exception{"Internal error: calling createBitmap() for non-nullable keys"
-                        " is forbidden",
-                        ErrorCodes::LOGICAL_ERROR};
+        throw Exception{
+            "Internal error: calling createBitmap() for non-nullable keys"
+            " is forbidden",
+            ErrorCodes::LOGICAL_ERROR};
     }
 };
 
@@ -183,7 +191,8 @@ struct SetMethodKeysFixed
 
     Data data;
 
-    using State = ColumnsHashing::HashMethodKeysFixed<typename Data::value_type, Key, void, has_nullable_keys, false>;
+    using State
+        = ColumnsHashing::HashMethodKeysFixed<typename Data::value_type, Key, VoidMapped, has_nullable_keys, false>;
 };
 
 /// For other cases. 128 bit hash from the key.
@@ -195,7 +204,7 @@ struct SetMethodHashed
 
     Data data;
 
-    using State = ColumnsHashing::HashMethodHashed<typename Data::value_type, void>;
+    using State = ColumnsHashing::HashMethodHashed<typename Data::value_type, VoidMapped>;
 };
 
 
@@ -214,6 +223,8 @@ struct NonClearableSet
     std::unique_ptr<SetMethodOneNumber<UInt32, HashSet<UInt32, HashCRC32<UInt32>>>> key32;
     std::unique_ptr<SetMethodOneNumber<UInt64, HashSet<UInt64, HashCRC32<UInt64>>>> key64;
     std::unique_ptr<SetMethodString<HashSetWithSavedHash<StringRef>>> key_string;
+    std::unique_ptr<SetMethodStringBinNoCache<HashSetWithSavedHash<StringRef>, true>> key_strbinpadding;
+    std::unique_ptr<SetMethodStringBinNoCache<HashSetWithSavedHash<StringRef>, false>> key_strbin;
     std::unique_ptr<SetMethodFixedString<HashSetWithSavedHash<StringRef>>> key_fixed_string;
     std::unique_ptr<SetMethodKeysFixed<HashSet<UInt128, HashCRC32<UInt128>>>> keys128;
     std::unique_ptr<SetMethodKeysFixed<HashSet<UInt256, HashCRC32<UInt256>>>> keys256;
@@ -237,6 +248,8 @@ struct ClearableSet
     std::unique_ptr<SetMethodOneNumber<UInt32, ClearableHashSet<UInt32, HashCRC32<UInt32>>>> key32;
     std::unique_ptr<SetMethodOneNumber<UInt64, ClearableHashSet<UInt64, HashCRC32<UInt64>>>> key64;
     std::unique_ptr<SetMethodString<ClearableHashSetWithSavedHash<StringRef>>> key_string;
+    std::unique_ptr<SetMethodStringBinNoCache<ClearableHashSetWithSavedHash<StringRef>, true>> key_strbinpadding;
+    std::unique_ptr<SetMethodStringBinNoCache<ClearableHashSetWithSavedHash<StringRef>, false>> key_strbin;
     std::unique_ptr<SetMethodFixedString<ClearableHashSetWithSavedHash<StringRef>>> key_fixed_string;
     std::unique_ptr<SetMethodKeysFixed<ClearableHashSet<UInt128, HashCRC32<UInt128>>>> keys128;
     std::unique_ptr<SetMethodKeysFixed<ClearableHashSet<UInt256, HashCRC32<UInt256>>>> keys256;
@@ -262,6 +275,8 @@ struct SetVariantsTemplate : public Variant
     M(key32)                      \
     M(key64)                      \
     M(key_string)                 \
+    M(key_strbinpadding)          \
+    M(key_strbin)                 \
     M(key_fixed_string)           \
     M(keys128)                    \
     M(keys256)                    \
@@ -286,7 +301,10 @@ struct SetVariantsTemplate : public Variant
 
     bool empty() const { return type == Type::EMPTY; }
 
-    static Type chooseMethod(const ColumnRawPtrs & key_columns, Sizes & key_sizes);
+    static Type chooseMethod(
+        const ColumnRawPtrs & key_columns,
+        Sizes & key_sizes,
+        const TiDB::TiDBCollators & collators = {});
 
     void init(Type type_);
 

@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Core/Block.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,12 +20,12 @@
 #include <Core/ColumnWithTypeAndName.h>
 #include <Core/ColumnsWithTypeAndName.h>
 #include <Core/NamesAndTypes.h>
+#include <Storages/DeltaMerge/Index/RSResult.h>
 
 #include <initializer_list>
 #include <list>
 #include <map>
 #include <vector>
-
 
 namespace DB
 {
@@ -44,6 +46,15 @@ private:
 
     Container data;
     IndexByName index_by_name;
+
+    // `start_offset` is the offset of first row in this Block.
+    // It is used for calculating `segment_row_id`.
+    UInt64 start_offset = 0;
+    // `segment_row_id_col` is a virtual column that represents the records' row id in the corresponding segment.
+    // Only used for calculating MVCC-bitmap-filter.
+    ColumnPtr segment_row_id_col;
+
+    DM::RSResult rs_result = DM::RSResult::Some;
 
 public:
     BlockInfo info;
@@ -90,6 +101,7 @@ public:
     size_t getPositionByName(const std::string & name) const;
 
     const ColumnsWithTypeAndName & getColumnsWithTypeAndName() const;
+    NamesAndTypes getNamesAndTypes() const;
     NamesAndTypesList getNamesAndTypesList() const;
     Names getNames() const;
 
@@ -104,14 +116,16 @@ public:
     /// Approximate number of bytes in memory - for profiling and limits.
     size_t bytes() const;
 
+    size_t estimateBytesForSpill() const;
+
     /// Approximate number of bytes between [offset, offset+limit) in memory - for profiling and limits.
     size_t bytes(size_t offset, size_t limit) const;
 
     /// Approximate number of allocated bytes in memory - for profiling and limits.
     size_t allocatedBytes() const;
 
-    explicit operator bool() const { return !data.empty(); }
-    bool operator!() const { return data.empty(); }
+    explicit operator bool() const { return !data.empty() || segment_row_id_col != nullptr; }
+    bool operator!() const { return data.empty() && segment_row_id_col == nullptr; }
 
     /** Get a list of column names separated by commas. */
     std::string dumpNames() const;
@@ -141,13 +155,26 @@ public:
     Block sortColumns() const;
 
     void clear();
+    // The following functions will swap two block.
+    // `swap` will swap all data in blocks.
+    // And `swapCloumnData` will only swap column data,
+    // `start_offset` and `rs_result` will keep unchanged.
     void swap(Block & other) noexcept;
+    void swapCloumnData(Block & other) noexcept;
 
     /** Updates SipHash of the Block, using update method of columns.
       * Returns hash for block, that could be used to differentiate blocks
       *  with same structure, but different data.
       */
     void updateHash(SipHash & hash) const;
+
+    void setStartOffset(UInt64 offset) { start_offset = offset; }
+    UInt64 startOffset() const { return start_offset; }
+    void setSegmentRowIdCol(ColumnPtr && col) { segment_row_id_col = col; }
+    ColumnPtr segmentRowIdCol() const { return segment_row_id_col; }
+
+    void setRSResult(DM::RSResult r) { rs_result = r; }
+    DM::RSResult getRSResult() const { return rs_result; }
 
 private:
     void eraseImpl(size_t position);
@@ -156,7 +183,30 @@ private:
 
 using Blocks = std::vector<Block>;
 using BlocksList = std::list<Block>;
+using BucketBlocksListMap = std::map<Int32, BlocksList>;
 
+/// Join blocks by columns
+/// The schema of the output block is the same as the header block.
+/// The columns not in the header block will be ignored.
+/// NOTE: The input blocks can have columns with different sizes,
+///       but the columns in the header block must have the same size,
+///       Otherwise, an exception will be thrown.
+/// Example:
+///   header: (a UInt32, b UInt32, c UInt32, d UInt32)
+///   block1: (a UInt32, b UInt32, c UInt32, e UInt32), rows: 3
+///   block2: (d UInt32), rows: 3
+///   result: (a UInt32, b UInt32, c UInt32, d UInt32), rows: 3
+Block hstackBlocks(Blocks && blocks, const Block & header);
+
+/// Join blocks by rows
+/// For example:
+/// block1: (a UInt32, b UInt32, c UInt32), rows: 2
+/// block2: (a UInt32, b UInt32, c UInt32), rows: 3
+/// result: (a UInt32, b UInt32, c UInt32), rows: 5
+template <bool check_reserve = false>
+Block vstackBlocks(Blocks && blocks);
+
+Block popBlocksListFront(BlocksList & blocks);
 
 /// Compare number of columns, data types, column types, column names, and values of constant columns.
 bool blocksHaveEqualStructure(const Block & lhs, const Block & rhs);

@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,11 +14,13 @@
 
 #pragma once
 
-#include <Common/UnaryCallback.h>
 #include <Common/grpcpp.h>
 #include <Flash/Coprocessor/ChunkCodec.h>
+#include <Flash/Mpp/LocalRequestHandler.h>
 #include <Flash/Mpp/MPPTaskManager.h>
+#include <Flash/Statistics/ConnectionProfileInfo.h>
 #include <common/types.h>
+#include <grpcpp/completion_queue.h>
 #include <kvproto/mpp.pb.h>
 #include <pingcap/kv/Cluster.h>
 #include <tipb/executor.pb.h>
@@ -36,27 +38,29 @@ class ExchangePacketReader
 public:
     virtual ~ExchangePacketReader() = default;
     virtual bool read(TrackedMppDataPacketPtr & packet) = 0;
-    virtual ::grpc::Status finish() = 0;
+    virtual grpc::Status finish() = 0;
     virtual void cancel(const String & reason) = 0;
 };
-using ExchangePacketReaderPtr = std::shared_ptr<ExchangePacketReader>;
+using ExchangePacketReaderPtr = std::unique_ptr<ExchangePacketReader>;
 
 class AsyncExchangePacketReader
 {
 public:
     virtual ~AsyncExchangePacketReader() = default;
-    virtual void init(UnaryCallback<bool> * callback) = 0;
-    virtual void read(TrackedMppDataPacketPtr & packet, UnaryCallback<bool> * callback) = 0;
-    virtual void finish(::grpc::Status & status, UnaryCallback<bool> * callback) = 0;
+    virtual void init(GRPCKickTag * tag) = 0;
+    virtual void read(TrackedMppDataPacketPtr & packet, GRPCKickTag * tag) = 0;
+    virtual void finish(::grpc::Status & status, GRPCKickTag * tag) = 0;
+    virtual grpc::ClientContext * getClientContext() = 0;
 };
-using AsyncExchangePacketReaderPtr = std::shared_ptr<AsyncExchangePacketReader>;
+using AsyncExchangePacketReaderPtr = std::unique_ptr<AsyncExchangePacketReader>;
 
 struct ExchangeRecvRequest
 {
     Int64 source_index = -1;
-    Int64 send_task_id = -2; //Do not use -1 as default, since -1 has special meaning to show it's the root sender from the TiDB.
+    Int64 send_task_id
+        = -2; // Do not use -1 as default, since -1 has special meaning to show it's the root sender from the TiDB.
     Int64 recv_task_id = -2;
-    std::shared_ptr<mpp::EstablishMPPConnectionRequest> req;
+    mpp::EstablishMPPConnectionRequest req;
     bool is_local = false;
 
     String debugString() const;
@@ -65,7 +69,7 @@ struct ExchangeRecvRequest
 class GRPCReceiverContext
 {
 public:
-    using Status = ::grpc::Status;
+    using Status = grpc::Status;
     using Request = ExchangeRecvRequest;
     using Reader = ExchangePacketReader;
     using AsyncReader = AsyncExchangePacketReader;
@@ -84,20 +88,32 @@ public:
 
     ExchangePacketReaderPtr makeReader(const ExchangeRecvRequest & request) const;
 
-    void makeAsyncReader(
-        const ExchangeRecvRequest & request,
-        AsyncExchangePacketReaderPtr & reader,
-        UnaryCallback<bool> * callback) const;
+    ExchangePacketReaderPtr makeSyncReader(const ExchangeRecvRequest & request) const;
 
-    static Status getStatusOK()
-    {
-        return ::grpc::Status::OK;
-    }
+    AsyncExchangePacketReaderPtr makeAsyncReader(
+        const ExchangeRecvRequest & request,
+        grpc::CompletionQueue * cq,
+        GRPCKickTag * tag) const;
+
+    static Status getStatusOK() { return grpc::Status::OK; }
 
     void fillSchema(DAGSchema & schema) const;
 
+    void establishMPPConnectionLocalV2(
+        const ExchangeRecvRequest & request,
+        size_t source_index,
+        LocalRequestHandler & local_request_handler,
+        bool has_remote_conn);
+
+    const ConnectionProfileInfo::ConnTypeVec & getConnTypeVec() const { return conn_type_vec; }
+
+    static std::tuple<MPPTunnelPtr, grpc::Status> establishMPPConnectionLocalV1(
+        const ::mpp::EstablishMPPConnectionRequest * request,
+        const std::shared_ptr<MPPTaskManager> & task_manager);
+
 private:
     tipb::ExchangeReceiver exchange_receiver_meta;
+    mutable ConnectionProfileInfo::ConnTypeVec conn_type_vec;
     mpp::TaskMeta task_meta;
     pingcap::kv::Cluster * cluster;
     std::shared_ptr<MPPTaskManager> task_manager;

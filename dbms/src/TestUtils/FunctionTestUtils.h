@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@
 #include <Core/ColumnsWithTypeAndName.h>
 #include <Core/Field.h>
 #include <Core/Types.h>
+#include <DataTypes/DataTypeArray.h>
 #include <DataTypes/DataTypeDecimal.h>
 #include <DataTypes/DataTypeFactory.h>
 #include <DataTypes/DataTypeMyDate.h>
@@ -209,6 +210,12 @@ struct InferredDataType<Decimal<T>>
     using Type = DataTypeDecimal<Decimal<T>>;
 };
 
+template <>
+struct InferredDataType<Array>
+{
+    using Type = DataTypeArray;
+};
+
 template <typename T>
 using InferredFieldType = typename TypeTraits<T>::FieldType;
 
@@ -275,6 +282,16 @@ template <typename T>
 ColumnWithTypeAndName createColumn(const InferredDataVector<T> & vec, const String & name = "", Int64 column_id = 0)
 {
     DataTypePtr data_type = makeDataType<T>();
+    return {makeColumn<T>(data_type, vec), data_type, name, column_id};
+}
+
+template <typename T>
+ColumnWithTypeAndName createVecFloat32Column(
+    const InferredDataVector<T> & vec,
+    const String & name = "",
+    Int64 column_id = 0)
+{
+    DataTypePtr data_type = std::make_shared<DataTypeArray>(typeFromString("Float32"));
     return {makeColumn<T>(data_type, vec), data_type, name, column_id};
 }
 
@@ -377,6 +394,60 @@ ColumnWithTypeAndName createDateTimeColumnConst(size_t size, const std::optional
     return {std::move(col), data_type_ptr, "datetime"};
 }
 
+template <bool is_nullable = true>
+ColumnWithTypeAndName createDurationColumn(std::initializer_list<std::optional<MyDuration>> init, int fraction)
+{
+    DataTypePtr data_type_ptr = std::make_shared<DataTypeMyDuration>(fraction);
+    if constexpr (is_nullable)
+    {
+        data_type_ptr = makeNullable(data_type_ptr);
+    }
+    auto col = data_type_ptr->createColumn();
+    for (const auto & dt : init)
+    {
+        if (dt.has_value())
+            col->insert(Field(dt->nanoSecond()));
+        else
+        {
+            if constexpr (is_nullable)
+            {
+                col->insert(Null());
+            }
+            else
+            {
+                throw Exception("Null value for not nullable DataTypeMyDuration");
+            }
+        }
+    }
+    return {std::move(col), data_type_ptr, "duration"};
+}
+
+template <bool is_nullable = true>
+ColumnWithTypeAndName createDurationColumnConst(size_t size, const std::optional<MyDuration> & duration, int fraction)
+{
+    DataTypePtr data_type_ptr = std::make_shared<DataTypeMyDuration>(fraction);
+    if constexpr (is_nullable)
+    {
+        data_type_ptr = makeNullable(data_type_ptr);
+    }
+
+    ColumnPtr col;
+    if (duration.has_value())
+        col = data_type_ptr->createColumnConst(size, Field(duration->nanoSecond()));
+    else
+    {
+        if constexpr (is_nullable)
+        {
+            col = data_type_ptr->createColumnConst(size, Field(Null()));
+        }
+        else
+        {
+            throw Exception("Null value for not nullable DataTypeMyDuration");
+        }
+    }
+    return {std::move(col), data_type_ptr, "duration"};
+}
+
 // parse a string into decimal field.
 template <typename T>
 typename TypeTraits<T>::FieldType parseDecimal(
@@ -438,7 +509,8 @@ typename TypeTraits<T>::FieldType parseDecimal(
     }
     auto max_value = DecimalMaxValue::get(max_prec);
     if (parsed_value > max_value || parsed_value < -max_value)
-        throw TiFlashTestException(fmt::format("Input {} overflow for decimal({},{})", literal, max_prec, expected_scale));
+        throw TiFlashTestException(
+            fmt::format("Input {} overflow for decimal({},{})", literal, max_prec, expected_scale));
     auto value = static_cast<NativeType>(parsed_value);
     return DecimalField<DecimalType>(value, expected_scale);
 }
@@ -525,23 +597,23 @@ String getColumnsContent(const ColumnsWithTypeAndName & cols, size_t begin, size
 //  but with this func we can write `ASSERT_COLUMNS_EQ_R(createColumns{col1, col2, col3}, actual_cols)` instead.
 ColumnsWithTypeAndName createColumns(const ColumnsWithTypeAndName & cols);
 
-::testing::AssertionResult dataTypeEqual(
-    const DataTypePtr & expected,
-    const DataTypePtr & actual);
+::testing::AssertionResult dataTypeEqual(const DataTypePtr & expected, const DataTypePtr & actual);
 
 ::testing::AssertionResult columnEqual(
     const ColumnPtr & expected,
     const ColumnPtr & actual,
-    bool is_floating_point = false);
+    const TiDB::ITiDBCollator * collator = nullptr,
+    bool is_floating_point = false,
+    bool exact_match_for_floating_point = false);
 
 // ignore name
 ::testing::AssertionResult columnEqual(
     const ColumnWithTypeAndName & expected,
-    const ColumnWithTypeAndName & actual);
+    const ColumnWithTypeAndName & actual,
+    const TiDB::ITiDBCollator * collator = nullptr,
+    bool exact_match_for_floating_point = false);
 
-::testing::AssertionResult blockEqual(
-    const Block & expected,
-    const Block & actual);
+::testing::AssertionResult blockEqual(const Block & expected, const Block & actual);
 
 ::testing::AssertionResult columnsEqual(
     const ColumnsWithTypeAndName & expected,
@@ -554,6 +626,7 @@ ColumnWithTypeAndName executeFunction(
     const String & func_name,
     const ColumnsWithTypeAndName & columns,
     const TiDB::TiDBCollatorPtr & collator = nullptr,
+    const String & val = "",
     bool raw_function_test = false);
 
 ColumnWithTypeAndName executeFunction(
@@ -562,6 +635,7 @@ ColumnWithTypeAndName executeFunction(
     const ColumnNumbers & argument_column_numbers,
     const ColumnsWithTypeAndName & columns,
     const TiDB::TiDBCollatorPtr & collator = nullptr,
+    const String & val = "",
     bool raw_function_test = false);
 
 template <typename... Args>
@@ -693,7 +767,9 @@ ColumnWithTypeAndName toVec(const std::vector<typename TypeTraits<T>::FieldType>
 }
 
 template <typename T>
-ColumnWithTypeAndName toNullableVec(String name, const std::vector<std::optional<typename TypeTraits<T>::FieldType>> & v)
+ColumnWithTypeAndName toNullableVec(
+    String name,
+    const std::vector<std::optional<typename TypeTraits<T>::FieldType>> & v)
 {
     return createColumn<Nullable<T>>(v, name);
 }
@@ -707,13 +783,16 @@ ColumnWithTypeAndName toVec(String name, const std::vector<typename TypeTraits<T
 ColumnWithTypeAndName toDatetimeVec(String name, const std::vector<String> & v, int fsp);
 
 ColumnWithTypeAndName toNullableDatetimeVec(String name, const std::vector<String> & v, int fsp);
+
+struct FuncMetaData
+{
+    String val; // This is for the val field of tipb::expr
+};
+
 class FunctionTest : public ::testing::Test
 {
 protected:
-    void SetUp() override
-    {
-        initializeDAGContext();
-    }
+    void SetUp() override { initializeDAGContext(); }
 
 public:
     static void SetUpTestCase()
@@ -727,26 +806,22 @@ public:
             // Maybe another test has already registered, ignore exception here.
         }
     }
-    FunctionTest()
-        : context(TiFlashTestEnv::getContext())
-    {}
-    virtual void initializeDAGContext()
-    {
-        dag_context_ptr = std::make_unique<DAGContext>(1024);
-        context.setDAGContext(dag_context_ptr.get());
-    }
+
+    FunctionTest();
+
+    virtual void initializeDAGContext();
 
     ColumnWithTypeAndName executeFunction(
         const String & func_name,
         const ColumnsWithTypeAndName & columns,
         const TiDB::TiDBCollatorPtr & collator = nullptr,
-        bool raw_function_test = false)
-    {
-        return DB::tests::executeFunction(context, func_name, columns, collator, raw_function_test);
-    }
+        bool raw_function_test = false);
 
     template <typename... Args>
-    ColumnWithTypeAndName executeFunction(const String & func_name, const ColumnWithTypeAndName & first_column, const Args &... columns)
+    ColumnWithTypeAndName executeFunction(
+        const String & func_name,
+        const ColumnWithTypeAndName & first_column,
+        const Args &... columns)
     {
         ColumnsWithTypeAndName vec({first_column, columns...});
         return executeFunction(func_name, vec);
@@ -757,17 +832,35 @@ public:
         const ColumnNumbers & argument_column_numbers,
         const ColumnsWithTypeAndName & columns,
         const TiDB::TiDBCollatorPtr & collator = nullptr,
-        bool raw_function_test = false)
-    {
-        return DB::tests::executeFunction(context, func_name, argument_column_numbers, columns, collator, raw_function_test);
-    }
+        bool raw_function_test = false);
 
     template <typename... Args>
-    ColumnWithTypeAndName executeFunction(const String & func_name, const ColumnNumbers & argument_column_numbers, const ColumnWithTypeAndName & first_column, const Args &... columns)
+    ColumnWithTypeAndName executeFunction(
+        const String & func_name,
+        const ColumnNumbers & argument_column_numbers,
+        const ColumnWithTypeAndName & first_column,
+        const Args &... columns)
     {
         ColumnsWithTypeAndName vec({first_column, columns...});
         return executeFunction(func_name, argument_column_numbers, vec);
     }
+
+    ColumnWithTypeAndName executeFunctionWithMetaData(
+        const String & func_name,
+        const ColumnsWithTypeAndName & columns,
+        const FuncMetaData & meta,
+        const TiDB::TiDBCollatorPtr & collator = nullptr);
+
+    ColumnWithTypeAndName executeFunctionWithMetaData(
+        const String & func_name,
+        const ColumnNumbers & argument_column_numbers,
+        const ColumnsWithTypeAndName & columns,
+        const FuncMetaData & meta,
+        const TiDB::TiDBCollatorPtr & collator = nullptr);
+
+    ColumnWithTypeAndName executeCastJsonAsStringFunction(
+        const ColumnWithTypeAndName & input_column,
+        const tipb::FieldType & field_type);
 
     DAGContext & getDAGContext()
     {
@@ -776,16 +869,107 @@ public:
     }
 
 protected:
-    Context context;
+    ContextPtr context;
     std::unique_ptr<DAGContext> dag_context_ptr;
 };
 
+template <typename...>
+struct TestTypeList
+{
+};
+
+using TestNullableIntTypes = TestTypeList<Nullable<Int8>, Nullable<Int16>, Nullable<Int32>, Nullable<Int64>>;
+
+using TestNullableUIntTypes = TestTypeList<Nullable<UInt8>, Nullable<UInt16>, Nullable<UInt32>, Nullable<UInt64>>;
+
+using TestIntTypes = TestTypeList<Int8, Int16, Int32, Int64>;
+
+using TestUIntTypes = TestTypeList<UInt8, UInt16, UInt32, UInt64>;
+
+using TestAllIntTypes
+    = TestTypeList<Nullable<Int8>, Nullable<Int16>, Nullable<Int32>, Nullable<Int64>, Int8, Int16, Int32, Int64>;
+
+using TestAllUIntTypes = TestTypeList<
+    Nullable<UInt8>,
+    Nullable<UInt16>,
+    Nullable<UInt32>,
+    Nullable<UInt64>,
+    UInt8,
+    UInt16,
+    UInt32,
+    UInt64>;
+
+template <typename T1, typename T2List, template <typename, typename> class Func, typename FuncParam>
+struct TestTypeSingle;
+
+template <typename T1, typename T2, typename... T2Rest, template <typename, typename> class Func, typename FuncParam>
+struct TestTypeSingle<T1, TestTypeList<T2, T2Rest...>, Func, FuncParam>
+{
+    static void run(FuncParam & p)
+    {
+        Func<T1, T2>::operator()(p);
+        // Recursively handle the rest of T2List
+        TestTypeSingle<T1, TestTypeList<T2Rest...>, Func, FuncParam>::run(p);
+    }
+};
+
+template <typename T1, template <typename, typename> class Func, typename FuncParam>
+struct TestTypeSingle<T1, TestTypeList<>, Func, FuncParam>
+{
+    static void run(FuncParam &)
+    {
+        // Do nothing when T2List is empty
+    }
+};
+
+template <typename T1List, typename T2List, template <typename, typename> class Func, typename FuncParam>
+struct TestTypePair;
+
+template <
+    typename T1,
+    typename... T1Rest,
+    typename T2List,
+    template <typename, typename>
+    class Func,
+    typename FuncParam>
+struct TestTypePair<TestTypeList<T1, T1Rest...>, T2List, Func, FuncParam>
+{
+    static void run(FuncParam & p)
+    {
+        // For the current T1, traverse all types in T2List
+        TestTypeSingle<T1, T2List, Func, FuncParam>::run(p);
+        // Recursively handle the rest of T1List
+        TestTypePair<TestTypeList<T1Rest...>, T2List, Func, FuncParam>::run(p);
+    }
+};
+
+template <typename T2List, template <typename, typename> class Func, typename FuncParam>
+struct TestTypePair<TestTypeList<>, T2List, Func, FuncParam>
+{
+    static void run(FuncParam &)
+    {
+        // Do nothing when T1List is empty
+    }
+};
+
 #define ASSERT_COLUMN_EQ(expected, actual) ASSERT_TRUE(DB::tests::columnEqual((expected), (actual)))
-#define ASSERT_BLOCK_EQ(expected, actual) DB::tests::blockEqual((expected), (actual))
+/// ASSERT_COLUMN_EQ_V2 compares floating point using exact match algorithm
+#define ASSERT_COLUMN_EQ_V2(expected, actual) ASSERT_TRUE(DB::tests::columnEqual((expected), (actual), nullptr, true))
+#define ASSERT_BLOCK_EQ(expected, actual) ASSERT_TRUE(DB::tests::blockEqual((expected), (actual)))
 
 /// restrictly checking columns equality, both data set and each row's offset should be the same
 #define ASSERT_COLUMNS_EQ_R(expected, actual) ASSERT_TRUE(DB::tests::columnsEqual((expected), (actual), true))
 /// unrestrictly checking columns equality, only checking data set equality
 #define ASSERT_COLUMNS_EQ_UR(expected, actual) ASSERT_TRUE(DB::tests::columnsEqual((expected), (actual), false))
+
+/// Check the profile event change after the body.
+#define ASSERT_PROFILE_EVENT(event, diff_expr, ...)                          \
+    do                                                                       \
+    {                                                                        \
+        auto profile_event_count = ProfileEvents::get(event);                \
+        {__VA_ARGS__};                                                       \
+        ASSERT_EQ(profile_event_count diff_expr, ProfileEvents::get(event)); \
+    } while (false);
+
 } // namespace tests
 } // namespace DB

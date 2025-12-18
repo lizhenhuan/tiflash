@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Storages/ColumnDefault.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -23,10 +25,9 @@ namespace DB
 ColumnDefaultKind columnDefaultKindFromString(const std::string & str)
 {
     static const std::unordered_map<std::string, ColumnDefaultKind> map{
-        { "DEFAULT", ColumnDefaultKind::Default },
-        { "MATERIALIZED", ColumnDefaultKind::Materialized },
-        { "ALIAS", ColumnDefaultKind::Alias }
-    };
+        {"DEFAULT", ColumnDefaultKind::Default},
+        {"MATERIALIZED", ColumnDefaultKind::Materialized},
+        {"ALIAS", ColumnDefaultKind::Alias}};
 
     const auto it = map.find(str);
     return it != std::end(map) ? it->second : throw Exception{"Unknown column default specifier: " + str};
@@ -36,10 +37,9 @@ ColumnDefaultKind columnDefaultKindFromString(const std::string & str)
 std::string toString(const ColumnDefaultKind kind)
 {
     static const std::unordered_map<ColumnDefaultKind, std::string> map{
-        { ColumnDefaultKind::Default, "DEFAULT" },
-        { ColumnDefaultKind::Materialized, "MATERIALIZED" },
-        { ColumnDefaultKind::Alias, "ALIAS" }
-    };
+        {ColumnDefaultKind::Default, "DEFAULT"},
+        {ColumnDefaultKind::Materialized, "MATERIALIZED"},
+        {ColumnDefaultKind::Alias, "ALIAS"}};
 
     const auto it = map.find(kind);
     return it != std::end(map) ? it->second : throw Exception{"Invalid ColumnDefaultKind"};
@@ -51,4 +51,4 @@ bool operator==(const ColumnDefault & lhs, const ColumnDefault & rhs)
     return lhs.kind == rhs.kind && queryToString(lhs.expression) == queryToString(rhs.expression);
 }
 
-}
+} // namespace DB

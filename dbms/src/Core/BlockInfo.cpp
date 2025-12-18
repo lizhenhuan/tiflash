@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Core/BlockInfo.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,10 +17,10 @@
 #include <Common/Exception.h>
 #include <Core/BlockInfo.h>
 #include <Core/Types.h>
-#include <IO/ReadBuffer.h>
+#include <IO/Buffer/ReadBuffer.h>
+#include <IO/Buffer/WriteBuffer.h>
 #include <IO/ReadHelpers.h>
 #include <IO/VarInt.h>
-#include <IO/WriteBuffer.h>
 #include <IO/WriteHelpers.h>
 
 
@@ -66,7 +68,9 @@ void BlockInfo::read(ReadBuffer & in)
 
 #undef READ_FIELD
         default:
-            throw Exception("Unknown BlockInfo field number: " + toString(field_num), ErrorCodes::UNKNOWN_BLOCK_INFO_FIELD);
+            throw Exception(
+                "Unknown BlockInfo field number: " + toString(field_num),
+                ErrorCodes::UNKNOWN_BLOCK_INFO_FIELD);
         }
     }
 }

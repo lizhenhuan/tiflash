@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Functions/FunctionsURL.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -97,7 +99,11 @@ void ExtractProtocol::execute(Pos data, size_t size, Pos & res_data, size_t & re
 }
 
 
-void DecodeURLComponentImpl::vector(const ColumnString::Chars_t & data, const ColumnString::Offsets & offsets, ColumnString::Chars_t & res_data, ColumnString::Offsets & res_offsets)
+void DecodeURLComponentImpl::vector(
+    const ColumnString::Chars_t & data,
+    const ColumnString::Offsets & offsets,
+    ColumnString::Chars_t & res_data,
+    ColumnString::Offsets & res_offsets)
 {
     res_data.resize(data.size());
     size_t size = offsets.size();
@@ -204,22 +210,27 @@ struct NameCutURLParameter
 
 using FunctionProtocol = FunctionStringToString<ExtractSubstringImpl<ExtractProtocol>, NameProtocol>;
 using FunctionDomain = FunctionStringToString<ExtractSubstringImpl<ExtractDomain<false>>, NameDomain>;
-using FunctionDomainWithoutWWW = FunctionStringToString<ExtractSubstringImpl<ExtractDomain<true>>, NameDomainWithoutWWW>;
-using FunctionFirstSignificantSubdomain = FunctionStringToString<ExtractSubstringImpl<ExtractFirstSignificantSubdomain>, NameFirstSignificantSubdomain>;
+using FunctionDomainWithoutWWW
+    = FunctionStringToString<ExtractSubstringImpl<ExtractDomain<true>>, NameDomainWithoutWWW>;
+using FunctionFirstSignificantSubdomain
+    = FunctionStringToString<ExtractSubstringImpl<ExtractFirstSignificantSubdomain>, NameFirstSignificantSubdomain>;
 using FunctionTopLevelDomain = FunctionStringToString<ExtractSubstringImpl<ExtractTopLevelDomain>, NameTopLevelDomain>;
 using FunctionPath = FunctionStringToString<ExtractSubstringImpl<ExtractPath>, NamePath>;
 using FunctionPathFull = FunctionStringToString<ExtractSubstringImpl<ExtractPathFull>, NamePathFull>;
 using FunctionQueryString = FunctionStringToString<ExtractSubstringImpl<ExtractQueryString<true>>, NameQueryString>;
 using FunctionFragment = FunctionStringToString<ExtractSubstringImpl<ExtractFragment<true>>, NameFragment>;
-using FunctionQueryStringAndFragment = FunctionStringToString<ExtractSubstringImpl<ExtractQueryStringAndFragment<true>>, NameQueryStringAndFragment>;
+using FunctionQueryStringAndFragment
+    = FunctionStringToString<ExtractSubstringImpl<ExtractQueryStringAndFragment<true>>, NameQueryStringAndFragment>;
 using FunctionDecodeURLComponent = FunctionStringToString<DecodeURLComponentImpl, NameDecodeURLComponent>;
 
-using FunctionCutToFirstSignificantSubdomain = FunctionStringToString<ExtractSubstringImpl<CutToFirstSignificantSubdomain>, NameCutToFirstSignificantSubdomain>;
+using FunctionCutToFirstSignificantSubdomain
+    = FunctionStringToString<ExtractSubstringImpl<CutToFirstSignificantSubdomain>, NameCutToFirstSignificantSubdomain>;
 
 using FunctionCutWWW = FunctionStringToString<CutSubstringImpl<ExtractWWW>, NameCutWWW>;
 using FunctionCutQueryString = FunctionStringToString<CutSubstringImpl<ExtractQueryString<false>>, NameCutQueryString>;
 using FunctionCutFragment = FunctionStringToString<CutSubstringImpl<ExtractFragment<false>>, NameCutFragment>;
-using FunctionCutQueryStringAndFragment = FunctionStringToString<CutSubstringImpl<ExtractQueryStringAndFragment<false>>, NameCutQueryStringAndFragment>;
+using FunctionCutQueryStringAndFragment
+    = FunctionStringToString<CutSubstringImpl<ExtractQueryStringAndFragment<false>>, NameCutQueryStringAndFragment>;
 
 using FunctionExtractURLParameter = FunctionsStringSearchToString<ExtractURLParameterImpl, NameExtractURLParameter>;
 using FunctionCutURLParameter = FunctionsStringSearchToString<CutURLParameterImpl, NameCutURLParameter>;

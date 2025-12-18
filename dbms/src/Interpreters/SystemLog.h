@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Interpreters/SystemLog.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -146,11 +148,12 @@ protected:
 
 
 template <typename LogElement>
-SystemLog<LogElement>::SystemLog(Context & context_,
-                                 const String & database_name_,
-                                 const String & table_name_,
-                                 const String & storage_def_,
-                                 size_t flush_interval_milliseconds_)
+SystemLog<LogElement>::SystemLog(
+    Context & context_,
+    const String & database_name_,
+    const String & table_name_,
+    const String & storage_def_,
+    size_t flush_interval_milliseconds_)
     : context(context_)
     , database_name(database_name_)
     , table_name(table_name_)
@@ -316,7 +319,7 @@ void SystemLog<LogElement>::prepareTable()
 
             rename->elements.emplace_back(elem);
 
-            LOG_FMT_DEBUG(
+            LOG_DEBUG(
                 log,
                 "Existing table {} for system log has obsolete or different structure. Renaming it to {}",
                 description,
@@ -328,13 +331,13 @@ void SystemLog<LogElement>::prepareTable()
             table = nullptr;
         }
         else if (!is_prepared)
-            LOG_FMT_DEBUG(log, "Will use existing table {} for {}", description, LogElement::name());
+            LOG_DEBUG(log, "Will use existing table {} for {}", description, LogElement::name());
     }
 
     if (!table)
     {
         /// Create the table.
-        LOG_FMT_DEBUG(log, "Creating new table {} for {}", description, LogElement::name());
+        LOG_DEBUG(log, "Creating new table {} for {}", description, LogElement::name());
 
         auto create = std::make_shared<ASTCreateQuery>();
 

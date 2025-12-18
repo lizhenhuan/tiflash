@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/DataStreams/AddingDefaultBlockOutputStream.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,17 +14,39 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <DataStreams/AddingDefaultBlockOutputStream.h>
-
-#include <Common/typeid_cast.h>
-#include <DataTypes/NestedUtils.h>
-#include <DataTypes/DataTypeArray.h>
 #include <Columns/ColumnArray.h>
+#include <Common/typeid_cast.h>
 #include <Core/Block.h>
+#include <DataStreams/AddingDefaultBlockOutputStream.h>
+#include <DataTypes/DataTypeArray.h>
+#include <DataTypes/NestedUtils.h>
+#include <Interpreters/Context.h>
 
 
 namespace DB
 {
+AddingDefaultBlockOutputStream::AddingDefaultBlockOutputStream(
+    const StoragePtr & storage_,
+    const ASTPtr & query_ptr_,
+    const Block & header_,
+    NamesAndTypesList required_columns_,
+    const ColumnDefaults & column_defaults_,
+    const Context & context_)
+    : storage(storage_)
+    , header(header_)
+    , required_columns(required_columns_)
+    , column_defaults(column_defaults_)
+    , context(context_)
+    , query_ptr(query_ptr_)
+{
+    /** Notice
+     * This is a very important line. At any insertion into the table one of streams should own lock.
+     * Although now any insertion into the table is done via AddingDefaultBlockOutputStream,
+     * but it's clear that here is not the best place for this functionality.
+     */
+    addTableLock(storage->lockForShare(context.getCurrentQueryId()));
+    output = storage->write(query_ptr, context.getSettingsRef());
+}
 
 void AddingDefaultBlockOutputStream::write(const Block & block)
 {
@@ -39,7 +63,7 @@ void AddingDefaultBlockOutputStream::write(const Block & block)
     {
         const auto & elem = res.getByPosition(i);
 
-        if (const ColumnArray * array = typeid_cast<const ColumnArray *>(&*elem.column))
+        if (const auto * array = typeid_cast<const ColumnArray *>(&*elem.column))
         {
             String offsets_name = Nested::extractTableName(elem.name);
             auto & offsets_column = offset_columns[offsets_name];
@@ -66,7 +90,8 @@ void AddingDefaultBlockOutputStream::write(const Block & block)
             DataTypePtr nested_type = typeid_cast<const DataTypeArray &>(*column_to_add.type).getNestedType();
             UInt64 nested_rows = rows ? get<UInt64>((*offsets_column)[rows - 1]) : 0;
 
-            ColumnPtr nested_column = nested_type->createColumnConstWithDefaultValue(nested_rows)->convertToFullColumnIfConst();
+            ColumnPtr nested_column
+                = nested_type->createColumnConstWithDefaultValue(nested_rows)->convertToFullColumnIfConst();
             column_to_add.column = ColumnArray::create(nested_column, offsets_column);
         }
         else
@@ -74,7 +99,8 @@ void AddingDefaultBlockOutputStream::write(const Block & block)
             /** It is necessary to turn a constant column into a full column, since in part of blocks (from other parts),
             *  it can be full (or the interpreter may decide that it is constant everywhere).
             */
-            column_to_add.column = column_to_add.type->createColumnConstWithDefaultValue(rows)->convertToFullColumnIfConst();
+            column_to_add.column
+                = column_to_add.type->createColumnConstWithDefaultValue(rows)->convertToFullColumnIfConst();
         }
 
         res.insert(std::move(column_to_add));
@@ -101,4 +127,4 @@ void AddingDefaultBlockOutputStream::writeSuffix()
     output->writeSuffix();
 }
 
-}
+} // namespace DB

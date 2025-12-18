@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Common/BitHelpers.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -43,4 +45,9 @@ inline size_t roundUpToPowerOfTwoOrZero(size_t n)
     ++n;
 
     return n;
+}
+
+inline bool isPowerOfTwo(size_t val)
+{
+    return (val & (val - 1)) == 0;
 }

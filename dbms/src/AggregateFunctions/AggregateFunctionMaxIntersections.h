@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/AggregateFunctions/AggregateFunctionMaxIntersections.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -71,10 +73,14 @@ public:
         : kind(kind_)
     {
         if (!arguments[0]->isNumber())
-            throw Exception{getName() + ": first argument must be represented by integer", ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT};
+            throw Exception{
+                getName() + ": first argument must be represented by integer",
+                ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT};
 
         if (!arguments[1]->isNumber())
-            throw Exception{getName() + ": second argument must be represented by integer", ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT};
+            throw Exception{
+                getName() + ": second argument must be represented by integer",
+                ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT};
 
         if (!arguments[0]->equals(*arguments[1]))
             throw Exception{getName() + ": arguments must have the same type", ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT};
@@ -82,9 +88,7 @@ public:
 
     String getName() const override
     {
-        return kind == AggregateFunctionIntersectionsKind::Count
-            ? "maxIntersections"
-            : "maxIntersectionsPosition";
+        return kind == AggregateFunctionIntersectionsKind::Count ? "maxIntersections" : "maxIntersectionsPosition";
     }
 
     DataTypePtr getReturnType() const override
@@ -101,10 +105,10 @@ public:
         PointType right = static_cast<const ColumnVector<PointType> &>(*columns[1]).getData()[row_num];
 
         if (!isNaN(left))
-            this->data(place).value.push_back(std::make_pair(left, Int64(1)), arena);
+            this->data(place).value.push_back(std::make_pair(left, static_cast<Int64>(1)), arena);
 
         if (!isNaN(right))
-            this->data(place).value.push_back(std::make_pair(right, Int64(-1)), arena);
+            this->data(place).value.push_back(std::make_pair(right, static_cast<Int64>(-1)), arena);
     }
 
     void merge(AggregateDataPtr __restrict place, ConstAggregateDataPtr rhs, Arena * arena) const override
@@ -170,10 +174,7 @@ public:
         }
     }
 
-    const char * getHeaderFilePath() const override
-    {
-        return __FILE__;
-    }
+    const char * getHeaderFilePath() const override { return __FILE__; }
 };
 
 } // namespace DB

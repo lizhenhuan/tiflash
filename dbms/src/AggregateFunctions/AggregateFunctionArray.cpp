@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/AggregateFunctions/AggregateFunctionArray.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -27,7 +29,7 @@ extern const int ILLEGAL_TYPE_OF_ARGUMENT;
 class AggregateFunctionCombinatorArray final : public IAggregateFunctionCombinator
 {
 public:
-    String getName() const override { return "Array"; };
+    String getName() const override { return "Array"; }
 
     DataTypes transformArguments(const DataTypes & arguments) const override
     {
@@ -38,8 +40,9 @@ public:
                 nested_arguments.push_back(array->getNestedType());
             else
                 throw Exception(
-                    "Illegal type " + type->getName() + " of argument"
-                                                        " for aggregate function with "
+                    "Illegal type " + type->getName()
+                        + " of argument"
+                          " for aggregate function with "
                         + getName() + " suffix. Must be array.",
                     ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT);
         }

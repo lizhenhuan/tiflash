@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/DataTypes/DataTypeNumberBase.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -30,17 +32,19 @@ public:
 
     const char * getFamilyName() const override { return TypeName<T>::get(); }
 
-    TypeIndex getTypeId() const override { return TypeId<T>::value; };
+    TypeIndex getTypeId() const override { return TypeId<T>::value; }
 
     void serializeText(const IColumn & column, size_t row_num, WriteBuffer & ostr) const override;
     void serializeTextEscaped(const IColumn & column, size_t row_num, WriteBuffer & ostr) const override;
     void deserializeTextEscaped(IColumn & column, ReadBuffer & istr) const override;
     void serializeTextQuoted(const IColumn & column, size_t row_num, WriteBuffer & ostr) const override;
     void deserializeTextQuoted(IColumn & column, ReadBuffer & istr) const override;
-    void serializeTextJSON(const IColumn & column, size_t row_num, WriteBuffer & ostr, const FormatSettingsJSON & settings) const override;
+    void serializeTextJSON(
+        const IColumn & column,
+        size_t row_num,
+        WriteBuffer & ostr,
+        const FormatSettingsJSON & settings) const override;
     void deserializeTextJSON(IColumn & column, ReadBuffer & istr) const override;
-    void serializeTextCSV(const IColumn & column, size_t row_num, WriteBuffer & ostr) const override;
-    void deserializeTextCSV(IColumn & column, ReadBuffer & istr, const char delimiter) const override;
     Field getDefault() const override;
 
     /** Format is platform-dependent. */
@@ -50,9 +54,8 @@ public:
     void serializeBinary(const IColumn & column, size_t row_num, WriteBuffer & ostr) const override;
     void deserializeBinary(IColumn & column, ReadBuffer & istr) const override;
     void serializeBinaryBulk(const IColumn & column, WriteBuffer & ostr, size_t offset, size_t limit) const override;
-    void deserializeBinaryBulk(IColumn & column, ReadBuffer & istr, size_t limit, double avg_value_size_hint) const override;
-    void serializeWidenBinaryBulk(const IColumn & column, WriteBuffer & ostr, size_t offset, size_t limit) const override;
-    void deserializeWidenBinaryBulk(IColumn & column, ReadBuffer & istr, size_t limit, double avg_value_size_hint) const override;
+    void deserializeBinaryBulk(IColumn & column, ReadBuffer & istr, size_t limit, double avg_value_size_hint)
+        const override;
 
     MutableColumnPtr createColumn() const override;
 
@@ -60,16 +63,13 @@ public:
     bool haveSubtypes() const override { return false; }
     bool shouldAlignRightInPrettyFormats() const override { return true; }
     bool textCanContainOnlyValidUTF8() const override { return true; }
-    bool isComparable() const override { return true; };
+    bool isComparable() const override { return true; }
     bool isValueRepresentedByNumber() const override { return true; }
     bool isValueRepresentedByInteger() const override;
     bool isValueUnambiguouslyRepresentedInContiguousMemoryRegion() const override { return true; }
     bool haveMaximumSizeOfValue() const override { return true; }
     size_t getSizeOfValueInMemory() const override { return sizeof(T); }
     bool isCategorial() const override { return isValueRepresentedByInteger(); }
-
-protected:
-    bool widened = false;
 };
 
 } // namespace DB

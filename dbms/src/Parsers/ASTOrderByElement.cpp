@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Parsers/ASTOrderByElement.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,26 +14,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <Columns/Collator.h>
 #include <Parsers/ASTOrderByElement.h>
 
 
 namespace DB
 {
-
 void ASTOrderByElement::formatImpl(const FormatSettings & settings, FormatState & state, FormatStateStacked frame) const
 {
     children.front()->formatImpl(settings, state, frame);
-    settings.ostr << (settings.hilite ? hilite_keyword : "")
-        << (direction == -1 ? " DESC" : " ASC")
-        << (settings.hilite ? hilite_none : "");
+    settings.ostr << (settings.hilite ? hilite_keyword : "") << (direction == -1 ? " DESC" : " ASC")
+                  << (settings.hilite ? hilite_none : "");
 
     if (nulls_direction_was_explicitly_specified)
     {
-        settings.ostr << (settings.hilite ? hilite_keyword : "")
-            << " NULLS "
-            << (nulls_direction == direction ? "LAST" : "FIRST")
-            << (settings.hilite ? hilite_none : "");
+        settings.ostr << (settings.hilite ? hilite_keyword : "") << " NULLS "
+                      << (nulls_direction == direction ? "LAST" : "FIRST") << (settings.hilite ? hilite_none : "");
     }
 
     if (collation)
@@ -41,4 +38,4 @@ void ASTOrderByElement::formatImpl(const FormatSettings & settings, FormatState 
     }
 }
 
-}
+} // namespace DB

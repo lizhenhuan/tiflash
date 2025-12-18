@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,11 +16,9 @@
 #include <Storages/DeltaMerge/ColumnFile/ColumnFileSetSnapshot.h>
 #include <Storages/DeltaMerge/DMContext.h>
 
-namespace DB
+namespace DB::DM
 {
-namespace DM
-{
-RowKeyRange ColumnFileSetSnapshot::getSquashDeleteRange() const
+RowKeyRange ColumnFileSetSnapshot::getSquashDeleteRange(bool is_common_handle, size_t rowkey_column_size) const
 {
     RowKeyRange squashed_delete_range = RowKeyRange::newNone(is_common_handle, rowkey_column_size);
     for (const auto & column_file : column_files)
@@ -30,5 +28,4 @@ RowKeyRange ColumnFileSetSnapshot::getSquashDeleteRange() const
     }
     return squashed_delete_range;
 }
-} // namespace DM
-} // namespace DB
+} // namespace DB::DM

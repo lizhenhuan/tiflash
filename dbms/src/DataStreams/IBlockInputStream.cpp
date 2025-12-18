@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/DataStreams/IBlockInputStream.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -64,7 +66,9 @@ size_t IBlockInputStream::checkDepthImpl(size_t max_depth, size_t level) const
         return 0;
 
     if (level > max_depth)
-        throw Exception(fmt::format("Query pipeline is too deep. Maximum: {}", max_depth), ErrorCodes::TOO_DEEP_PIPELINE);
+        throw Exception(
+            fmt::format("Query pipeline is too deep. Maximum: {}", max_depth),
+            ErrorCodes::TOO_DEEP_PIPELINE);
 
     size_t res = 0;
     for (const auto & child : children)
@@ -79,11 +83,7 @@ size_t IBlockInputStream::checkDepthImpl(size_t max_depth, size_t level) const
 
 void IBlockInputStream::dumpTree(FmtBuffer & buffer, size_t indent, size_t multiplier)
 {
-    buffer.fmtAppend(
-        "{}{}{}",
-        String(indent, ' '),
-        getName(),
-        multiplier > 1 ? fmt::format(" x {}", multiplier) : "");
+    buffer.fmtAppend("{}{}{}", String(indent, ' '), getName(), multiplier > 1 ? fmt::format(" x {}", multiplier) : "");
     if (!extra_info.empty())
         buffer.fmtAppend(": <{}>", extra_info);
     appendInfo(buffer);
@@ -97,7 +97,7 @@ void IBlockInputStream::dumpTree(FmtBuffer & buffer, size_t indent, size_t multi
     for (const auto & child : children)
         ++multipliers[child->getTreeID()];
 
-    for (auto & child : children)
+    for (const auto & child : children)
     {
         String id = child->getTreeID();
         size_t & subtree_multiplier = multipliers[id];
@@ -109,4 +109,12 @@ void IBlockInputStream::dumpTree(FmtBuffer & buffer, size_t indent, size_t multi
     }
 }
 
+uint64_t IBlockInputStream::collectCPUTimeNs(bool is_thread_runner)
+{
+    if (cpu_time_ns_collected)
+        return 0;
+
+    cpu_time_ns_collected = true;
+    return collectCPUTimeNsImpl(is_thread_runner);
+}
 } // namespace DB

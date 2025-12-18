@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Core/NamesAndTypes.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,11 +17,11 @@
 #include <Common/FmtUtils.h>
 #include <Core/NamesAndTypes.h>
 #include <DataTypes/DataTypeFactory.h>
-#include <IO/ReadBuffer.h>
-#include <IO/ReadBufferFromString.h>
+#include <IO/Buffer/ReadBuffer.h>
+#include <IO/Buffer/ReadBufferFromString.h>
+#include <IO/Buffer/WriteBuffer.h>
+#include <IO/Buffer/WriteBufferFromString.h>
 #include <IO/ReadHelpers.h>
-#include <IO/WriteBuffer.h>
-#include <IO/WriteBufferFromString.h>
 #include <IO/WriteHelpers.h>
 
 #include <sparsehash/dense_hash_map>

@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,17 +13,18 @@
 // limitations under the License.
 
 #include <DataTypes/DataTypesNumber.h>
+#include <Debug/TiFlashTestEnv.h>
 #include <Flash/Coprocessor/ArrowChunkCodec.h>
 #include <Flash/Coprocessor/CHBlockChunkCodec.h>
+#include <Flash/Coprocessor/DAGContext.h>
 #include <Flash/Coprocessor/DefaultChunkCodec.h>
-#include <Interpreters/Context.h>
-#include <Storages/Transaction/TiDB.h>
 #include <TestUtils/ColumnGenerator.h>
 #include <TestUtils/TiFlashTestBasic.h>
-#include <TestUtils/TiFlashTestEnv.h>
+#include <TiDB/Schema/TiDB.h>
 #include <gtest/gtest.h>
 
 #include <Flash/Coprocessor/StreamingDAGResponseWriter.cpp>
+#include <cstddef>
 
 namespace DB
 {
@@ -35,16 +36,13 @@ protected:
     void SetUp() override
     {
         dag_context_ptr = std::make_unique<DAGContext>(1024);
-        dag_context_ptr->is_mpp_task = true;
+        dag_context_ptr->kind = DAGRequestKind::MPP;
         dag_context_ptr->is_root_mpp_task = true;
         dag_context_ptr->result_field_types = makeFields();
-        context.setDAGContext(dag_context_ptr.get());
     }
 
 public:
-    TestStreamingWriter()
-        : context(TiFlashTestEnv::getContext())
-    {}
+    TestStreamingWriter() = default;
 
     // Return 10 Int64 column.
     static std::vector<tipb::FieldType> makeFields()
@@ -64,7 +62,7 @@ public:
         DAGSchema schema;
         for (size_t i = 0; i < fields.size(); ++i)
         {
-            ColumnInfo info = TiDB::fieldTypeToColumnInfo(fields[i]);
+            TiDB::ColumnInfo info = TiDB::fieldTypeToColumnInfo(fields[i]);
             schema.emplace_back(String("col") + std::to_string(i), std::move(info));
         }
         return schema;
@@ -78,20 +76,16 @@ public:
         {
             DataTypePtr int64_data_type = std::make_shared<DataTypeInt64>();
             auto int64_column = ColumnGenerator::instance().generate({rows, "Int64", RANDOM}).column;
-            block.insert(ColumnWithTypeAndName{
-                std::move(int64_column),
-                int64_data_type,
-                String("col") + std::to_string(i)});
+            block.insert(
+                ColumnWithTypeAndName{std::move(int64_column), int64_data_type, String("col") + std::to_string(i)});
         }
         return block;
     }
 
-    Context context;
-
     std::unique_ptr<DAGContext> dag_context_ptr;
 };
 
-using MockStreamWriterChecker = std::function<void(tipb::SelectResponse &, uint16_t)>;
+using MockStreamWriterChecker = std::function<void(tipb::SelectResponse &)>;
 
 struct MockStreamWriter
 {
@@ -99,11 +93,8 @@ struct MockStreamWriter
         : checker(checker_)
     {}
 
-    void write(mpp::MPPDataPacket &) { FAIL() << "cannot reach here."; }
-    void write(mpp::MPPDataPacket &, uint16_t) { FAIL() << "cannot reach here."; }
-    void write(tipb::SelectResponse & response, uint16_t part_id) { checker(response, part_id); }
-    void write(tipb::SelectResponse & response) { checker(response, 0); }
-    uint16_t getPartitionNum() const { return 1; }
+    void write(tipb::SelectResponse & response) { checker(response); }
+    static WaitResult waitForWritable() { return WaitResult::Ready; }
 
 private:
     MockStreamWriterChecker checker;
@@ -123,8 +114,7 @@ try
         const size_t block_rows = 64;
         const size_t block_num = 64;
         const size_t batch_send_min_limit = 108;
-
-        const bool should_send_exec_summary_at_last = true;
+        const size_t max_buffered_bytes = 1024 * 1024 * 16;
 
         // 1. Build Blocks.
         std::vector<Block> blocks;
@@ -137,8 +127,7 @@ try
 
         // 2. Build MockStreamWriter.
         std::vector<tipb::SelectResponse> write_report;
-        auto checker = [&write_report](tipb::SelectResponse & response, uint16_t part_id) {
-            ASSERT_EQ(part_id, 0);
+        auto checker = [&write_report](tipb::SelectResponse & response) {
             write_report.emplace_back(std::move(response));
         };
         auto mock_writer = std::make_shared<MockStreamWriter>(checker);
@@ -148,11 +137,11 @@ try
             mock_writer,
             batch_send_min_limit,
             batch_send_min_limit,
-            should_send_exec_summary_at_last,
+            max_buffered_bytes,
             *dag_context_ptr);
         for (const auto & block : blocks)
             dag_writer->write(block);
-        dag_writer->finishWrite();
+        dag_writer->flush();
 
         // 4. Start to check write_report.
         size_t expect_rows = block_rows * block_num;
@@ -183,7 +172,7 @@ try
 }
 CATCH
 
-TEST_F(TestStreamingWriter, emptyBlock)
+TEST_F(TestStreamingWriter, testMaxBufferedBytes)
 try
 {
     std::vector<tipb::EncodeType> encode_types{
@@ -194,26 +183,43 @@ try
     {
         dag_context_ptr->encode_type = encode_type;
 
-        std::vector<tipb::SelectResponse> write_report;
-        auto checker = [&write_report](tipb::SelectResponse & response, uint16_t part_id) {
-            ASSERT_EQ(part_id, 0);
-            write_report.emplace_back(std::move(response));
-        };
-        auto mock_writer = std::make_shared<MockStreamWriter>(checker);
+        const size_t block_rows = 64;
+        const size_t block_num = 64;
+        const size_t batch_send_min_limit = block_rows * block_num / 2;
+        const std::vector<UInt64> max_buffered_bytes_vec{1, 1024 * 1024 * 1024};
+        const std::vector<UInt64> expected_response_num{block_num, 2};
 
-        const size_t batch_send_min_limit = 5;
-        const bool should_send_exec_summary_at_last = true;
-        auto dag_writer = std::make_shared<StreamingDAGResponseWriter<std::shared_ptr<MockStreamWriter>>>(
-            mock_writer,
-            batch_send_min_limit,
-            batch_send_min_limit,
-            should_send_exec_summary_at_last,
-            *dag_context_ptr);
-        dag_writer->finishWrite();
+        for (size_t i = 0; i < max_buffered_bytes_vec.size(); ++i)
+        {
+            // 1. Build Blocks.
+            std::vector<Block> blocks;
+            for (size_t i = 0; i < block_num; ++i)
+            {
+                blocks.emplace_back(prepareBlock(block_rows));
+                blocks.emplace_back(prepareBlock(0));
+            }
+            Block header = blocks.back();
 
-        // For `should_send_exec_summary_at_last = true`, there is at least one packet used to pass execution summary.
-        ASSERT_EQ(write_report.size(), 1);
-        ASSERT_EQ(write_report.back().chunks_size(), 0);
+            // 2. Build MockStreamWriter.
+            std::vector<tipb::SelectResponse> write_report;
+            auto checker = [&write_report](tipb::SelectResponse & response) {
+                write_report.emplace_back(std::move(response));
+            };
+            auto mock_writer = std::make_shared<MockStreamWriter>(checker);
+
+            // 3. Write blocks
+            auto dag_writer = std::make_shared<StreamingDAGResponseWriter<std::shared_ptr<MockStreamWriter>>>(
+                mock_writer,
+                batch_send_min_limit,
+                batch_send_min_limit,
+                max_buffered_bytes_vec[i],
+                *dag_context_ptr);
+            for (const auto & block : blocks)
+                dag_writer->write(block);
+            dag_writer->flush();
+
+            ASSERT_EQ(write_report.size(), expected_response_num[i]);
+        }
     }
 }
 CATCH

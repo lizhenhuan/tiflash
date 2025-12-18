@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/DataTypes/DataTypeArray.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -28,22 +30,13 @@ private:
 public:
     static constexpr bool is_parametric = true;
 
-    DataTypeArray(const DataTypePtr & nested_);
+    explicit DataTypeArray(const DataTypePtr & nested_);
 
-    std::string getName() const override
-    {
-        return "Array(" + nested->getName() + ")";
-    }
+    std::string getName() const override { return "Array(" + nested->getName() + ")"; }
 
-    const char * getFamilyName() const override
-    {
-        return "Array";
-    }
+    const char * getFamilyName() const override { return "Array"; }
 
-    bool canBeInsideNullable() const override
-    {
-        return false;
-    }
+    bool canBeInsideNullable() const override { return true; }
 
     TypeIndex getTypeId() const override { return TypeIndex::Array; }
 
@@ -61,13 +54,12 @@ public:
     void serializeTextQuoted(const IColumn & column, size_t row_num, WriteBuffer & ostr) const override;
     void deserializeTextQuoted(IColumn & column, ReadBuffer & istr) const override;
 
-    void serializeTextJSON(const IColumn & column, size_t row_num, WriteBuffer & ostr, const FormatSettingsJSON & settings) const override;
+    void serializeTextJSON(
+        const IColumn & column,
+        size_t row_num,
+        WriteBuffer & ostr,
+        const FormatSettingsJSON & settings) const override;
     void deserializeTextJSON(IColumn & column, ReadBuffer & istr) const override;
-
-    void serializeTextXML(const IColumn & column, size_t row_num, WriteBuffer & ostr) const override;
-
-    void serializeTextCSV(const IColumn & column, size_t row_num, WriteBuffer & ostr) const override;
-    void deserializeTextCSV(IColumn & column, ReadBuffer & istr, const char delimiter) const override;
 
     /** Streaming serialization of arrays is arranged in a special way:
       * - elements placed in a row are written/read without array sizes;
@@ -103,7 +95,7 @@ public:
     bool haveSubtypes() const override { return true; }
     bool cannotBeStoredInTables() const override { return nested->cannotBeStoredInTables(); }
     bool textCanContainOnlyValidUTF8() const override { return nested->textCanContainOnlyValidUTF8(); }
-    bool isComparable() const override { return nested->isComparable(); };
+    bool isComparable() const override { return nested->isComparable(); }
     bool canBeComparedWithCollation() const override { return nested->canBeComparedWithCollation(); }
 
     bool isValueUnambiguouslyRepresentedInContiguousMemoryRegion() const override

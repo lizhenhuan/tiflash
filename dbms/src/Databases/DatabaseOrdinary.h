@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Databases/DatabaseOrdinary.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -30,20 +32,11 @@ public:
 
     String getEngineName() const override { return "Ordinary"; }
 
-    void loadTables(
-        Context & context,
-        ThreadPool * thread_pool,
-        bool has_force_restore_data_flag) override;
+    void loadTables(Context & context, ThreadPool * thread_pool, bool has_force_restore_data_flag) override;
 
-    void createTable(
-        const Context & context,
-        const String & table_name,
-        const StoragePtr & table,
-        const ASTPtr & query) override;
+    void createTable(const Context & context, const String & table_name, const ASTPtr & query) override;
 
-    void removeTable(
-        const Context & context,
-        const String & table_name) override;
+    void removeTable(const Context & context, const String & table_name) override;
 
     void renameTable(
         const Context & context,
@@ -57,17 +50,11 @@ public:
         const ColumnsDescription & columns,
         const ASTModifier & storage_modifier) override;
 
-    time_t getTableMetadataModificationTime(
-        const Context & context,
-        const String & table_name) override;
+    time_t getTableMetadataModificationTime(const Context & context, const String & table_name) override;
 
-    ASTPtr getCreateTableQuery(
-        const Context & context,
-        const String & table_name) const override;
+    ASTPtr getCreateTableQuery(const Context & context, const String & table_name) const override;
 
-    ASTPtr tryGetCreateTableQuery(
-        const Context & context,
-        const String & table_name) const override;
+    ASTPtr tryGetCreateTableQuery(const Context & context, const String & table_name) const override;
 
     ASTPtr getCreateDatabaseQuery(const Context & context) const override;
 

@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Parsers/StringRange.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,7 +18,7 @@
 
 #include <Core/Types.h>
 #include <Parsers/TokenIterator.h>
-#include <map>
+
 #include <memory>
 
 
@@ -28,9 +30,15 @@ struct StringRange
     const char * first = nullptr;
     const char * second = nullptr;
 
-    StringRange() {}
-    StringRange(const char * begin, const char * end) : first(begin), second(end) {}
-    StringRange(TokenIterator token) : first(token->begin), second(token->end) {}
+    StringRange() = default;
+    StringRange(const char * begin, const char * end)
+        : first(begin)
+        , second(end)
+    {}
+    StringRange(TokenIterator token)
+        : first(token->begin)
+        , second(token->end)
+    {}
 
     StringRange(TokenIterator token_begin, TokenIterator token_end)
     {
@@ -58,4 +66,4 @@ inline String toString(const StringRange & range)
     return range.first ? String(range.first, range.second) : String();
 }
 
-}
+} // namespace DB

@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/AggregateFunctions/AggregateFunctionArgMinMax.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -59,12 +61,12 @@ public:
                 ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT);
     }
 
-    String getName() const override { return StringRef(Data::ValueData_t::name()) == StringRef("min") ? "argMin" : "argMax"; }
-
-    DataTypePtr getReturnType() const override
+    String getName() const override
     {
-        return type_res;
+        return StringRef(Data::ValueData_t::name()) == StringRef("min") ? "argMin" : "argMax";
     }
+
+    DataTypePtr getReturnType() const override { return type_res; }
 
     void add(AggregateDataPtr __restrict place, const IColumn ** columns, size_t row_num, Arena * arena) const override
     {

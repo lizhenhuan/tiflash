@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@
 
 #include <Storages/Page/V2/PageEntries.h>
 #include <Storages/Page/V2/VersionSet/PageEntriesEdit.h>
-#include <Storages/Page/WriteBatch.h>
+#include <Storages/Page/WriteBatchImpl.h>
 
 namespace DB::PS::V2
 {
@@ -26,7 +26,7 @@ public:
     explicit PageEntriesBuilder(
         const PageEntries * old_version_,
         bool ignore_invalid_ref_ = false,
-        Poco::Logger * log_ = nullptr)
+        LoggerPtr log_ = nullptr)
         : old_version(const_cast<PageEntries *>(old_version_))
         , current_version(new PageEntries)
         , ignore_invalid_ref(ignore_invalid_ref_)
@@ -56,10 +56,10 @@ public:
     {
         for (auto & rec : edit.getRecords())
         {
-            if (unlikely(rec.type == WriteBatch::WriteType::PUT))
+            if (unlikely(rec.type == WriteBatchWriteType::PUT))
                 throw Exception("Should use UPDATE for gc edits, please check your code!!", ErrorCodes::LOGICAL_ERROR);
 
-            if (rec.type != WriteBatch::WriteType::UPSERT)
+            if (rec.type != WriteBatchWriteType::UPSERT)
                 continue;
             // Gc only apply MOVE_NORMAL_PAGE for updating normal page entries
             const auto old_page_entry = old_version->findNormalPageEntry(rec.page_id);
@@ -81,7 +81,7 @@ private:
     PageEntries * old_version;
     PageEntries * current_version;
     bool ignore_invalid_ref;
-    Poco::Logger * log;
+    LoggerPtr log;
 };
 
 } // namespace DB::PS::V2

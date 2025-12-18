@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Databases/DatabasesCommon.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -59,22 +61,25 @@ namespace DatabaseLoading
 {
 ASTPtr getQueryFromMetadata(const Context & context, const String & metadata_path, bool throw_on_error = true);
 
-ASTPtr getCreateQueryFromMetadata(const Context & context, const String & metadata_path, const String & database, bool throw_on_error);
+ASTPtr getCreateQueryFromMetadata(
+    const Context & context,
+    const String & metadata_path,
+    const String & database,
+    bool throw_on_error);
 
 std::vector<String> listSQLFilenames(const String & meta_dir, Poco::Logger * log);
 
-// Startup tables with thread_pool. If exception with code TIDB_TABLE_ALREADY_EXISTS thrown in startup,
-// those tables' meta will be removed and deatch from database.
-void startupTables(IDatabase & database, const String & db_name, Tables & tables, ThreadPool * thread_pool, Poco::Logger * log);
+void cleanupTables(IDatabase & database, const String & db_name, const Tables & tables, Poco::Logger * log);
 
-void loadTable(Context & context,
-               IDatabase & database,
-               const String & database_metadata_path,
-               const String & database_name,
-               const String & database_data_path,
-               const String & database_engine,
-               const String & file_name,
-               bool has_force_restore_data_flag);
+std::tuple<String, StoragePtr> loadTable(
+    Context & context,
+    IDatabase & database,
+    const String & database_metadata_path,
+    const String & database_name,
+    const String & database_data_path,
+    const String & database_engine,
+    const String & file_name,
+    bool has_force_restore_data_flag);
 } // namespace DatabaseLoading
 
 
@@ -86,48 +91,32 @@ private:
     Tables::iterator it;
 
 public:
-    DatabaseSnapshotIterator(Tables & tables_)
+    explicit DatabaseSnapshotIterator(Tables & tables_)
         : tables(tables_)
         , it(tables.begin())
     {}
 
-    DatabaseSnapshotIterator(Tables && tables_)
+    explicit DatabaseSnapshotIterator(Tables && tables_)
         : tables(tables_)
         , it(tables.begin())
     {}
 
-    void next() override
-    {
-        ++it;
-    }
+    void next() override { ++it; }
 
-    bool isValid() const override
-    {
-        return it != tables.end();
-    }
+    bool isValid() const override { return it != tables.end(); }
 
-    const String & name() const override
-    {
-        return it->first;
-    }
+    const String & name() const override { return it->first; }
 
-    StoragePtr & table() const override
-    {
-        return it->second;
-    }
+    StoragePtr & table() const override { return it->second; }
 };
 
 /// A base class for databases that manage their own list of tables.
 class DatabaseWithOwnTablesBase : public IDatabase
 {
 public:
-    bool isTableExist(
-        const Context & context,
-        const String & table_name) const override;
+    bool isTableExist(const Context & context, const String & table_name) const override;
 
-    StoragePtr tryGetTable(
-        const Context & context,
-        const String & table_name) const override;
+    StoragePtr tryGetTable(const Context & context, const String & table_name) const override;
 
     bool empty(const Context & context) const override;
 
@@ -140,7 +129,7 @@ public:
 
     void shutdown() override;
 
-    virtual ~DatabaseWithOwnTablesBase() override;
+    ~DatabaseWithOwnTablesBase() override;
 
 protected:
     String name;
@@ -148,7 +137,7 @@ protected:
     mutable std::mutex mutex;
     Tables tables;
 
-    DatabaseWithOwnTablesBase(String name_)
+    explicit DatabaseWithOwnTablesBase(String name_)
         : name(std::move(name_))
     {}
 };

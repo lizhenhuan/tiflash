@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/DataTypes/DataTypeFactory.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -34,6 +36,35 @@ extern const int DATA_TYPE_CANNOT_HAVE_ARGUMENTS;
 } // namespace ErrorCodes
 
 
+DataTypePtr DataTypePtrCache::get(const String & full_name) const
+{
+    std::shared_lock lock(rw_lock);
+    if (auto it = cached_types.find(full_name); //
+        it != cached_types.end())
+        return it->second;
+    return nullptr;
+}
+
+void DataTypePtrCache::tryCache(const String & full_name, const DataTypePtr & datatype_ptr)
+{
+    // It can not handle the situation that DataTypePtr sharing between
+    // "Enum16('N' = 1, 'Y' = 2)" and "Enum16('Y' = 2, 'N' = 1)", but should
+    // be good enough.
+    // Avoid big hashmap in rare cases.
+    std::unique_lock lock(rw_lock);
+    if (cached_types.size() < MAX_FULLNAME_TYPES)
+    {
+        // DataTypeEnum may generate too many full_name, so just skip inserting DataTypeEnum into fullname_types when
+        // the capacity limit is almost reached, which ensures that most datatypes can be cached.
+        if (cached_types.size() > FULLNAME_TYPES_HIGH_WATER_MARK
+            && (datatype_ptr->getTypeId() == TypeIndex::Enum8 || datatype_ptr->getTypeId() == TypeIndex::Enum16))
+        {
+            return;
+        }
+        cached_types.emplace(full_name, datatype_ptr);
+    }
+}
+
 DataTypePtr DataTypeFactory::get(const String & full_name) const
 {
     ParserIdentifierWithOptionalParameters parser;
@@ -41,21 +72,46 @@ DataTypePtr DataTypeFactory::get(const String & full_name) const
     return get(ast);
 }
 
+DataTypePtr DataTypeFactory::getOrSet(const ASTPtr & ast)
+{
+    String owned_str_full_name(ast->range.first, ast->range.second);
+    if (auto cached_ptr = fullname_types.get(owned_str_full_name); cached_ptr != nullptr)
+        return cached_ptr;
+
+    auto datatype_ptr = get(ast);
+    fullname_types.tryCache(owned_str_full_name, datatype_ptr);
+    return datatype_ptr;
+}
+
+DataTypePtr DataTypeFactory::getOrSet(const String & full_name)
+{
+    if (auto cached_ptr = fullname_types.get(full_name); cached_ptr != nullptr)
+        return cached_ptr;
+
+    ParserIdentifierWithOptionalParameters parser;
+    ASTPtr ast = parseQuery(parser, full_name.data(), full_name.data() + full_name.size(), "data type", 0);
+    auto datatype_ptr = get(ast);
+    fullname_types.tryCache(full_name, datatype_ptr);
+    return datatype_ptr;
+}
+
 DataTypePtr DataTypeFactory::get(const ASTPtr & ast) const
 {
-    if (const ASTFunction * func = typeid_cast<const ASTFunction *>(ast.get()))
+    if (const auto * func = typeid_cast<const ASTFunction *>(ast.get()))
     {
         if (func->parameters)
-            throw Exception("Data type cannot have multiple parenthesed parameters.", ErrorCodes::ILLEGAL_SYNTAX_FOR_DATA_TYPE);
+            throw Exception(
+                "Data type cannot have multiple parenthesed parameters.",
+                ErrorCodes::ILLEGAL_SYNTAX_FOR_DATA_TYPE);
         return get(func->name, func->arguments);
     }
 
-    if (const ASTIdentifier * ident = typeid_cast<const ASTIdentifier *>(ast.get()))
+    if (const auto * ident = typeid_cast<const ASTIdentifier *>(ast.get()))
     {
         return get(ident->name, {});
     }
 
-    if (const ASTLiteral * lit = typeid_cast<const ASTLiteral *>(ast.get()))
+    if (const auto * lit = typeid_cast<const ASTLiteral *>(ast.get()))
     {
         if (lit->value.isNull())
             return get("Null", {});
@@ -67,56 +123,68 @@ DataTypePtr DataTypeFactory::get(const ASTPtr & ast) const
 DataTypePtr DataTypeFactory::get(const String & family_name, const ASTPtr & parameters) const
 {
     {
-        DataTypesDictionary::const_iterator it = data_types.find(family_name);
+        auto it = data_types.find(family_name);
         if (data_types.end() != it)
             return it->second(parameters);
     }
 
     {
         String family_name_lowercase = Poco::toLower(family_name);
-        DataTypesDictionary::const_iterator it = case_insensitive_data_types.find(family_name_lowercase);
+        auto it = case_insensitive_data_types.find(family_name_lowercase);
         if (case_insensitive_data_types.end() != it)
             return it->second(parameters);
     }
 
-    throw Exception("Unknown data type family: " + family_name, ErrorCodes::UNKNOWN_TYPE);
+    throw Exception(ErrorCodes::UNKNOWN_TYPE, "Unknown data type family: {}", family_name);
 }
 
 
-void DataTypeFactory::registerDataType(const String & family_name, Creator creator, CaseSensitiveness case_sensitiveness)
+void DataTypeFactory::registerDataType(
+    const String & family_name,
+    Creator creator,
+    CaseSensitiveness case_sensitiveness)
 {
     if (creator == nullptr)
         throw Exception(
-            "DataTypeFactory: the data type family " + family_name + " has been provided a null constructor",
-            ErrorCodes::LOGICAL_ERROR);
+            ErrorCodes::LOGICAL_ERROR,
+            "DataTypeFactory: the data type family {} has been provided a null constructor",
+            family_name);
 
     if (!data_types.emplace(family_name, creator).second)
         throw Exception(
-            "DataTypeFactory: the data type family name '" + family_name + "' is not unique",
-            ErrorCodes::LOGICAL_ERROR);
+            ErrorCodes::LOGICAL_ERROR,
+            "DataTypeFactory: the data type family name '{}' is not unique",
+            family_name);
 
     String family_name_lowercase = Poco::toLower(family_name);
-
     if (case_sensitiveness == CaseInsensitive
         && !case_insensitive_data_types.emplace(family_name_lowercase, creator).second)
         throw Exception(
-            "DataTypeFactory: the case insensitive data type family name '" + family_name + "' is not unique",
-            ErrorCodes::LOGICAL_ERROR);
+            ErrorCodes::LOGICAL_ERROR,
+            "DataTypeFactory: the case insensitive data type family name '{}' is not unique",
+            family_name);
 }
 
 
-void DataTypeFactory::registerSimpleDataType(const String & name, SimpleCreator creator, CaseSensitiveness case_sensitiveness)
+void DataTypeFactory::registerSimpleDataType(
+    const String & name,
+    SimpleCreator creator,
+    CaseSensitiveness case_sensitiveness)
 {
     if (creator == nullptr)
         throw Exception(
-            "DataTypeFactory: the data type " + name + " has been provided a null constructor",
-            ErrorCodes::LOGICAL_ERROR);
+            ErrorCodes::LOGICAL_ERROR,
+            "DataTypeFactory: the data type {} has been provided a null constructor",
+            name);
 
     registerDataType(
         name,
         [name, creator](const ASTPtr & ast) {
             if (ast)
-                throw Exception("Data type " + name + " cannot have arguments", ErrorCodes::DATA_TYPE_CANNOT_HAVE_ARGUMENTS);
+                throw Exception(
+                    ErrorCodes::DATA_TYPE_CANNOT_HAVE_ARGUMENTS,
+                    "Data type {} cannot have arguments",
+                    name);
             return creator();
         },
         case_sensitiveness);

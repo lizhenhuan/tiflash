@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,22 +14,24 @@
 
 #include <Common/CurrentMetrics.h>
 #include <Common/FailPoint.h>
-#include <Encryption/FileProvider.h>
-#include <IO/ReadBufferFromMemory.h>
+#include <IO/Buffer/ReadBufferFromMemory.h>
+#include <IO/FileProvider/FileProvider.h>
+#include <Interpreters/Context.h>
 #include <Poco/AutoPtr.h>
 #include <Poco/ConsoleChannel.h>
 #include <Poco/File.h>
 #include <Poco/FormattingChannel.h>
 #include <Poco/Logger.h>
 #include <Poco/PatternFormatter.h>
+#include <Storages/BackgroundProcessingPool.h>
 #include <Storages/Page/Page.h>
-#include <Storages/Page/PageDefines.h>
 #include <Storages/Page/PageStorage.h>
+#include <Storages/Page/V2/PageDefines.h>
 #include <Storages/Page/V2/PageFile.h>
 #include <Storages/Page/V2/PageStorage.h>
-#include <Storages/Page/WriteBatch.h>
+#include <Storages/Page/WriteBatchImpl.h>
 #include <Storages/PathPool.h>
-#include <Storages/tests/TiFlashStorageTestBasic.h>
+#include <TestUtils/TiFlashStorageTestBasic.h>
 #include <TestUtils/TiFlashTestBasic.h>
 #include <common/logger_useful.h>
 
@@ -48,12 +50,11 @@ extern const int CANNOT_WRITE_TO_FILE_DESCRIPTOR;
 
 namespace PS::V2::tests
 {
-class PageStorage_test : public DB::base::TiFlashStorageTestBasic
+class PageStorageV2Test : public DB::base::TiFlashStorageTestBasic
 {
 public:
-    PageStorage_test()
-        : storage()
-        , file_provider{DB::tests::TiFlashTestEnv::getContext().getFileProvider()}
+    PageStorageV2Test()
+        : file_provider{DB::tests::TiFlashTestEnv::getDefaultFileProvider()}
     {}
 
 protected:
@@ -61,6 +62,10 @@ protected:
 
     void SetUp() override
     {
+        bkg_pool = std::make_shared<DB::BackgroundProcessingPool>(
+            4,
+            "bg-page-",
+            std::make_shared<JointThreadInfoJeallocMap>());
         TiFlashStorageTestBasic::SetUp();
         // drop dir if exists
         path_pool = std::make_unique<StoragePathPool>(db_context->getPathPool().withTable("test", "t1", false));
@@ -71,22 +76,23 @@ protected:
         storage = reopenWithConfig(config);
     }
 
-    std::shared_ptr<PageStorage> reopenWithConfig(const PageStorage::Config & config_)
+    std::shared_ptr<PageStorage> reopenWithConfig(const PageStorageConfig & config_)
     {
         auto delegator = path_pool->getPSDiskDelegatorSingle("log");
-        auto storage = std::make_shared<PageStorage>("test.t", delegator, config_, file_provider);
+        auto storage = std::make_shared<PageStorage>("test.t", delegator, config_, file_provider, *bkg_pool);
         storage->restore();
         return storage;
     }
 
 protected:
-    PageStorage::Config config;
+    PageStorageConfig config;
+    std::shared_ptr<BackgroundProcessingPool> bkg_pool;
     std::shared_ptr<PageStorage> storage;
     std::unique_ptr<StoragePathPool> path_pool;
     const FileProviderPtr file_provider;
 };
 
-TEST_F(PageStorage_test, WriteRead)
+TEST_F(PageStorageV2Test, WriteRead)
 try
 {
     const UInt64 tag = 0;
@@ -123,7 +129,7 @@ try
 }
 CATCH
 
-TEST_F(PageStorage_test, WriteMultipleBatchRead)
+TEST_F(PageStorageV2Test, WriteMultipleBatchRead)
 try
 {
     const UInt64 tag = 0;
@@ -164,7 +170,7 @@ try
 }
 CATCH
 
-TEST_F(PageStorage_test, WriteReadAfterGc)
+TEST_F(PageStorageV2Test, WriteReadAfterGc)
 try
 {
     const size_t buf_sz = 256;
@@ -231,7 +237,7 @@ try
 }
 CATCH
 
-TEST_F(PageStorage_test, WriteReadGcExternalPage)
+TEST_F(PageStorageV2Test, WriteReadGcExternalPage)
 try
 {
     {
@@ -248,8 +254,9 @@ try
     callbacks.scanner = []() -> ExternalPageCallbacks::PathAndIdsVec {
         return {};
     };
-    callbacks.remover
-        = [&times_remover_called](const ExternalPageCallbacks::PathAndIdsVec &, const std::set<PageId> & normal_page_ids) -> void {
+    callbacks.remover = [&times_remover_called](
+                            const ExternalPageCallbacks::PathAndIdsVec &,
+                            const std::set<PageId> & normal_page_ids) -> void {
         times_remover_called += 1;
         ASSERT_EQ(normal_page_ids.size(), 2UL);
         EXPECT_GT(normal_page_ids.count(0), 0UL);
@@ -289,7 +296,9 @@ try
     }
 
     snapshot.reset();
-    callbacks.remover = [&times_remover_called](const ExternalPageCallbacks::PathAndIdsVec &, const std::set<PageId> & normal_page_ids) -> void {
+    callbacks.remover = [&times_remover_called](
+                            const ExternalPageCallbacks::PathAndIdsVec &,
+                            const std::set<PageId> & normal_page_ids) -> void {
         times_remover_called += 1;
         ASSERT_EQ(normal_page_ids.size(), 1UL);
         EXPECT_GT(normal_page_ids.count(0), 0UL);
@@ -303,7 +312,7 @@ try
 }
 CATCH
 
-TEST_F(PageStorage_test, IdempotentDelAndRef)
+TEST_F(PageStorageV2Test, IdempotentDelAndRef)
 try
 {
     const size_t buf_sz = 1024;
@@ -381,7 +390,7 @@ try
 }
 CATCH
 
-TEST_F(PageStorage_test, ListPageFiles)
+TEST_F(PageStorageV2Test, ListPageFiles)
 try
 {
     constexpr size_t buf_sz = 128;
@@ -395,8 +404,13 @@ try
         wb.putPage(1, 0, buf, buf_sz);
         storage->write(std::move(wb));
 
-        auto f
-            = PageFile::openPageFileForRead(1, 0, storage->delegator->defaultPath(), file_provider, PageFile::Type::Formal, storage->log);
+        auto f = PageFile::openPageFileForRead(
+            1,
+            0,
+            storage->delegator->defaultPath(),
+            file_provider,
+            PageFile::Type::Formal,
+            storage->log);
         f.setLegacy();
     }
 
@@ -407,7 +421,13 @@ try
         auto buf = std::make_shared<ReadBufferFromMemory>(c_buff, sizeof(c_buff));
         wb.putPage(1, 0, buf, buf_sz);
 
-        auto f = PageFile::newPageFile(2, 0, storage->delegator->defaultPath(), file_provider, PageFile::Type::Temp, storage->log);
+        auto f = PageFile::newPageFile(
+            2,
+            0,
+            storage->delegator->defaultPath(),
+            file_provider,
+            PageFile::Type::Temp,
+            storage->log);
         {
             auto w = f.createWriter(false, true);
 
@@ -423,7 +443,7 @@ try
         auto page_files = storage->listAllPageFiles(file_provider, storage->delegator, storage->log, opt);
         // Legacy should be ignored
         ASSERT_EQ(page_files.size(), 1UL);
-        for (auto & page_file : page_files)
+        for (const auto & page_file : page_files)
         {
             EXPECT_TRUE(page_file.getType() != PageFile::Type::Legacy);
         }
@@ -435,7 +455,7 @@ try
         auto page_files = storage->listAllPageFiles(file_provider, storage->delegator, storage->log, opt);
         // Snapshot should be ignored
         ASSERT_EQ(page_files.size(), 1UL);
-        for (auto & page_file : page_files)
+        for (const auto & page_file : page_files)
         {
             EXPECT_TRUE(page_file.getType() != PageFile::Type::Checkpoint);
         }
@@ -443,7 +463,7 @@ try
 }
 CATCH
 
-TEST_F(PageStorage_test, RenewWriter)
+TEST_F(PageStorageV2Test, RenewWriter)
 try
 {
     constexpr size_t buf_sz = 100;
@@ -463,7 +483,7 @@ try
         ASSERT_EQ(page_files.size(), 1UL);
     }
 
-    PageStorage::Config config;
+    PageStorageConfig config;
     config.file_roll_size = 10; // make it easy to renew a new page file for write
     storage = reopenWithConfig(config);
 
@@ -476,7 +496,7 @@ try
 CATCH
 
 /// Check if we can correctly do read / write after restore from disk.
-TEST_F(PageStorage_test, WriteReadRestore)
+TEST_F(PageStorageV2Test, WriteReadRestore)
 try
 {
     const UInt64 tag = 0;
@@ -487,7 +507,7 @@ try
         c_buff[i] = i % 0xff;
     }
 
-    PageStorage::Config tmp_config = config;
+    PageStorageConfig tmp_config = config;
     tmp_config.file_roll_size = 128 * MB;
     storage = reopenWithConfig(tmp_config);
 
@@ -603,7 +623,7 @@ try
 }
 CATCH
 
-TEST_F(PageStorage_test, WriteReadWithSpecifyFields)
+TEST_F(PageStorageV2Test, WriteReadWithSpecifyFields)
 try
 {
     const UInt64 tag = 0;
@@ -750,16 +770,27 @@ try
         ASSERT_EQ(page0.page_id, 0UL);
         for (size_t i = 0; i < buf_sz; ++i)
             EXPECT_EQ(*(page0.data.begin() + i), static_cast<char>(i % 0xff));
+        ASSERT_EQ(page0.fieldSize(), page0_fields.size());
+        for (const auto & [idx, sz] : page0_fields)
+        {
+            ASSERT_EQ(page0.getFieldData(idx).size(), sz);
+        }
+
         DB::Page page1 = storage->read(1);
         ASSERT_EQ(page1.data.size(), buf_sz);
         ASSERT_EQ(page1.page_id, 1UL);
         for (size_t i = 0; i < buf_sz; ++i)
             EXPECT_EQ(*(page1.data.begin() + i), static_cast<char>(i % 0xff));
+        ASSERT_EQ(page1.fieldSize(), page1_fields.size());
+        for (const auto & [idx, sz] : page1_fields)
+        {
+            ASSERT_EQ(page1.getFieldData(idx).size(), sz);
+        }
     }
 }
 CATCH
 
-TEST_F(PageStorage_test, IgnoreIncompleteWriteBatch1)
+TEST_F(PageStorageV2Test, IgnoreIncompleteWriteBatch1)
 try
 {
     // If there is any incomplete write batch, we should able to ignore those
@@ -770,8 +801,18 @@ try
     {
         WriteBatch batch;
         memset(buf, 0x01, buf_sz);
-        batch.putPage(1, 0, std::make_shared<ReadBufferFromMemory>(buf, buf_sz), buf_sz, PageFieldSizes{{32, 64, 79, 128, 196, 256, 269}});
-        batch.putPage(2, 0, std::make_shared<ReadBufferFromMemory>(buf, buf_sz), buf_sz, PageFieldSizes{{64, 79, 128, 196, 256, 301}});
+        batch.putPage(
+            1,
+            0,
+            std::make_shared<ReadBufferFromMemory>(buf, buf_sz),
+            buf_sz,
+            PageFieldSizes{{32, 64, 79, 128, 196, 256, 269}});
+        batch.putPage(
+            2,
+            0,
+            std::make_shared<ReadBufferFromMemory>(buf, buf_sz),
+            buf_sz,
+            PageFieldSizes{{64, 79, 128, 196, 256, 301}});
         batch.putRefPage(3, 2);
         batch.putRefPage(4, 2);
         try
@@ -787,11 +828,11 @@ try
     }
 
     // Restore, the broken meta should be ignored
-    storage = reopenWithConfig(PageStorage::Config{});
+    storage = reopenWithConfig(PageStorageConfig{});
 
     {
         size_t num_pages = 0;
-        storage->traverse([&num_pages](const DB::Page &) { num_pages += 1; });
+        storage->traverse([&num_pages](const DB::Page &, size_t) { num_pages += 1; });
         ASSERT_EQ(num_pages, 0);
     }
 
@@ -799,42 +840,43 @@ try
     {
         WriteBatch batch;
         memset(buf, 0x02, buf_sz);
-        batch.putPage(1,
-                      0,
-                      std::make_shared<ReadBufferFromMemory>(buf, buf_sz),
-                      buf_sz, //
-                      PageFieldSizes{{32, 128, 196, 256, 12, 99, 1, 300}});
+        batch.putPage(
+            1,
+            0,
+            std::make_shared<ReadBufferFromMemory>(buf, buf_sz),
+            buf_sz, //
+            PageFieldSizes{{32, 128, 196, 256, 12, 99, 1, 300}});
         storage->write(std::move(batch));
 
         auto page1 = storage->read(1);
         ASSERT_EQ(page1.data.size(), buf_sz);
         for (size_t i = 0; i < page1.data.size(); ++i)
         {
-            auto p = page1.data.begin();
+            const auto * p = page1.data.begin();
             EXPECT_EQ(*p, 0x02);
         }
     }
 
     // Restore again, we should be able to read page 1
-    storage = reopenWithConfig(PageStorage::Config{});
+    storage = reopenWithConfig(PageStorageConfig{});
 
     {
         size_t num_pages = 0;
-        storage->traverse([&num_pages](const Page &) { num_pages += 1; });
+        storage->traverse([&num_pages](const Page &, size_t) { num_pages += 1; });
         ASSERT_EQ(num_pages, 1);
 
         auto page1 = storage->read(1);
         ASSERT_EQ(page1.data.size(), buf_sz);
         for (size_t i = 0; i < page1.data.size(); ++i)
         {
-            auto p = page1.data.begin();
+            const auto * p = page1.data.begin();
             EXPECT_EQ(*p, 0x02);
         }
     }
 }
 CATCH
 
-TEST_F(PageStorage_test, IgnoreIncompleteWriteBatch2)
+TEST_F(PageStorageV2Test, IgnoreIncompleteWriteBatch2)
 try
 {
     // If there is any incomplete write batch, we should able to ignore those
@@ -845,13 +887,24 @@ try
     {
         WriteBatch batch;
         memset(buf, 0x01, buf_sz);
-        batch.putPage(1, 0, std::make_shared<ReadBufferFromMemory>(buf, buf_sz), buf_sz, PageFieldSizes{{32, 64, 79, 128, 196, 256, 269}});
-        batch.putPage(2, 0, std::make_shared<ReadBufferFromMemory>(buf, buf_sz), buf_sz, PageFieldSizes{{64, 79, 128, 196, 256, 301}});
+        batch.putPage(
+            1,
+            0,
+            std::make_shared<ReadBufferFromMemory>(buf, buf_sz),
+            buf_sz,
+            PageFieldSizes{{32, 64, 79, 128, 196, 256, 269}});
+        batch.putPage(
+            2,
+            0,
+            std::make_shared<ReadBufferFromMemory>(buf, buf_sz),
+            buf_sz,
+            PageFieldSizes{{64, 79, 128, 196, 256, 301}});
         batch.putRefPage(3, 2);
         batch.putRefPage(4, 2);
         try
         {
             FailPointHelper::enableFailPoint(FailPoints::force_set_page_file_write_errno);
+            SCOPE_EXIT({ FailPointHelper::disableFailPoint(FailPoints::force_set_page_file_write_errno); });
             storage->write(std::move(batch));
         }
         catch (DB::Exception & e)
@@ -862,10 +915,9 @@ try
         }
     }
 
-    FailPointHelper::disableFailPoint(FailPoints::force_set_page_file_write_errno);
     {
         size_t num_pages = 0;
-        storage->traverse([&num_pages](const Page &) { num_pages += 1; });
+        storage->traverse([&num_pages](const Page &, size_t) { num_pages += 1; });
         ASSERT_EQ(num_pages, 0);
     }
 
@@ -873,35 +925,36 @@ try
     {
         WriteBatch batch;
         memset(buf, 0x02, buf_sz);
-        batch.putPage(1,
-                      0,
-                      std::make_shared<ReadBufferFromMemory>(buf, buf_sz),
-                      buf_sz, //
-                      PageFieldSizes{{32, 128, 196, 256, 12, 99, 1, 300}});
+        batch.putPage(
+            1,
+            0,
+            std::make_shared<ReadBufferFromMemory>(buf, buf_sz),
+            buf_sz, //
+            PageFieldSizes{{32, 128, 196, 256, 12, 99, 1, 300}});
         storage->write(std::move(batch));
 
         auto page1 = storage->read(1);
         ASSERT_EQ(page1.data.size(), buf_sz);
         for (size_t i = 0; i < page1.data.size(); ++i)
         {
-            auto p = page1.data.begin();
+            const auto * p = page1.data.begin();
             EXPECT_EQ(*p, 0x02);
         }
     }
 
     // Restore again, we should be able to read page 1
-    storage = reopenWithConfig(PageStorage::Config{});
+    storage = reopenWithConfig(PageStorageConfig{});
 
     {
         size_t num_pages = 0;
-        storage->traverse([&num_pages](const Page &) { num_pages += 1; });
+        storage->traverse([&num_pages](const Page &, size_t) { num_pages += 1; });
         ASSERT_EQ(num_pages, 1);
 
         auto page1 = storage->read(1);
         ASSERT_EQ(page1.data.size(), buf_sz);
         for (size_t i = 0; i < page1.data.size(); ++i)
         {
-            auto p = page1.data.begin();
+            const auto * p = page1.data.begin();
             EXPECT_EQ(*p, 0x02);
         }
     }
@@ -911,17 +964,15 @@ CATCH
 /**
  * PageStorage tests with predefine Page1 && Page2
  */
-class PageStorageWith2Pages_test : public PageStorage_test
+class PageStorageV2With2PagesTest : public PageStorageV2Test
 {
 public:
-    PageStorageWith2Pages_test()
-        : PageStorage_test()
-    {}
+    PageStorageV2With2PagesTest() = default;
 
 protected:
     void SetUp() override
     {
-        PageStorage_test::SetUp();
+        PageStorageV2Test::SetUp();
         // put predefine Page1, Page2
         const size_t buf_sz = 1024;
         char buf[buf_sz];
@@ -940,7 +991,7 @@ protected:
     }
 };
 
-TEST_F(PageStorageWith2Pages_test, UpdateRefPages)
+TEST_F(PageStorageV2With2PagesTest, UpdateRefPages)
 {
     /// update on RefPage, all references get updated.
     const UInt64 tag = 0;
@@ -995,7 +1046,7 @@ TEST_F(PageStorageWith2Pages_test, UpdateRefPages)
     }
 }
 
-TEST_F(PageStorageWith2Pages_test, DeleteRefPages)
+TEST_F(PageStorageV2With2PagesTest, DeleteRefPages)
 {
     // put ref page: RefPage3 -> Page2, RefPage4 -> Page2
     {
@@ -1023,7 +1074,7 @@ TEST_F(PageStorageWith2Pages_test, DeleteRefPages)
     }
 }
 
-TEST_F(PageStorageWith2Pages_test, PutRefPagesOverRefPages)
+TEST_F(PageStorageV2With2PagesTest, PutRefPagesOverRefPages)
 {
     /// put ref page to ref page, ref path collapse to normal page
     {
@@ -1064,7 +1115,7 @@ TEST_F(PageStorageWith2Pages_test, PutRefPagesOverRefPages)
     }
 }
 
-TEST_F(PageStorageWith2Pages_test, PutDuplicateRefPages)
+TEST_F(PageStorageV2With2PagesTest, PutDuplicateRefPages)
 {
     /// put duplicated RefPages in different WriteBatch
     {
@@ -1107,7 +1158,7 @@ TEST_F(PageStorageWith2Pages_test, PutDuplicateRefPages)
     }
 }
 
-TEST_F(PageStorageWith2Pages_test, PutCollapseDuplicatedRefPages)
+TEST_F(PageStorageV2With2PagesTest, PutCollapseDuplicatedRefPages)
 {
     /// put duplicated RefPages due to ref-path-collapse
     {
@@ -1158,7 +1209,7 @@ TEST_F(PageStorageWith2Pages_test, PutCollapseDuplicatedRefPages)
     }
 }
 
-TEST_F(PageStorageWith2Pages_test, AddRefPageToNonExistPage)
+TEST_F(PageStorageV2With2PagesTest, AddRefPageToNonExistPage)
 try
 {
     {
@@ -1217,7 +1268,7 @@ CurrentMetrics::Value getPSMVCCNumSnapshots()
 } // namespace
 
 
-TEST_F(PageStorageWith2Pages_test, SnapshotReadSnapshotVersion)
+TEST_F(PageStorageV2With2PagesTest, SnapshotReadSnapshotVersion)
 {
     char ch_before = 0x01;
     char ch_update = 0xFF;
@@ -1271,7 +1322,7 @@ TEST_F(PageStorageWith2Pages_test, SnapshotReadSnapshotVersion)
         };
         auto pages = storage->read(ids, nullptr, snapshot);
         ASSERT_EQ(pages.count(1), 1UL);
-        ASSERT_EQ(*pages[1].data.begin(), ch_before);
+        ASSERT_EQ(*pages.at(1).data.begin(), ch_before);
         // TODO read(vec<PageId>, callback) with snapshot
 
         // new page do appear while read with snapshot
@@ -1281,7 +1332,7 @@ TEST_F(PageStorageWith2Pages_test, SnapshotReadSnapshotVersion)
     }
 }
 
-TEST_F(PageStorageWith2Pages_test, GetIdenticalSnapshots)
+TEST_F(PageStorageV2With2PagesTest, GetIdenticalSnapshots)
 {
     char ch_before = 0x01;
     char ch_update = 0xFF;
@@ -1328,13 +1379,13 @@ TEST_F(PageStorageWith2Pages_test, GetIdenticalSnapshots)
     // read(vec<PageId>) with snapshot
     auto pages = storage->read(ids, nullptr, s1);
     ASSERT_EQ(pages.count(1), 1UL);
-    ASSERT_EQ(*pages[1].data.begin(), ch_before);
+    ASSERT_EQ(*pages.at(1).data.begin(), ch_before);
     pages = storage->read(ids, nullptr, s2);
     ASSERT_EQ(pages.count(1), 1UL);
-    ASSERT_EQ(*pages[1].data.begin(), ch_before);
+    ASSERT_EQ(*pages.at(1).data.begin(), ch_before);
     pages = storage->read(ids, nullptr, s3);
     ASSERT_EQ(pages.count(1), 1UL);
-    ASSERT_EQ(*pages[1].data.begin(), ch_before);
+    ASSERT_EQ(*pages.at(1).data.begin(), ch_before);
     // TODO read(vec<PageId>, callback) with snapshot
     // without snapshot
     p1_entry = storage->getEntry(1);
@@ -1354,13 +1405,13 @@ TEST_F(PageStorageWith2Pages_test, GetIdenticalSnapshots)
     page1 = storage->read(1, nullptr, s3);
     ASSERT_EQ(*page1.data.begin(), ch_before);
     // read(vec<PageId>) with snapshot
-    ASSERT_EQ(*pages[1].data.begin(), ch_before);
+    ASSERT_EQ(*pages.at(1).data.begin(), ch_before);
     pages = storage->read(ids, nullptr, s2);
     ASSERT_EQ(pages.count(1), 1UL);
-    ASSERT_EQ(*pages[1].data.begin(), ch_before);
+    ASSERT_EQ(*pages.at(1).data.begin(), ch_before);
     pages = storage->read(ids, nullptr, s3);
     ASSERT_EQ(pages.count(1), 1UL);
-    ASSERT_EQ(*pages[1].data.begin(), ch_before);
+    ASSERT_EQ(*pages.at(1).data.begin(), ch_before);
     // TODO read(vec<PageId>, callback) with snapshot
     // without snapshot
     p1_entry = storage->getEntry(1);
@@ -1378,7 +1429,7 @@ TEST_F(PageStorageWith2Pages_test, GetIdenticalSnapshots)
     // read(vec<PageId>) with snapshot
     pages = storage->read(ids, nullptr, s3);
     ASSERT_EQ(pages.count(1), 1UL);
-    ASSERT_EQ(*pages[1].data.begin(), ch_before);
+    ASSERT_EQ(*pages.at(1).data.begin(), ch_before);
     // TODO read(vec<PageId>, callback) with snapshot
     // without snapshot
     p1_entry = storage->getEntry(1);

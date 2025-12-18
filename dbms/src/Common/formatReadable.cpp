@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Common/formatReadable.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,8 +15,8 @@
 // limitations under the License.
 
 #include <Common/formatReadable.h>
+#include <IO/Buffer/WriteBufferFromString.h>
 #include <IO/DoubleConverter.h>
-#include <IO/WriteBufferFromString.h>
 #include <IO/WriteHelpers.h>
 
 #include <cmath>
@@ -22,7 +24,13 @@
 #include <sstream>
 
 
-static void formatReadable(double size, DB::WriteBuffer & out, int precision, const char ** units, size_t units_size, double delimiter)
+static void formatReadable(
+    double size,
+    DB::WriteBuffer & out,
+    int precision,
+    const char ** units,
+    size_t units_size,
+    double delimiter)
 {
     size_t i = 0;
     for (; i + 1 < units_size && fabs(size) >= delimiter; ++i)

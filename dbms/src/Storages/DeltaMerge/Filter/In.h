@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,10 +16,9 @@
 
 #include <Storages/DeltaMerge/Filter/RSOperator.h>
 
-namespace DB
+namespace DB::DM
 {
-namespace DM
-{
+
 class In : public RSOperator
 {
     Attr attr;
@@ -29,37 +28,68 @@ public:
     In(const Attr & attr_, const Fields & values_)
         : attr(attr_)
         , values(values_)
-    {
-        if (unlikely(values.empty()))
-            throw Exception("Unexpected empty values");
-    }
+    {}
 
     String name() override { return "in"; }
 
-    Attrs getAttrs() override { return {attr}; }
+    ColIds getColumnIDs() override { return {attr.col_id}; }
 
     String toDebugString() override
     {
-        String s = R"({"op":")" + name() + R"(","col":")" + attr.col_name + R"(","value":"[)";
-        for (auto & v : values)
-            s += "\"" + applyVisitor(FieldVisitorToDebugString(), v) + "\",";
-        s.pop_back();
-        return s + "]}";
-    };
+        FmtBuffer buf;
+        buf.fmtAppend(R"({{"op":"{}","col":"{}","value":"[)", name(), attr.col_name);
+        buf.joinStr(
+            values.cbegin(),
+            values.cend(),
+            [](const auto & v, FmtBuffer & fb) {
+                fb.fmtAppend("\"{}\"", applyVisitor(FieldVisitorToDebugString(), v));
+            },
+            ",");
+        buf.append("]}");
+        return buf.toString();
+    }
 
-
-    RSResult roughCheck(size_t pack_id, const RSCheckParam & param) override
+    Poco::JSON::Object::Ptr toJSONObject() override
     {
-        GET_RSINDEX_FROM_PARAM_NOT_FOUND_RETURN_SOME(param, attr, rsindex);
-        // TODO optimize for IN
-        RSResult res = rsindex.minmax->checkEqual(pack_id, values[0], rsindex.type);
-        for (size_t i = 1; i < values.size(); ++i)
-            res = res || rsindex.minmax->checkEqual(pack_id, values[i], rsindex.type);
-        return res;
+        Poco::JSON::Object::Ptr obj = new Poco::JSON::Object();
+        obj->set("op", name());
+        obj->set("col", attr.col_name);
+        Poco::JSON::Array arr;
+        for (const auto & v : values)
+        {
+            arr.add(applyVisitor(FieldVisitorToDebugString(), v));
+        }
+        obj->set("value", arr);
+        return obj;
+    }
+
+    RSResults roughCheck(size_t start_pack, size_t pack_count, const RSCheckParam & param) override
+    {
+        // If values is empty (for example where a in ()), all packs will not match.
+        // So return none directly.
+        if (values.empty())
+            return RSResults(pack_count, RSResult::None);
+        auto rs_index = getRSIndex(param, attr);
+        return rs_index ? rs_index->minmax->checkIn(start_pack, pack_count, values, rs_index->type)
+                        : RSResults(pack_count, RSResult::Some);
+    }
+
+    ColumnRangePtr buildSets(const google::protobuf::RepeatedPtrField<tipb::ColumnarIndexInfo> & index_infos) override
+    {
+        if (auto set = IntegerSet::createValueSet(attr.type, values); set)
+        {
+            auto iter = std::find_if(index_infos.begin(), index_infos.end(), [&](const auto & info) {
+                return info.index_type() == tipb::ColumnarIndexType::TypeInverted
+                    && info.inverted_query_info().column_id() == attr.col_id;
+            });
+            if (iter != index_infos.end())
+                return SingleColumnRange::create(
+                    iter->inverted_query_info().column_id(),
+                    iter->inverted_query_info().index_id(),
+                    set);
+        }
+        return UnsupportedColumnRange::create();
     }
 };
 
-
-} // namespace DM
-
-} // namespace DB
+} // namespace DB::DM

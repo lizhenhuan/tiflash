@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Common/Stopwatch.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -24,13 +26,17 @@
 #include <common/apple_rt.h>
 #endif
 
+static constexpr UInt64 SECOND_TO_NANO = 1000000000ULL;
+static constexpr UInt64 MILLISECOND_TO_NANO = 1000000UL;
+static constexpr UInt64 MICROSECOND_TO_NANO = 1000UL;
+
 inline UInt64 clock_gettime_ns(clockid_t clock_type = CLOCK_MONOTONIC)
 {
     struct timespec ts
     {
     };
     clock_gettime(clock_type, &ts);
-    return UInt64(ts.tv_sec * 1000000000ULL + ts.tv_nsec);
+    return static_cast<UInt64>(ts.tv_sec * SECOND_TO_NANO + ts.tv_nsec);
 }
 
 /// Sometimes monotonic clock may not be monotonic (due to bug in kernel?).
@@ -43,7 +49,7 @@ inline UInt64 clock_gettime_ns_adjusted(UInt64 prev_time, clockid_t clock_type =
         return current_time;
 
     /// Something probably went completely wrong if time stepped back for more than 1 second.
-    assert(prev_time - current_time <= 1000000000ULL);
+    assert(prev_time - current_time <= SECOND_TO_NANO);
     return prev_time;
 }
 
@@ -64,14 +70,14 @@ public:
 
     void start()
     {
-        start_ns = nanoseconds();
+        start_ns = nanosecondsWithBound(start_ns);
         last_ns = start_ns;
         is_running = true;
     }
 
     void stop()
     {
-        stop_ns = nanoseconds();
+        stop_ns = nanosecondsWithBound(start_ns);
         is_running = false;
     }
 
@@ -82,14 +88,16 @@ public:
         last_ns = 0;
         is_running = false;
     }
+
     void restart() { start(); }
-    UInt64 elapsed() const { return is_running ? nanoseconds() - start_ns : stop_ns - start_ns; }
-    UInt64 elapsedMilliseconds() const { return elapsed() / 1000000UL; }
-    double elapsedSeconds() const { return static_cast<double>(elapsed()) / 1000000000ULL; }
+
+    UInt64 elapsed() const { return is_running ? nanosecondsWithBound(start_ns) - start_ns : stop_ns - start_ns; }
+    UInt64 elapsedMilliseconds() const { return elapsed() / MILLISECOND_TO_NANO; }
+    double elapsedSeconds() const { return static_cast<double>(elapsed()) / SECOND_TO_NANO; }
 
     UInt64 elapsedFromLastTime()
     {
-        const auto now_ns = nanoseconds();
+        const auto now_ns = nanosecondsWithBound(last_ns);
         if (is_running)
         {
             auto rc = now_ns - last_ns;
@@ -100,10 +108,10 @@ public:
         {
             return stop_ns - last_ns;
         }
-    };
+    }
 
-    UInt64 elapsedMillisecondsFromLastTime() { return elapsedFromLastTime() / 1000000UL; }
-    UInt64 elapsedSecondsFromLastTime() { return elapsedFromLastTime() / 1000000UL; }
+    UInt64 elapsedMillisecondsFromLastTime() { return elapsedFromLastTime() / MILLISECOND_TO_NANO; }
+    double elapsedSecondsFromLastTime() { return static_cast<double>(elapsedFromLastTime()) / SECOND_TO_NANO; }
 
 private:
     UInt64 start_ns = 0;
@@ -112,7 +120,9 @@ private:
     clockid_t clock_type;
     bool is_running = false;
 
-    UInt64 nanoseconds() const { return clock_gettime_ns_adjusted(start_ns, clock_type); }
+    // Get current nano seconds, ensuring the return value is not
+    // less than `lower_bound`.
+    UInt64 nanosecondsWithBound(UInt64 lower_bound) const { return clock_gettime_ns_adjusted(lower_bound, clock_type); }
 };
 
 
@@ -210,5 +220,8 @@ private:
     clockid_t clock_type;
 
     /// Most significant bit is a lock. When it is set, compareAndRestartDeferred method will return false.
-    UInt64 nanoseconds(UInt64 prev_time) const { return clock_gettime_ns_adjusted(prev_time, clock_type) & 0x7FFFFFFFFFFFFFFFULL; }
+    UInt64 nanoseconds(UInt64 prev_time) const
+    {
+        return clock_gettime_ns_adjusted(prev_time, clock_type) & 0x7FFFFFFFFFFFFFFFULL;
+    }
 };

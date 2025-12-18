@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/DataStreams/CreatingSetsBlockInputStream.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -49,9 +51,6 @@ public:
 
     Block getHeader() const override { return children.back()->getHeader(); }
 
-    /// Takes `totals` only from the main source, not from subquery sources.
-    Block getTotals() override;
-
     virtual void collectNewThreadCountOfThisLevel(int & cnt) override
     {
         if (!children.empty())
@@ -62,11 +61,11 @@ public:
 
     virtual void collectNewThreadCount(int & cnt) override
     {
-        if (!collected)
+        if (!thread_cnt_collected)
         {
             int cnt_s1 = 0;
             int cnt_s2 = 0;
-            collected = true;
+            thread_cnt_collected = true;
             collectNewThreadCountOfThisLevel(cnt_s1);
             for (int i = 0; i < static_cast<int>(children.size()) - 1; ++i)
             {
@@ -82,6 +81,8 @@ public:
 protected:
     Block readImpl() override;
     void readPrefixImpl() override;
+
+    uint64_t collectCPUTimeNsImpl(bool is_thread_runner) override;
 
 private:
     void init(const BlockInputStreamPtr & input);

@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,14 +14,19 @@
 
 #pragma once
 
+#include <IO/FileProvider/FileProvider_fwd.h>
 #include <Storages/DeltaMerge/ColumnFile/ColumnFilePersisted.h>
+#include <Storages/DeltaMerge/ColumnFile/ColumnFileSchema.h>
+#include <Storages/DeltaMerge/DMContext_fwd.h>
+#include <Storages/DeltaMerge/Remote/Serializer_fwd.h>
+#include <Storages/DeltaMerge/dtpb/column_file.pb.h>
+#include <Storages/Page/PageStorage_fwd.h>
 
-namespace DB
+namespace DB::DM
 {
-namespace DM
-{
+
 class ColumnFileTiny;
-using ColumnTinyFilePtr = std::shared_ptr<ColumnFileTiny>;
+using ColumnFileTinyPtr = std::shared_ptr<ColumnFileTiny>;
 
 /// A column file which data is stored in PageStorage.
 /// It may be created in two ways:
@@ -29,141 +34,204 @@ using ColumnTinyFilePtr = std::shared_ptr<ColumnFileTiny>;
 ///   2. created when flushed `ColumnFileInMemory` to disk
 class ColumnFileTiny : public ColumnFilePersisted
 {
+public:
     friend class ColumnFileTinyReader;
+    friend class ColumnFileTinyLocalIndexWriter;
+    friend class InvertedIndexReaderFromColumnFileTiny;
+    friend struct Remote::Serializer;
+
+    using IndexInfos = std::vector<dtpb::ColumnFileIndexInfo>;
+    using IndexInfosPtr = std::shared_ptr<const IndexInfos>;
 
 private:
-    BlockPtr schema;
+    ColumnFileSchemaPtr schema;
 
     UInt64 rows = 0;
     UInt64 bytes = 0;
 
     /// The id of data page which stores the data of this pack.
-    PageId data_page_id;
+    const PageIdU64 data_page_id;
 
-    /// The members below are not serialized.
+    /// HACK: Currently this field is only available when ColumnFileTiny is restored from remote proto.
+    /// It is not available when ColumnFileTiny is constructed or restored locally.
+    /// Maybe we should just drop this field, and store the data_page_size in somewhere else.
+    UInt64 data_page_size = 0;
 
-    /// The cache data in memory.
-    /// Currently this field is unused.
-    CachePtr cache;
-    /// Used to map column id to column instance in a Block.
-    ColIdToOffset colid_to_offset;
+    /// The index information of this file.
+    const IndexInfosPtr index_infos;
+
+    /// The id of the keyspace which this ColumnFileTiny belongs to.
+    const KeyspaceID keyspace_id;
+    /// The global file_provider
+    const FileProviderPtr file_provider;
 
 private:
-    /// Read a block of columns in `column_defines` from cache / disk,
-    /// if `pack->schema` is not match with `column_defines`, take good care of ddl cast
-    Columns readFromCache(const ColumnDefines & column_defines, size_t col_start, size_t col_end) const;
-    Columns readFromDisk(const PageReader & page_reader, const ColumnDefines & column_defines, size_t col_start, size_t col_end) const;
-
-    void fillColumns(const PageReader & page_reader, const ColumnDefines & col_defs, size_t col_count, Columns & result) const;
-
-    const DataTypePtr & getDataType(ColId column_id) const
-    {
-        // Note that column_id must exist
-        auto index = colid_to_offset.at(column_id);
-        return schema->getByPosition(index).type;
-    }
+    const DataTypePtr & getDataType(ColId column_id) const { return schema->getDataType(column_id); }
 
 public:
-    ColumnFileTiny(const BlockPtr & schema_, UInt64 rows_, UInt64 bytes_, PageId data_page_id_, const CachePtr & cache_ = nullptr)
-        : schema(schema_)
-        , rows(rows_)
-        , bytes(bytes_)
-        , data_page_id(data_page_id_)
-        , cache(cache_)
-    {
-        for (size_t i = 0; i < schema->columns(); ++i)
-            colid_to_offset.emplace(schema->getByPosition(i).column_id, i);
-    }
+    ColumnFileTiny(
+        const ColumnFileSchemaPtr & schema_,
+        UInt64 rows_,
+        UInt64 bytes_,
+        PageIdU64 data_page_id_,
+        const DMContext & dm_context,
+        const IndexInfosPtr & index_infos_ = nullptr);
+
+    ColumnFileTiny(
+        const ColumnFileSchemaPtr & schema_,
+        UInt64 rows_,
+        UInt64 bytes_,
+        PageIdU64 data_page_id_,
+        KeyspaceID keyspace_id_,
+        const FileProviderPtr & file_provider_,
+        const IndexInfosPtr & index_infos_);
 
     Type getType() const override { return Type::TINY_FILE; }
 
     size_t getRows() const override { return rows; }
-    size_t getBytes() const override { return bytes; };
+    size_t getBytes() const override { return bytes; }
 
-    auto getCache() const { return cache; }
-    void clearCache() { cache = {}; }
+    IndexInfosPtr getIndexInfos() const { return index_infos; }
 
-    /// The schema of this pack. Could be empty, i.e. a DeleteRange does not have a schema.
-    BlockPtr getSchema() const { return schema; }
-    /// Replace the schema with a new schema, and the new schema instance should be exactly the same as the previous one.
-    void resetIdenticalSchema(BlockPtr schema_) { schema = schema_; }
+    bool hasIndex(Int64 index_id) const { return findIndexInfo(index_id) != nullptr; }
 
-    ColumnTinyFilePtr cloneWith(PageId new_data_page_id)
+    const dtpb::ColumnFileIndexInfo * findIndexInfo(Int64 index_id) const
     {
-        auto new_tiny_file = std::make_shared<ColumnFileTiny>(*this);
-        new_tiny_file->data_page_id = new_data_page_id;
-        return new_tiny_file;
+        if (!index_infos)
+            return nullptr;
+        const auto it = std::find_if( //
+            index_infos->cbegin(),
+            index_infos->cend(),
+            [index_id](const auto & info) { return info.index_props().index_id() == index_id; });
+        if (it == index_infos->cend())
+            return nullptr;
+        return &*it;
     }
 
-    ColumnFileReaderPtr
-    getReader(const DMContext & /*context*/, const StorageSnapshotPtr & storage_snap, const ColumnDefinesPtr & col_defs) const override;
+    ColumnFileSchemaPtr getSchema() const { return schema; }
 
-    void removeData(WriteBatches & wbs) const override
+    ColumnFileTinyPtr cloneWith(PageIdU64 new_data_page_id)
     {
-        wbs.removed_log.delPage(data_page_id);
+        return std::make_shared<ColumnFileTiny>(
+            schema,
+            rows,
+            bytes,
+            new_data_page_id,
+            keyspace_id,
+            file_provider,
+            index_infos);
     }
+
+    ColumnFileTinyPtr cloneWith(PageIdU64 new_data_page_id, const IndexInfosPtr & new_index_infos) const
+    {
+        return std::make_shared<ColumnFileTiny>(
+            schema,
+            rows,
+            bytes,
+            new_data_page_id,
+            keyspace_id,
+            file_provider,
+            new_index_infos);
+    }
+
+    ColumnFileReaderPtr getReader(
+        const DMContext &,
+        const IColumnFileDataProviderPtr & data_provider,
+        const ColumnDefinesPtr & col_defs,
+        ReadTag) const override;
+
+    void removeData(WriteBatches & wbs) const override;
 
     void serializeMetadata(WriteBuffer & buf, bool save_schema) const override;
 
-    PageId getDataPageId() const { return data_page_id; }
+    void serializeMetadata(dtpb::ColumnFilePersisted * cf_pb, bool save_schema) const override;
+
+    PageIdU64 getDataPageId() const { return data_page_id; }
+
+    /// WARNING: DO NOT USE THIS MEMBER FUNCTION UNLESS YOU KNOW WHAT YOU ARE DOING.
+    /// This function will be refined and dropped soon.
+    UInt64 getDataPageSize() const { return data_page_size; }
 
     Block readBlockForMinorCompaction(const PageReader & page_reader) const;
 
-    static ColumnTinyFilePtr writeColumnFile(DMContext & context, const Block & block, size_t offset, size_t limit, WriteBatches & wbs, const BlockPtr & schema = nullptr, const CachePtr & cache = nullptr);
+    static std::shared_ptr<ColumnFileSchema> getSchema(
+        const DMContext & dm_context,
+        BlockPtr schema_block,
+        ColumnFileSchemaPtr & last_schema);
 
-    static PageId writeColumnFileData(DMContext & context, const Block & block, size_t offset, size_t limit, WriteBatches & wbs);
+    static ColumnFileTinyPtr writeColumnFile(
+        const DMContext & dm_context,
+        const Block & block,
+        size_t offset,
+        size_t limit,
+        WriteBatches & wbs);
 
-    static std::tuple<ColumnFilePersistedPtr, BlockPtr> deserializeMetadata(ReadBuffer & buf, const BlockPtr & last_schema);
+    static PageIdU64 writeColumnFileData(
+        const DMContext & dm_context,
+        const Block & block,
+        size_t offset,
+        size_t limit,
+        WriteBatches & wbs);
+
+    static ColumnFilePersistedPtr deserializeMetadata(
+        const DMContext & dm_context,
+        ReadBuffer & buf,
+        ColumnFileSchemaPtr & last_schema);
+
+    static ColumnFilePersistedPtr deserializeMetadata(
+        const DMContext & dm_context,
+        const dtpb::ColumnFileTiny & cf_pb,
+        ColumnFileSchemaPtr & last_schema);
+
+    static ColumnFilePersistedPtr restoreFromCheckpoint(
+        const LoggerPtr & parent_log,
+        const DMContext & dm_context,
+        UniversalPageStoragePtr temp_ps,
+        WriteBatches & wbs,
+        BlockPtr schema,
+        PageIdU64 data_page_id,
+        size_t rows,
+        size_t bytes,
+        IndexInfosPtr index_infos);
+    static std::tuple<ColumnFilePersistedPtr, BlockPtr> createFromCheckpoint(
+        const LoggerPtr & parent_log,
+        const DMContext & dm_context,
+        ReadBuffer & buf,
+        UniversalPageStoragePtr temp_ps,
+        const BlockPtr & last_schema,
+        WriteBatches & wbs);
+    static std::tuple<ColumnFilePersistedPtr, BlockPtr> createFromCheckpoint(
+        const LoggerPtr & parent_log,
+        const DMContext & dm_context,
+        const dtpb::ColumnFileTiny & cf_pb,
+        UniversalPageStoragePtr temp_ps,
+        const BlockPtr & last_schema,
+        WriteBatches & wbs);
+
+    bool mayBeFlushedFrom(ColumnFile * from_file) const override
+    {
+        // The current ColumnFileTiny may come from a ColumnFileInMemory (which contains data in memory)
+        // or ColumnFileTiny (which contains data in PageStorage).
+
+        if (const auto * other_tiny = from_file->tryToTinyFile(); other_tiny)
+            return data_page_id == other_tiny->data_page_id;
+        else if (const auto * other_in_memory = from_file->tryToInMemoryFile(); other_in_memory)
+            // For ColumnFileInMemory, we just do a rough check, instead of checking byte by byte, which
+            // is too expensive.
+            return bytes == from_file->getBytes() && rows == from_file->getRows();
+        else
+            return false;
+    }
 
     String toString() const override
     {
-        String s = "{tiny_file,rows:" + DB::toString(rows) //
-            + ",bytes:" + DB::toString(bytes) //
-            + ",data_page_id:" + DB::toString(data_page_id) //
-            + ",schema:" + (schema ? schema->dumpStructure() : "none") //
-            + ",cache_block:" + (cache ? cache->block.dumpStructure() : "none") + "}";
-        return s;
+        return fmt::format(
+            "{{tiny_file,rows:{},bytes:{},data_page_id:{},schema:{}}}",
+            rows,
+            bytes,
+            data_page_id,
+            (schema ? schema->toString() : "none"));
     }
 };
 
-class ColumnFileTinyReader : public ColumnFileReader
-{
-private:
-    const ColumnFileTiny & tiny_file;
-    const StorageSnapshotPtr storage_snap;
-    const ColumnDefinesPtr col_defs;
-
-    Columns cols_data_cache;
-    bool read_done = false;
-
-public:
-    ColumnFileTinyReader(const ColumnFileTiny & tiny_file_,
-                         const StorageSnapshotPtr & storage_snap_,
-                         const ColumnDefinesPtr & col_defs_,
-                         const Columns & cols_data_cache_)
-        : tiny_file(tiny_file_)
-        , storage_snap(storage_snap_)
-        , col_defs(col_defs_)
-        , cols_data_cache(cols_data_cache_)
-    {
-    }
-
-    ColumnFileTinyReader(const ColumnFileTiny & tiny_file_, const StorageSnapshotPtr & storage_snap_, const ColumnDefinesPtr & col_defs_)
-        : tiny_file(tiny_file_)
-        , storage_snap(storage_snap_)
-        , col_defs(col_defs_)
-    {
-    }
-
-    /// This is a ugly hack to fast return PK & Version column.
-    ColumnPtr getPKColumn();
-    ColumnPtr getVersionColumn();
-
-    size_t readRows(MutableColumns & output_cols, size_t rows_offset, size_t rows_limit, const RowKeyRange * range) override;
-
-    Block readNextBlock() override;
-
-    ColumnFileReaderPtr createNewReader(const ColumnDefinesPtr & new_col_defs) override;
-};
-} // namespace DM
-} // namespace DB
+} // namespace DB::DM

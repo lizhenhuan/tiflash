@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/AggregateFunctions/AggregateFunctionFactory.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -44,7 +46,8 @@ public:
       * Parameters are for "parametric" aggregate functions.
       * For example, in quantileWeighted(0.9)(x, weight), 0.9 is "parameter" and x, weight are "arguments".
       */
-    using Creator = std::function<AggregateFunctionPtr(const String &, const DataTypes &, const Array &)>;
+    using Creator
+        = std::function<AggregateFunctionPtr(const Context &, const String &, const DataTypes &, const Array &)>;
 
     /// For compatibility with SQL, it's possible to specify that certain aggregate function name is case insensitive.
     enum CaseSensitiveness
@@ -55,21 +58,28 @@ public:
 
     /// Register a function by its name.
     /// No locking, you must register all functions before usage of get.
-    void registerFunction(
-        const String & name,
-        Creator creator,
-        CaseSensitiveness case_sensitiveness = CaseSensitive);
+    void registerFunction(const String & name, Creator creator, CaseSensitiveness case_sensitiveness = CaseSensitive);
 
     /// Throws an exception if not found.
     AggregateFunctionPtr get(
+        const Context & context,
         const String & name,
         const DataTypes & argument_types,
         const Array & parameters = {},
         int recursion_level = 0,
         bool empty_input_as_null = false) const;
 
+    /// Throws an exception if not found.
+    AggregateFunctionPtr getForWindow(
+        const Context & context,
+        const String & name,
+        const DataTypes & argument_types,
+        const Array & parameters = {},
+        int recursion_level = 0) const;
+
     /// Returns nullptr if not found.
     AggregateFunctionPtr tryGet(
+        const Context & context,
         const String & name,
         const DataTypes & argument_types,
         const Array & parameters = {}) const;
@@ -78,6 +88,7 @@ public:
 
 private:
     AggregateFunctionPtr getImpl(
+        const Context & context,
         const String & name,
         const DataTypes & argument_types,
         const Array & parameters,

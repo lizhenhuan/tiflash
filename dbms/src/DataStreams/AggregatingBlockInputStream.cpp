@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/DataStreams/AggregatingBlockInputStream.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,6 +16,8 @@
 
 #include <DataStreams/AggregatingBlockInputStream.h>
 #include <DataStreams/MergingAggregatedMemoryEfficientBlockInputStream.h>
+#include <DataStreams/MergingAndConvertingBlockInputStream.h>
+#include <DataStreams/NullBlockInputStream.h>
 
 namespace DB
 {
@@ -30,17 +34,30 @@ Block AggregatingBlockInputStream::readImpl()
         executed = true;
         AggregatedDataVariantsPtr data_variants = std::make_shared<AggregatedDataVariants>();
 
-        Aggregator::CancellationHook hook = [&]() {
+        CancellationHook hook = [&]() {
             return this->isCancelled();
         };
         aggregator.setCancellationHook(hook);
+        aggregator.initThresholdByAggregatedDataVariantsSize(1);
 
-        aggregator.execute(children.back(), *data_variants, file_provider);
+        aggregator.execute(children.back(), *data_variants, 0);
 
-        if (!aggregator.hasTemporaryFiles())
+        /// no new spill can be triggered anymore
+        aggregator.getAggSpillContext()->finishSpillableStage();
+
+        if (!aggregator.hasSpilledData() && !aggregator.getAggSpillContext()->isThreadMarkedForAutoSpill(0))
         {
             ManyAggregatedDataVariants many_data{data_variants};
-            impl = aggregator.mergeAndConvertToBlocks(many_data, final, 1);
+            auto merging_buckets = aggregator.mergeAndConvertToBlocks(many_data, final, 1);
+            if (!merging_buckets)
+            {
+                impl = std::make_unique<NullBlockInputStream>(aggregator.getHeader(final));
+            }
+            else
+            {
+                RUNTIME_CHECK(1 == merging_buckets->getConcurrency());
+                impl = std::make_unique<MergingAndConvertingBlockInputStream>(merging_buckets, 0, log->identifier());
+            }
         }
         else
         {
@@ -51,25 +68,19 @@ Block AggregatingBlockInputStream::readImpl()
             if (!isCancelled())
             {
                 /// Flush data in the RAM to disk also. It's easier than merging on-disk and RAM data.
-                if (!data_variants->empty())
-                    aggregator.writeToTemporaryFile(*data_variants, file_provider);
+                if (data_variants->tryMarkNeedSpill())
+                    aggregator.spill(*data_variants, 0);
             }
-
-            const auto & files = aggregator.getTemporaryFiles();
-            BlockInputStreams input_streams;
-            for (const auto & file : files.files)
-            {
-                temporary_inputs.emplace_back(std::make_unique<TemporaryFileStream>(file->path(), file_provider));
-                input_streams.emplace_back(temporary_inputs.back()->block_in);
-            }
-
-            LOG_TRACE(log,
-                      "Will merge {} temporary files of size {:.2f} MiB compressed, {:.2f} MiB uncompressed.",
-                      files.files.size(),
-                      (files.sum_size_compressed / 1048576.0),
-                      (files.sum_size_uncompressed / 1048576.0));
-
-            impl = std::make_unique<MergingAggregatedMemoryEfficientBlockInputStream>(input_streams, params, final, 1, 1, log->identifier());
+            aggregator.finishSpill();
+            LOG_INFO(log, "Begin restore data from disk for aggregation.");
+            BlockInputStreams input_streams = aggregator.restoreSpilledData();
+            impl = std::make_unique<MergingAggregatedMemoryEfficientBlockInputStream>(
+                input_streams,
+                params,
+                final,
+                1,
+                1,
+                log->identifier());
         }
     }
 

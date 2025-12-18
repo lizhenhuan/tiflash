@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Common/HashTable/TwoLevelHashTable.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -32,10 +34,7 @@ template <size_t initial_size_degree = 8>
 struct TwoLevelHashTableGrower : public HashTableGrower<initial_size_degree>
 {
     /// Increase the size of the hash table.
-    void increaseSize()
-    {
-        this->size_degree += this->size_degree >= 15 ? 1 : 2;
-    }
+    void increaseSize() { this->size_degree += this->size_degree >= 15 ? 1 : 2; }
 };
 
 template <
@@ -63,10 +62,19 @@ public:
     static constexpr size_t NUM_BUCKETS = 1ULL << BITS_FOR_BUCKET;
     static constexpr size_t MAX_BUCKET = NUM_BUCKETS - 1;
 
+    static constexpr bool is_string_hash_map = false;
+    static constexpr bool is_two_level = true;
+
     size_t hash(const Key & x) const { return Hash::operator()(x); }
 
     /// NOTE Bad for hash tables with more than 2^32 cells.
     static size_t getBucketFromHash(size_t hash_value) { return (hash_value >> (32 - BITS_FOR_BUCKET)) & MAX_BUCKET; }
+
+    void setResizeCallback(const ResizeCallback & resize_callback)
+    {
+        for (auto & impl : impls)
+            impl.setResizeCallback(resize_callback);
+    }
 
 protected:
     typename Impl::iterator beginOfNextNonEmptyBucket(size_t & bucket)
@@ -192,7 +200,10 @@ public:
             , current_it(rhs.current_it)
         {}
 
-        bool operator==(const const_iterator & rhs) const { return bucket == rhs.bucket && current_it == rhs.current_it; }
+        bool operator==(const const_iterator & rhs) const
+        {
+            return bucket == rhs.bucket && current_it == rhs.current_it;
+        }
         bool operator!=(const const_iterator & rhs) const { return !(*this == rhs); }
 
         const_iterator & operator++()
@@ -279,6 +290,12 @@ public:
         impls[buck].emplace(key_holder, it, inserted, hash_value);
     }
 
+    void ALWAYS_INLINE prefetch(size_t hashval) const
+    {
+        size_t buck = getBucketFromHash(hashval);
+        impls[buck].prefetch(hashval);
+    }
+
     LookupResult ALWAYS_INLINE find(Key x, size_t hash_value)
     {
         size_t buck = getBucketFromHash(hash_value);
@@ -346,6 +363,13 @@ public:
         return true;
     }
 
+    size_t getBufferSizeInCells() const
+    {
+        size_t res = 0;
+        for (const auto & impl : impls)
+            res += impl.getBufferSizeInCells();
+        return res;
+    }
     size_t getBufferSizeInBytes() const
     {
         size_t res = 0;

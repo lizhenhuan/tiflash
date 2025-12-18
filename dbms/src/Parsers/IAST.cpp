@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Parsers/IAST.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,11 +14,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <IO/WriteBufferFromOStream.h>
-#include <IO/WriteBufferFromString.h>
-#include <IO/WriteHelpers.h>
-#include <IO/Operators.h>
 #include <Common/SipHash.h>
+#include <IO/Buffer/WriteBufferFromOStream.h>
+#include <IO/Buffer/WriteBufferFromString.h>
+#include <IO/Operators.h>
+#include <IO/WriteHelpers.h>
 #include <Parsers/IAST.h>
 
 
@@ -25,17 +27,17 @@ namespace DB
 
 namespace ErrorCodes
 {
-    extern const int TOO_BIG_AST;
-    extern const int TOO_DEEP_AST;
-}
+extern const int TOO_BIG_AST;
+extern const int TOO_DEEP_AST;
+} // namespace ErrorCodes
 
 
-const char * IAST::hilite_keyword    = "\033[1m";
+const char * IAST::hilite_keyword = "\033[1m";
 const char * IAST::hilite_identifier = "\033[0;36m";
-const char * IAST::hilite_function   = "\033[0;33m";
-const char * IAST::hilite_operator   = "\033[1;33m";
-const char * IAST::hilite_alias      = "\033[0;32m";
-const char * IAST::hilite_none       = "\033[0m";
+const char * IAST::hilite_function = "\033[0;33m";
+const char * IAST::hilite_operator = "\033[1;33m";
+const char * IAST::hilite_alias = "\033[0;32m";
+const char * IAST::hilite_none = "\033[0m";
 
 
 /// Quote the identifier with backquotes, if required.
@@ -50,7 +52,7 @@ String backQuoteIfNeed(const String & x)
 }
 
 
-void IAST::writeAlias(const String & name, std::ostream & s, bool hilite) const
+void IAST::writeAlias(const String & name, std::ostream & s, bool hilite)
 {
     s << (hilite ? hilite_keyword : "") << " AS " << (hilite ? hilite_alias : "");
 
@@ -108,4 +110,4 @@ size_t IAST::checkDepthImpl(size_t max_depth, size_t level) const
     return res;
 }
 
-}
+} // namespace DB

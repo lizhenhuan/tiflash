@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,17 +17,16 @@
 #include <Core/Block.h>
 #include <IO/WriteHelpers.h>
 #include <Storages/DeltaMerge/ColumnFile/ColumnFile.h>
-#include <Storages/DeltaMerge/DeltaIndex.h>
-#include <Storages/DeltaMerge/File/DMFile.h>
+#include <Storages/DeltaMerge/DeltaIndex/DeltaIndex.h>
 #include <Storages/DeltaMerge/RowKeyRange.h>
-#include <Storages/DeltaMerge/WriteBatches.h>
-#include <Storages/Page/PageDefines.h>
+#include <Storages/Page/PageDefinesBase.h>
 #include <common/logger_useful.h>
 
 namespace DB
 {
 namespace DM
 {
+struct WriteBatches;
 class MemTableSet;
 using MemTableSetPtr = std::shared_ptr<MemTableSet>;
 class ColumnFilePersistedSet;
@@ -47,7 +46,7 @@ public:
         ColumnFilePtr column_file;
 
         Block block_data;
-        PageId data_page = 0;
+        PageIdU64 data_page = 0;
 
         bool sorted = false;
         size_t rows_offset = 0;
@@ -62,6 +61,7 @@ private:
     size_t flush_version;
 
     size_t flush_rows = 0;
+    size_t flush_bytes = 0;
     size_t flush_deletes = 0;
 
 public:
@@ -70,6 +70,7 @@ public:
     inline Task & addColumnFile(ColumnFilePtr column_file)
     {
         flush_rows += column_file->getRows();
+        flush_bytes += column_file->getBytes();
         flush_deletes += column_file->getDeletes();
         return tasks.emplace_back(column_file);
     }
@@ -78,6 +79,7 @@ public:
 
     size_t getTaskNum() const { return tasks.size(); }
     size_t getFlushRows() const { return flush_rows; }
+    size_t getFlushBytes() const { return flush_bytes; }
     size_t getFlushDeletes() const { return flush_deletes; }
 
     // Persist data in ColumnFileInMemory

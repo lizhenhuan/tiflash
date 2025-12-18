@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/DataStreams/JSONEachRowRowInputStream.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,9 +16,9 @@
 
 #pragma once
 
+#include <Common/HashTable/HashMap.h>
 #include <Core/Block.h>
 #include <DataStreams/IRowInputStream.h>
-#include <Common/HashTable/HashMap.h>
 
 namespace DB
 {
@@ -35,7 +37,7 @@ public:
     JSONEachRowRowInputStream(ReadBuffer & istr_, const Block & header_, bool skip_unknown_);
 
     bool read(MutableColumns & columns) override;
-    bool allowSyncAfterError() const override { return true; };
+    bool allowSyncAfterError() const override { return true; }
     void syncAfterError() override;
 
 private:
@@ -51,4 +53,4 @@ private:
     NameMap name_map;
 };
 
-}
+} // namespace DB

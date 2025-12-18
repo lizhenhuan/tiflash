@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/AggregateFunctions/AggregateFunctionGroupArrayInsertAt.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -60,7 +62,9 @@ struct AggregateFunctionGroupArrayInsertAtDataGeneric
 
 
 class AggregateFunctionGroupArrayInsertAtGeneric final
-    : public IAggregateFunctionDataHelper<AggregateFunctionGroupArrayInsertAtDataGeneric, AggregateFunctionGroupArrayInsertAtGeneric>
+    : public IAggregateFunctionDataHelper<
+          AggregateFunctionGroupArrayInsertAtDataGeneric,
+          AggregateFunctionGroupArrayInsertAtGeneric>
 {
 private:
     DataTypePtr type;
@@ -73,7 +77,9 @@ public:
         if (!params.empty())
         {
             if (params.size() > 2)
-                throw Exception("Aggregate function " + getName() + " requires at most two parameters.", ErrorCodes::NUMBER_OF_ARGUMENTS_DOESNT_MATCH);
+                throw Exception(
+                    "Aggregate function " + getName() + " requires at most two parameters.",
+                    ErrorCodes::NUMBER_OF_ARGUMENTS_DOESNT_MATCH);
 
             default_value = params[0];
 
@@ -86,10 +92,14 @@ public:
         }
 
         if (arguments.size() != 2)
-            throw Exception("Aggregate function " + getName() + " requires two arguments.", ErrorCodes::NUMBER_OF_ARGUMENTS_DOESNT_MATCH);
+            throw Exception(
+                "Aggregate function " + getName() + " requires two arguments.",
+                ErrorCodes::NUMBER_OF_ARGUMENTS_DOESNT_MATCH);
 
         if (!arguments[1]->isUnsignedInteger())
-            throw Exception("Second argument of aggregate function " + getName() + " must be integer.", ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT);
+            throw Exception(
+                "Second argument of aggregate function " + getName() + " must be integer.",
+                ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT);
 
         type = arguments.front();
 
@@ -99,10 +109,13 @@ public:
         {
             Field converted = convertFieldToType(default_value, *type);
             if (converted.isNull())
-                throw Exception("Cannot convert parameter of aggregate function " + getName() + " (" + applyVisitor(FieldVisitorToString(), default_value) + ")"
-                                                                                                                                                             " to type "
-                                    + type->getName() + " to be used as default value in array",
-                                ErrorCodes::CANNOT_CONVERT_TYPE);
+                throw Exception(
+                    "Cannot convert parameter of aggregate function " + getName() + " ("
+                        + applyVisitor(FieldVisitorToString(), default_value)
+                        + ")"
+                          " to type "
+                        + type->getName() + " to be used as default value in array",
+                    ErrorCodes::CANNOT_CONVERT_TYPE);
 
             default_value = converted;
         }
@@ -110,10 +123,7 @@ public:
 
     String getName() const override { return "groupArrayInsertAt"; }
 
-    DataTypePtr getReturnType() const override
-    {
-        return std::make_shared<DataTypeArray>(type);
-    }
+    DataTypePtr getReturnType() const override { return std::make_shared<DataTypeArray>(type); }
 
     void add(AggregateDataPtr __restrict place, const IColumn ** columns, size_t row_num, Arena *) const override
     {
@@ -125,10 +135,12 @@ public:
             return;
 
         if (position >= AGGREGATE_FUNCTION_GROUP_ARRAY_INSERT_AT_MAX_SIZE)
-            throw Exception("Too large array size: position argument (" + toString(position) + ")"
-                                                                                               " is greater or equals to limit ("
-                                + toString(AGGREGATE_FUNCTION_GROUP_ARRAY_INSERT_AT_MAX_SIZE) + ")",
-                            ErrorCodes::TOO_LARGE_ARRAY_SIZE);
+            throw Exception(
+                "Too large array size: position argument (" + toString(position)
+                    + ")"
+                      " is greater or equals to limit ("
+                    + toString(AGGREGATE_FUNCTION_GROUP_ARRAY_INSERT_AT_MAX_SIZE) + ")",
+                ErrorCodes::TOO_LARGE_ARRAY_SIZE);
 
         Array & arr = data(place).value;
 

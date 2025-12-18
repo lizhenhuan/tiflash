@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/AggregateFunctions/IAggregateFunction.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,7 +23,7 @@
 #include <Core/Types.h>
 #include <IO/ReadHelpers.h>
 #include <IO/WriteHelpers.h>
-#include <Storages/Transaction/Collator.h>
+#include <TiDB/Collation/Collator.h>
 
 #include <cstddef>
 #include <memory>
@@ -37,6 +39,7 @@ extern const int NOT_IMPLEMENTED;
 }
 
 class Arena;
+class Context;
 class ReadBuffer;
 class WriteBuffer;
 class IColumn;
@@ -92,7 +95,16 @@ public:
      *  row_num is number of row which should be added.
      *  Additional parameter arena should be used instead of standard memory allocator if the addition requires memory allocation.
      */
-    virtual void add(AggregateDataPtr __restrict place, const IColumn ** columns, size_t row_num, Arena * arena) const = 0;
+    virtual void add(AggregateDataPtr __restrict place, const IColumn ** columns, size_t row_num, Arena * arena) const
+        = 0;
+
+    /// The purpose of this function is the opposite of `add` function, only used in window function.
+    virtual void decrease(AggregateDataPtr __restrict place, const IColumn ** columns, size_t row_num, Arena * arena)
+        const
+        = 0;
+
+    // Only used in window aggregation functions
+    virtual void reset(AggregateDataPtr __restrict) const = 0;
 
     /// Merges state (on which place points to) with other state of current aggregation function.
     virtual void merge(AggregateDataPtr __restrict place, ConstAggregateDataPtr rhs, Arena * arena) const = 0;
@@ -108,6 +120,9 @@ public:
 
     /// Inserts results into a column.
     virtual void insertResultInto(ConstAggregateDataPtr __restrict place, IColumn & to, Arena * arena) const = 0;
+
+    /// Inserts batch results into a column
+    virtual void batchInsertSameResultInto(ConstAggregateDataPtr __restrict place, IColumn & to, size_t num) const = 0;
 
     /** Returns true for aggregate functions of type -State.
       * They are executed as other aggregate functions, but not finalized (return an aggregation state that can be combined with another).
@@ -127,46 +142,45 @@ public:
       *  and do a single call to "addBatch" for devirtualization and inlining.
       */
     virtual void addBatch(
+        size_t start_offset,
         size_t batch_size,
         AggregateDataPtr * places,
         size_t place_offset,
         const IColumn ** columns,
         Arena * arena,
-        ssize_t if_argument_pos = -1) const = 0;
+        ssize_t if_argument_pos = -1) const
+        = 0;
 
     virtual void mergeBatch(
         size_t batch_size,
         AggregateDataPtr * places,
         size_t place_offset,
         const AggregateDataPtr * rhs,
-        Arena * arena) const = 0;
+        Arena * arena) const
+        = 0;
 
     /** The same for single place.
       */
     virtual void addBatchSinglePlace(
+        size_t start_offset,
         size_t batch_size,
         AggregateDataPtr place,
         const IColumn ** columns,
         Arena * arena,
-        ssize_t if_argument_pos = -1) const = 0;
+        ssize_t if_argument_pos = -1) const
+        = 0;
 
     /** The same for single place when need to aggregate only filtered data.
       */
     virtual void addBatchSinglePlaceNotNull(
+        size_t start_offset,
         size_t batch_size,
         AggregateDataPtr place,
         const IColumn ** columns,
         const UInt8 * null_map,
         Arena * arena,
-        ssize_t if_argument_pos = -1) const = 0;
-
-    virtual void addBatchSinglePlaceFromInterval(
-        size_t batch_begin,
-        size_t batch_end,
-        AggregateDataPtr place,
-        const IColumn ** columns,
-        Arena * arena,
-        ssize_t if_argument_pos = -1) const = 0;
+        ssize_t if_argument_pos = -1) const
+        = 0;
 
     /** In addition to addBatch, this method collects multiple rows of arguments into array "places"
       *  as long as they are between offsets[i-1] and offsets[i]. This is used for arrayReduce and
@@ -179,19 +193,22 @@ public:
         size_t place_offset,
         const IColumn ** columns,
         const UInt64 * offsets,
-        Arena * arena) const = 0;
+        Arena * arena) const
+        = 0;
 
     /** The case when the aggregation key is UInt8
       * and pointers to aggregation states are stored in AggregateDataPtr[256] lookup table.
       */
     virtual void addBatchLookupTable8(
+        size_t start_offset,
         size_t batch_size,
         AggregateDataPtr * places,
         size_t place_offset,
         std::function<void(AggregateDataPtr &)> init,
         const UInt8 * key,
         const IColumn ** columns,
-        Arena * arena) const = 0;
+        Arena * arena) const
+        = 0;
 
     /** This is used for runtime code generation to determine, which header files to include in generated source.
       * Always implement it as
@@ -200,6 +217,8 @@ public:
     virtual const char * getHeaderFilePath() const = 0;
 
     virtual void setCollators(TiDB::TiDBCollators &) {}
+
+    virtual void setContext(const Context &) {}
 };
 
 /// Implement method to obtain an address of 'add' function.
@@ -207,7 +226,12 @@ template <typename Derived>
 class IAggregateFunctionHelper : public IAggregateFunction
 {
 private:
-    static void addFree(const IAggregateFunction * that, AggregateDataPtr place, const IColumn ** columns, size_t row_num, Arena * arena)
+    static void addFree(
+        const IAggregateFunction * that,
+        AggregateDataPtr place,
+        const IColumn ** columns,
+        size_t row_num,
+        Arena * arena)
     {
         static_cast<const Derived &>(*that).add(place, columns, row_num, arena);
     }
@@ -216,6 +240,7 @@ public:
     AddFunc getAddressOfAddFunction() const override { return &addFree; }
 
     void addBatch(
+        size_t start_offset,
         size_t batch_size,
         AggregateDataPtr * places,
         size_t place_offset,
@@ -226,17 +251,17 @@ public:
         if (if_argument_pos >= 0)
         {
             const auto & flags = assert_cast<const ColumnUInt8 &>(*columns[if_argument_pos]).getData();
-            for (size_t i = 0; i < batch_size; ++i)
+            for (size_t i = start_offset; i < start_offset + batch_size; ++i)
             {
-                if (flags[i] && places[i])
-                    static_cast<const Derived *>(this)->add(places[i] + place_offset, columns, i, arena);
+                if (flags[i] && places[i - start_offset])
+                    static_cast<const Derived *>(this)->add(places[i - start_offset] + place_offset, columns, i, arena);
             }
         }
         else
         {
-            for (size_t i = 0; i < batch_size; ++i)
-                if (places[i])
-                    static_cast<const Derived *>(this)->add(places[i] + place_offset, columns, i, arena);
+            for (size_t i = start_offset; i < start_offset + batch_size; ++i)
+                if (places[i - start_offset])
+                    static_cast<const Derived *>(this)->add(places[i - start_offset] + place_offset, columns, i, arena);
         }
     }
 
@@ -253,6 +278,7 @@ public:
     }
 
     void addBatchSinglePlace(
+        size_t start_offset,
         size_t batch_size,
         AggregateDataPtr place,
         const IColumn ** columns,
@@ -262,7 +288,7 @@ public:
         if (if_argument_pos >= 0)
         {
             const auto & flags = assert_cast<const ColumnUInt8 &>(*columns[if_argument_pos]).getData();
-            for (size_t i = 0; i < batch_size; ++i)
+            for (size_t i = start_offset; i < start_offset + batch_size; ++i)
             {
                 if (flags[i])
                     static_cast<const Derived *>(this)->add(place, columns, i, arena);
@@ -270,12 +296,13 @@ public:
         }
         else
         {
-            for (size_t i = 0; i < batch_size; ++i)
+            for (size_t i = start_offset; i < start_offset + batch_size; ++i)
                 static_cast<const Derived *>(this)->add(place, columns, i, arena);
         }
     }
 
     void addBatchSinglePlaceNotNull(
+        size_t start_offset,
         size_t batch_size,
         AggregateDataPtr place,
         const IColumn ** columns,
@@ -286,39 +313,15 @@ public:
         if (if_argument_pos >= 0)
         {
             const auto & flags = assert_cast<const ColumnUInt8 &>(*columns[if_argument_pos]).getData();
-            for (size_t i = 0; i < batch_size; ++i)
+            for (size_t i = start_offset; i < start_offset + batch_size; ++i)
                 if (!null_map[i] && flags[i])
                     static_cast<const Derived *>(this)->add(place, columns, i, arena);
         }
         else
         {
-            for (size_t i = 0; i < batch_size; ++i)
+            for (size_t i = start_offset; i < start_offset + batch_size; ++i)
                 if (!null_map[i])
                     static_cast<const Derived *>(this)->add(place, columns, i, arena);
-        }
-    }
-
-    void addBatchSinglePlaceFromInterval(
-        size_t batch_begin,
-        size_t batch_end,
-        AggregateDataPtr place,
-        const IColumn ** columns,
-        Arena * arena,
-        ssize_t if_argument_pos = -1) const override
-    {
-        if (if_argument_pos >= 0)
-        {
-            const auto & flags = assert_cast<const ColumnUInt8 &>(*columns[if_argument_pos]).getData();
-            for (size_t i = batch_begin; i < batch_end; ++i)
-            {
-                if (flags[i])
-                    static_cast<const Derived *>(this)->add(place, columns, i, arena);
-            }
-        }
-        else
-        {
-            for (size_t i = batch_begin; i < batch_end; ++i)
-                static_cast<const Derived *>(this)->add(place, columns, i, arena);
         }
     }
 
@@ -342,6 +345,7 @@ public:
     }
 
     void addBatchLookupTable8(
+        size_t start_offset,
         size_t batch_size,
         AggregateDataPtr * map,
         size_t place_offset,
@@ -352,10 +356,10 @@ public:
     {
         static constexpr size_t UNROLL_COUNT = 8;
 
-        size_t i = 0;
+        size_t i = start_offset;
 
         size_t batch_size_unrolled = batch_size / UNROLL_COUNT * UNROLL_COUNT;
-        for (; i < batch_size_unrolled; i += UNROLL_COUNT)
+        for (; i < start_offset + batch_size_unrolled; i += UNROLL_COUNT)
         {
             AggregateDataPtr places[UNROLL_COUNT];
             for (size_t j = 0; j < UNROLL_COUNT; ++j)
@@ -371,7 +375,7 @@ public:
                 static_cast<const Derived *>(this)->add(places[j] + place_offset, columns, i + j, arena);
         }
 
-        for (; i < batch_size; ++i)
+        for (; i < start_offset + batch_size; ++i)
         {
             AggregateDataPtr & place = map[key[i]];
             if (unlikely(!place))
@@ -379,6 +383,18 @@ public:
             static_cast<const Derived *>(this)->add(place + place_offset, columns, i, arena);
         }
     }
+
+    void decrease(AggregateDataPtr __restrict, const IColumn **, const size_t, Arena *) const override
+    {
+        throw Exception("decrease function is not implemented yet");
+    }
+
+    void batchInsertSameResultInto(ConstAggregateDataPtr __restrict, IColumn &, size_t) const override
+    {
+        throw Exception("batchInsertSameResultInto function is not implemented yet");
+    }
+
+    void reset(AggregateDataPtr __restrict) const override { throw Exception("reset function is not implemented yet"); }
 };
 
 namespace _IAggregateFunctionImpl
@@ -517,6 +533,7 @@ public:
     size_t alignOfData() const override { return alignof(Data); }
 
     void addBatchLookupTable8(
+        size_t start_offset,
         size_t batch_size,
         AggregateDataPtr * map,
         size_t place_offset,
@@ -531,7 +548,8 @@ public:
 
         if (func.allocatesMemoryInArena() || sizeof(Data) > 16 || func.sizeOfData() != sizeof(Data))
         {
-            IAggregateFunctionHelper<Derived>::addBatchLookupTable8(batch_size, map, place_offset, init, key, columns, arena);
+            IAggregateFunctionHelper<
+                Derived>::addBatchLookupTable8(start_offset, batch_size, map, place_offset, init, key, columns, arena);
             return;
         }
 
@@ -542,12 +560,12 @@ public:
         std::unique_ptr<Data[]> places{new Data[256 * UNROLL_COUNT]};
         bool has_data[256 * UNROLL_COUNT]{}; /// Separate flags array to avoid heavy initialization.
 
-        size_t i = 0;
+        size_t i = start_offset;
 
         /// Aggregate data into different lookup tables.
 
         size_t batch_size_unrolled = batch_size / UNROLL_COUNT * UNROLL_COUNT;
-        for (; i < batch_size_unrolled; i += UNROLL_COUNT)
+        for (; i < start_offset + batch_size_unrolled; i += UNROLL_COUNT)
         {
             for (size_t j = 0; j < UNROLL_COUNT; ++j)
             {
@@ -581,7 +599,7 @@ public:
 
         /// Process tails and add directly to the final destination.
 
-        for (; i < batch_size; ++i)
+        for (; i < start_offset + batch_size; ++i)
         {
             size_t k = key[i];
             AggregateDataPtr & place = map[k];

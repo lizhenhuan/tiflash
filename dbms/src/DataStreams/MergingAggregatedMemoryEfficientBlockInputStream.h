@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/DataStreams/MergingAggregatedMemoryEfficientBlockInputStream.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -48,7 +50,6 @@ namespace DB
   * Each source can return one of the following block sequences:
   * 1. "unsplitted" block with bucket_num = -1;
   * 2. "splitted" (two_level) blocks with bucket_num from 0 to 255;
-  * In both cases, there may also be a block of "overflows" with bucket_num = -1 and is_overflows = true;
   *
   * We start from the convention that splitted blocks are always passed in the order of bucket_num.
   * That is, if a < b, then the bucket_num = a block goes before bucket_num = b.
@@ -56,7 +57,6 @@ namespace DB
   * - so that you do not need to read the blocks up front, but go all the way up by bucket_num.
   *
   * In this case, not all bucket_num from the range of 0..255 can be present.
-  * The overflow block can be presented in any order relative to other blocks (but it can be only one).
   *
   * It is necessary to combine these sequences of blocks and return the result as a sequence with the same properties.
   * That is, at the output, if there are "splitted" blocks in the sequence, then they should go in the order of bucket_num.
@@ -114,14 +114,13 @@ private:
     bool started = false;
     bool all_read = false;
     std::atomic<bool> has_two_level{false};
-    std::atomic<bool> has_overflows{false};
     int current_bucket_num = -1;
+    std::list<Block> current_result;
 
     struct Input
     {
         BlockInputStreamPtr stream;
         Block block;
-        Block overflow_block;
         std::vector<Block> splitted_blocks;
         bool is_exhausted = false;
 
@@ -139,7 +138,7 @@ private:
     /// Get blocks that you can merge. This allows you to merge them in parallel in separate threads.
     BlocksToMerge getNextBlocksToMerge();
 
-    std::unique_ptr<ThreadPool> reading_pool;
+    std::unique_ptr<legacy::ThreadPool> reading_pool;
 
     /// For a parallel merge.
 
@@ -158,7 +157,7 @@ private:
         /// If the value is an empty block, you need to wait for its merge.
         /// (This means the promise that there will be data here, which is important because the data should be given out
         /// in the order of the key - bucket_num)
-        std::map<int, Block> merged_blocks;
+        std::map<int, BlocksList> merged_blocks;
         std::mutex merged_blocks_mutex;
         /// An event that is used by merging threads to tell the main thread that the new block is ready.
         std::condition_variable merged_blocks_changed;

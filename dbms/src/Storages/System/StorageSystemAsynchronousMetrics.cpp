@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Storages/System/StorageSystemAsynchronousMetrics.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,23 +14,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <Storages/System/StorageSystemAsynchronousMetrics.h>
-
-#include <Interpreters/AsynchronousMetrics.h>
-#include <Columns/ColumnsNumber.h>
 #include <Columns/ColumnString.h>
+#include <Columns/ColumnsNumber.h>
+#include <DataStreams/OneBlockInputStream.h>
 #include <DataTypes/DataTypeString.h>
 #include <DataTypes/DataTypesNumber.h>
-#include <DataStreams/OneBlockInputStream.h>
+#include <Interpreters/AsynchronousMetrics.h>
+#include <Storages/System/StorageSystemAsynchronousMetrics.h>
 
 
 namespace DB
 {
 
 
-StorageSystemAsynchronousMetrics::StorageSystemAsynchronousMetrics(const std::string & name_, const AsynchronousMetrics & async_metrics_)
-    : name(name_),
-    async_metrics(async_metrics_)
+StorageSystemAsynchronousMetrics::StorageSystemAsynchronousMetrics(
+    const std::string & name_,
+    const AsynchronousMetrics & async_metrics_)
+    : name(name_)
+    , async_metrics(async_metrics_)
 {
     setColumns(ColumnsDescription({
         {"metric", std::make_shared<DataTypeString>()},
@@ -58,8 +61,10 @@ BlockInputStreams StorageSystemAsynchronousMetrics::read(
         res_columns[1]->insert(name_value.second);
     }
 
-    return BlockInputStreams(1, std::make_shared<OneBlockInputStream>(getSampleBlock().cloneWithColumns(std::move(res_columns))));
+    return BlockInputStreams(
+        1,
+        std::make_shared<OneBlockInputStream>(getSampleBlock().cloneWithColumns(std::move(res_columns))));
 }
 
 
-}
+} // namespace DB

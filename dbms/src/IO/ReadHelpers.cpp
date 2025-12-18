@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/IO/ReadHelpers.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,8 +18,8 @@
 #include <Common/StringUtils/StringUtils.h>
 #include <Common/hex.h>
 #include <Core/Defines.h>
+#include <IO/Buffer/WriteBufferFromString.h>
 #include <IO/Operators.h>
-#include <IO/WriteBufferFromString.h>
 #include <IO/WriteHelpers.h>
 #include <IO/readFloatText.h>
 #include <common/find_symbols.h>
@@ -40,7 +42,7 @@ void parseHex(IteratorSrc src, IteratorDst dst, const size_t num_bytes)
     size_t dst_pos = 0;
     for (; dst_pos < num_bytes; ++dst_pos)
     {
-        dst[dst_pos] = UInt8(unhex(src[src_pos])) * 16 + UInt8(unhex(src[src_pos + 1]));
+        dst[dst_pos] = static_cast<UInt8>(unhex(src[src_pos])) * 16 + static_cast<UInt8>(unhex(src[src_pos + 1]));
         src_pos += 2;
     }
 }
@@ -79,7 +81,8 @@ static void __attribute__((__noinline__)) throwAtAssertionFailed(const char * s,
     if (buf.eof())
         out << " at end of stream.";
     else
-        out << " before: " << escape << String(buf.position(), std::min(SHOW_CHARS_ON_SYNTAX_ERROR, buf.buffer().end() - buf.position()));
+        out << " before: " << escape
+            << String(buf.position(), std::min(SHOW_CHARS_ON_SYNTAX_ERROR, buf.buffer().end() - buf.position()));
 
     throw Exception(out.str(), ErrorCodes::CANNOT_PARSE_INPUT_ASSERTION_FAILED);
 }
@@ -188,7 +191,8 @@ void readStringInto(Vector & s, ReadBuffer & buf)
         const char * next_pos = find_first_symbols<'\t', '\n'>(buf.position(), buf.buffer().end());
 
         appendToStringOrVector(s, buf.position(), next_pos);
-        buf.position() += next_pos - buf.position(); /// Code looks complicated, because "buf.position() = next_pos" doens't work due to const-ness.
+        buf.position() += next_pos
+            - buf.position(); /// Code looks complicated, because "buf.position() = next_pos" doens't work due to const-ness.
 
         if (buf.hasPendingData())
             return;
@@ -268,7 +272,7 @@ static ReturnType parseJSONEscapeSequence(Vector & s, ReadBuffer & buf)
     auto error = [](const char * message, int code) {
         if (throw_exception)
             throw Exception(message, code);
-        return ReturnType(false);
+        return static_cast<ReturnType>(false);
     };
 
     ++buf.position();
@@ -307,13 +311,15 @@ static ReturnType parseJSONEscapeSequence(Vector & s, ReadBuffer & buf)
 
         char hex_code[4];
         if (4 != buf.read(hex_code, 4))
-            return error("Cannot parse escape sequence: less than four bytes after \\u", ErrorCodes::CANNOT_PARSE_ESCAPE_SEQUENCE);
+            return error(
+                "Cannot parse escape sequence: less than four bytes after \\u",
+                ErrorCodes::CANNOT_PARSE_ESCAPE_SEQUENCE);
 
         /// \u0000 - special case
         if (0 == memcmp(hex_code, "0000", 4))
         {
             s.push_back(0);
-            return ReturnType(true);
+            return static_cast<ReturnType>(true);
         }
 
         UInt16 code_point = unhex4(hex_code);
@@ -333,12 +339,15 @@ static ReturnType parseJSONEscapeSequence(Vector & s, ReadBuffer & buf)
             if (code_point >= 0xD800 && code_point <= 0xDBFF)
             {
                 if (!checkString("\\u", buf))
-                    return error("Cannot parse escape sequence: missing second part of surrogate pair", ErrorCodes::CANNOT_PARSE_ESCAPE_SEQUENCE);
+                    return error(
+                        "Cannot parse escape sequence: missing second part of surrogate pair",
+                        ErrorCodes::CANNOT_PARSE_ESCAPE_SEQUENCE);
 
                 char second_hex_code[4];
                 if (4 != buf.read(second_hex_code, 4))
-                    return error("Cannot parse escape sequence: less than four bytes after \\u of second part of surrogate pair",
-                                 ErrorCodes::CANNOT_PARSE_ESCAPE_SEQUENCE);
+                    return error(
+                        "Cannot parse escape sequence: less than four bytes after \\u of second part of surrogate pair",
+                        ErrorCodes::CANNOT_PARSE_ESCAPE_SEQUENCE);
 
                 UInt16 second_code_point = unhex4(second_hex_code);
 
@@ -352,7 +361,9 @@ static ReturnType parseJSONEscapeSequence(Vector & s, ReadBuffer & buf)
                     s.push_back((full_code_point & 0x3F) | 0x80);
                 }
                 else
-                    return error("Incorrect surrogate pair of unicode escape sequences in JSON", ErrorCodes::CANNOT_PARSE_ESCAPE_SEQUENCE);
+                    return error(
+                        "Incorrect surrogate pair of unicode escape sequences in JSON",
+                        ErrorCodes::CANNOT_PARSE_ESCAPE_SEQUENCE);
             }
             else
             {
@@ -362,7 +373,7 @@ static ReturnType parseJSONEscapeSequence(Vector & s, ReadBuffer & buf)
             }
         }
 
-        return ReturnType(true);
+        return static_cast<ReturnType>(true);
     }
     default:
         s.push_back(*buf.position());
@@ -370,7 +381,7 @@ static ReturnType parseJSONEscapeSequence(Vector & s, ReadBuffer & buf)
     }
 
     ++buf.position();
-    return ReturnType(true);
+    return static_cast<ReturnType>(true);
 }
 
 
@@ -382,7 +393,8 @@ void readEscapedStringInto(Vector & s, ReadBuffer & buf)
         const char * next_pos = find_first_symbols<'\t', '\n', '\\'>(buf.position(), buf.buffer().end());
 
         appendToStringOrVector(s, buf.position(), next_pos);
-        buf.position() += next_pos - buf.position(); /// Code looks complicated, because "buf.position() = next_pos" doens't work due to const-ness.
+        buf.position() += next_pos
+            - buf.position(); /// Code looks complicated, because "buf.position() = next_pos" doens't work due to const-ness.
 
         if (!buf.hasPendingData())
             continue;
@@ -415,8 +427,7 @@ template <char quote, bool enable_sql_style_quoting, typename Vector>
 static void readAnyQuotedStringInto(Vector & s, ReadBuffer & buf)
 {
     if (buf.eof() || *buf.position() != quote)
-        throw Exception("Cannot parse quoted string: expected opening quote",
-                        ErrorCodes::CANNOT_PARSE_QUOTED_STRING);
+        throw Exception("Cannot parse quoted string: expected opening quote", ErrorCodes::CANNOT_PARSE_QUOTED_STRING);
     ++buf.position();
 
     while (!buf.eof())
@@ -447,8 +458,7 @@ static void readAnyQuotedStringInto(Vector & s, ReadBuffer & buf)
             parseComplexEscapeSequence(s, buf);
     }
 
-    throw Exception("Cannot parse quoted string: expected closing quote",
-                    ErrorCodes::CANNOT_PARSE_QUOTED_STRING);
+    throw Exception("Cannot parse quoted string: expected closing quote", ErrorCodes::CANNOT_PARSE_QUOTED_STRING);
 }
 
 template <bool enable_sql_style_quoting, typename Vector>
@@ -510,92 +520,6 @@ void readBackQuotedStringWithSQLStyle(String & s, ReadBuffer & buf)
     readBackQuotedStringInto<true>(s, buf);
 }
 
-
-template <typename Vector>
-void readCSVStringInto(Vector & s, ReadBuffer & buf, const char delimiter)
-{
-    if (buf.eof())
-        throwReadAfterEOF();
-
-    char maybe_quote = *buf.position();
-
-    /// Emptiness and not even in quotation marks.
-    if (maybe_quote == delimiter)
-        return;
-
-    if (maybe_quote == '\'' || maybe_quote == '"')
-    {
-        ++buf.position();
-
-        /// The quoted case. We are looking for the next quotation mark.
-        while (!buf.eof())
-        {
-            const char * next_pos = reinterpret_cast<const char *>(memchr(buf.position(), maybe_quote, buf.buffer().end() - buf.position()));
-
-            if (nullptr == next_pos)
-                next_pos = buf.buffer().end();
-
-            appendToStringOrVector(s, buf.position(), next_pos);
-            buf.position() += next_pos - buf.position();
-
-            if (!buf.hasPendingData())
-                continue;
-
-            /// Now there is a quotation mark under the cursor. Is there any following?
-            ++buf.position();
-            if (buf.eof())
-                return;
-
-            if (*buf.position() == maybe_quote)
-            {
-                s.push_back(maybe_quote);
-                ++buf.position();
-                continue;
-            }
-
-            return;
-        }
-    }
-    else
-    {
-        /// Unquoted case. Look for delimiter or \r or \n.
-        while (!buf.eof())
-        {
-            const char * next_pos = buf.position();
-            while (next_pos < buf.buffer().end()
-                   && *next_pos != delimiter && *next_pos != '\r' && *next_pos != '\n') /// NOTE You can make a SIMD version.
-                ++next_pos;
-
-            appendToStringOrVector(s, buf.position(), next_pos);
-            buf.position() += next_pos - buf.position();
-
-            if (!buf.hasPendingData())
-                continue;
-
-            /** CSV format can contain insignificant spaces and tabs.
-              * Usually the task of skipping them is for the calling code.
-              * But in this case, it will be difficult to do this, so remove the trailing whitespace by yourself.
-              */
-            size_t size = s.size();
-            while (size > 0
-                   && (s[size - 1] == ' ' || s[size - 1] == '\t'))
-                --size;
-
-            s.resize(size);
-            return;
-        }
-    }
-}
-
-void readCSVString(String & s, ReadBuffer & buf, const char delimiter)
-{
-    s.clear();
-    readCSVStringInto(s, buf, delimiter);
-}
-
-template void readCSVStringInto<PaddedPODArray<UInt8>>(PaddedPODArray<UInt8> & s, ReadBuffer & buf, const char delimiter);
-
-
 template <typename Vector, typename ReturnType>
 ReturnType readJSONStringInto(Vector & s, ReadBuffer & buf)
 {
@@ -604,7 +528,7 @@ ReturnType readJSONStringInto(Vector & s, ReadBuffer & buf)
     auto error = [](const char * message, int code) {
         if (throw_exception)
             throw Exception(message, code);
-        return ReturnType(false);
+        return static_cast<ReturnType>(false);
     };
 
     if (buf.eof() || *buf.position() != '"')
@@ -624,7 +548,7 @@ ReturnType readJSONStringInto(Vector & s, ReadBuffer & buf)
         if (*buf.position() == '"')
         {
             ++buf.position();
-            return ReturnType(true);
+            return static_cast<ReturnType>(true);
         }
 
         if (*buf.position() == '\\')
@@ -649,7 +573,8 @@ void readDateTextFallback(LocalDate & date, ReadBuffer & buf)
 {
     char chars_year[4];
     readPODBinary(chars_year, buf);
-    UInt16 year = (chars_year[0] - '0') * 1000 + (chars_year[1] - '0') * 100 + (chars_year[2] - '0') * 10 + (chars_year[3] - '0');
+    UInt16 year = (chars_year[0] - '0') * 1000 + (chars_year[1] - '0') * 100 + (chars_year[2] - '0') * 10
+        + (chars_year[3] - '0');
 
     buf.ignore();
 
@@ -729,14 +654,18 @@ void skipJSONFieldPlain(ReadBuffer & buf, const StringRef & name_of_filed)
         NullSink sink;
         readJSONStringInto(sink, buf);
     }
-    else if (isNumericASCII(*buf.position()) || *buf.position() == '-' || *buf.position() == '+' || *buf.position() == '.') /// skip number
+    else if (
+        isNumericASCII(*buf.position()) || *buf.position() == '-' || *buf.position() == '+'
+        || *buf.position() == '.') /// skip number
     {
         if (*buf.position() == '+')
             ++buf.position();
 
         double v;
         if (!tryReadFloatText(v, buf))
-            throw Exception("Expected a number field for key '" + name_of_filed.toString() + "'", ErrorCodes::INCORRECT_DATA);
+            throw Exception(
+                "Expected a number field for key '" + name_of_filed.toString() + "'",
+                ErrorCodes::INCORRECT_DATA);
     }
     else if (*buf.position() == 'n') /// skip null
     {
@@ -777,16 +706,22 @@ void skipJSONFieldPlain(ReadBuffer & buf, const StringRef & name_of_filed)
                 break;
             }
             else
-                throw Exception("Unexpected symbol for key '" + name_of_filed.toString() + "'", ErrorCodes::INCORRECT_DATA);
+                throw Exception(
+                    "Unexpected symbol for key '" + name_of_filed.toString() + "'",
+                    ErrorCodes::INCORRECT_DATA);
         }
     }
     else if (*buf.position() == '{') /// fail on objects
     {
-        throw Exception("Unexpected nested field for key '" + name_of_filed.toString() + "'", ErrorCodes::INCORRECT_DATA);
+        throw Exception(
+            "Unexpected nested field for key '" + name_of_filed.toString() + "'",
+            ErrorCodes::INCORRECT_DATA);
     }
     else
     {
-        throw Exception("Unexpected symbol '" + std::string(*buf.position(), 1) + "' for key '" + name_of_filed.toString() + "'", ErrorCodes::INCORRECT_DATA);
+        throw Exception(
+            "Unexpected symbol '" + std::string(*buf.position(), 1) + "' for key '" + name_of_filed.toString() + "'",
+            ErrorCodes::INCORRECT_DATA);
     }
 }
 
@@ -813,9 +748,7 @@ void readException(Exception & e, ReadBuffer & buf, const String & additional_me
     if (name != "DB::Exception")
         out << name << ". ";
 
-    out << message
-        << ". Stack trace:\n\n"
-        << stack_trace;
+    out << message << ". Stack trace:\n\n" << stack_trace;
 
     if (has_nested)
     {

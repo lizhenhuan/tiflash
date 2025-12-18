@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/DataTypes/getMostSubtype.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -27,6 +29,9 @@ namespace DB
   * If force_support_conversion is true, returns type which may be used to convert each argument to.
   * Example: most common subtype for Array(UInt8) and Array(Nullable(Int32)) is Array(Nullable(UInt8) if force_support_conversion is true.
   */
-DataTypePtr getMostSubtype(const DataTypes & types, bool throw_if_result_is_nothing = false, bool force_support_conversion = false);
+DataTypePtr getMostSubtype(
+    const DataTypes & types,
+    bool throw_if_result_is_nothing = false,
+    bool force_support_conversion = false);
 
 } // namespace DB

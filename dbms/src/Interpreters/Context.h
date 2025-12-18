@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Interpreters/Context.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,14 +17,19 @@
 #pragma once
 
 #include <Core/ColumnsWithTypeAndName.h>
+#include <Core/TiFlashDisaggregatedMode.h>
 #include <Core/Types.h>
 #include <Debug/MockServerInfo.h>
-#include <Debug/MockStorage.h>
-#include <IO/CompressionSettings.h>
+#include <IO/FileProvider/FileProvider_fwd.h>
+#include <Interpreters/CancellationHook.h>
 #include <Interpreters/ClientInfo.h>
+#include <Interpreters/Context_fwd.h>
 #include <Interpreters/Settings.h>
+#include <Interpreters/SharedContexts/Disagg_fwd.h>
 #include <Interpreters/TimezoneInfo.h>
-#include <common/MultiVersion.h>
+#include <Server/ServerInfo.h>
+#include <Storages/DeltaMerge/LocalIndexerScheduler_fwd.h>
+#include <Storages/KVStore/Types.h>
 
 #include <chrono>
 #include <condition_variable>
@@ -30,7 +37,6 @@
 #include <memory>
 #include <mutex>
 #include <thread>
-#include <unordered_set>
 
 namespace pingcap
 {
@@ -53,19 +59,16 @@ class QuotaForIntervals;
 class BackgroundProcessingPool;
 class MergeList;
 class MarkCache;
-class UncompressedCache;
 class DBGInvoker;
 class TMTContext;
 using TMTContextPtr = std::shared_ptr<TMTContext>;
 class ProcessList;
 class ProcessListElement;
-class Macros;
 struct Progress;
 class QueryLog;
 class IDatabase;
 class DDLGuard;
 class IStorage;
-class ITableFunction;
 using StoragePtr = std::shared_ptr<IStorage>;
 using Tables = std::map<String, StoragePtr>;
 class IAST;
@@ -88,8 +91,6 @@ class PathCapacityMetrics;
 using PathCapacityMetricsPtr = std::shared_ptr<PathCapacityMetrics>;
 class KeyManager;
 using KeyManagerPtr = std::shared_ptr<KeyManager>;
-class FileProvider;
-using FileProviderPtr = std::shared_ptr<FileProvider>;
 struct TiFlashRaftConfig;
 class DAGContext;
 class IORateLimiter;
@@ -98,26 +99,35 @@ using WriteLimiterPtr = std::shared_ptr<WriteLimiter>;
 class ReadLimiter;
 using ReadLimiterPtr = std::shared_ptr<ReadLimiter>;
 using MockMPPServerInfo = DB::tests::MockMPPServerInfo;
-using MockStorage = DB::tests::MockStorage;
+class TiFlashSecurityConfig;
+using TiFlashSecurityConfigPtr = std::shared_ptr<TiFlashSecurityConfig>;
+class MockStorage;
+class JointThreadInfoJeallocMap;
+using JointThreadInfoJeallocMapPtr = std::shared_ptr<JointThreadInfoJeallocMap>;
+class CTEManager;
 
 enum class PageStorageRunMode : UInt8;
 namespace DM
 {
 class MinMaxIndexCache;
+class LocalIndexCache;
+class ColumnCacheLongTerm;
 class DeltaIndexManager;
 class GlobalStoragePool;
+class SharedBlockSchemas;
 using GlobalStoragePoolPtr = std::shared_ptr<GlobalStoragePool>;
+class GlobalPageIdAllocator;
+using GlobalPageIdAllocatorPtr = std::shared_ptr<GlobalPageIdAllocator>;
 } // namespace DM
 
 /// (database name, table name)
 using DatabaseAndTableName = std::pair<String, String>;
 
-/// Table -> set of table-views that make SELECT from it.
-using ViewDependencies = std::map<DatabaseAndTableName, std::set<DatabaseAndTableName>>;
-using Dependencies = std::vector<DatabaseAndTableName>;
-
 using TableAndCreateAST = std::pair<StoragePtr, ASTPtr>;
 using TableAndCreateASTs = std::map<String, TableAndCreateAST>;
+
+class UniversalPageStorage;
+using UniversalPageStoragePtr = std::shared_ptr<UniversalPageStorage>;
 
 /** A set of known objects that can be used in the query.
   * Consists of a shared part (always common to all sessions and queries)
@@ -144,7 +154,6 @@ private:
     /// Format, used when server formats data by itself and if query does not have FORMAT specification.
     /// Thus, used in HTTP interface. If not specified - then some globally default format is used.
     String default_format;
-    TableAndCreateASTs external_tables; /// Temporary tables.
     Tables table_function_results; /// Temporary tables obtained by execution of table functions. Keyed by AST tree id.
     Context * query_context = nullptr;
     Context * session_context = nullptr; /// Session context or nullptr. Could be equal to this.
@@ -153,25 +162,28 @@ private:
 
     UInt64 session_close_cycle = 0;
     bool session_is_used = false;
-
-    bool use_l0_opt = true;
+    bool is_config_loaded = false; /// Is configuration loaded from toml file.
 
     enum TestMode
     {
         non_test,
         mpp_test,
         cop_test,
+        interpreter_test,
         executor_test,
         cancel_test
     };
     TestMode test_mode = non_test;
 
-    MockStorage mock_storage;
+    MockStorage * mock_storage = nullptr;
     MockMPPServerInfo mpp_server_info{};
 
     TimezoneInfo timezone_info;
 
     DAGContext * dag_context = nullptr;
+    CancellationHook is_cancelled{[]() {
+        return false;
+    }};
     using DatabasePtr = std::shared_ptr<IDatabase>;
     using Databases = std::map<String, std::shared_ptr<IDatabase>>;
 
@@ -179,9 +191,21 @@ private:
     Context();
 
 public:
+    enum class ApplicationType
+    {
+        SERVER, /// The program is run as clickhouse-server daemon (default behavior)
+        CLIENT, /// clickhouse-client
+        LOCAL /// clickhouse-local
+    };
+
     /// Create initial Context with ContextShared and etc.
-    static Context createGlobal(std::shared_ptr<IRuntimeComponentsFactory> runtime_components_factory);
-    static Context createGlobal();
+    static std::unique_ptr<Context> createGlobal(
+        std::shared_ptr<IRuntimeComponentsFactory> runtime_components_factory,
+        ApplicationType app_type,
+        const std::optional<DisaggOptions> & disagg_opt);
+    static std::unique_ptr<Context> createGlobal(
+        ApplicationType app_type,
+        const std::optional<DisaggOptions> & disagg_opt = std::nullopt);
 
     ~Context();
 
@@ -191,23 +215,29 @@ public:
     String getUserFilesPath() const;
     PathPool & getPathPool() const;
 
+    CTEManager * getCTEManager() const;
+
     void setPath(const String & path);
     void setTemporaryPath(const String & path);
     void setFlagsPath(const String & path);
-    void setUserFilesPath(const String & path);
 
-    void setPathPool(const Strings & main_data_paths,
-                     const Strings & latest_data_paths,
-                     const Strings & kvstore_paths,
-                     bool enable_raft_compatible_mode,
-                     PathCapacityMetricsPtr global_capacity_,
-                     FileProviderPtr file_provider);
+    void setPathPool(
+        const Strings & main_data_paths,
+        const Strings & latest_data_paths,
+        const Strings & kvstore_paths,
+        PathCapacityMetricsPtr global_capacity_,
+        FileProviderPtr file_provider);
 
     using ConfigurationPtr = Poco::AutoPtr<Poco::Util::AbstractConfiguration>;
 
     /// Global application configuration settings.
     void setConfig(const ConfigurationPtr & config);
     Poco::Util::AbstractConfiguration & getConfigRef() const;
+
+    using ConfigReloadCallback = std::function<void()>;
+    void setConfigReloadCallback(ConfigReloadCallback && callback);
+    void reloadConfig() const;
+    void reloadDeltaTreeConfig(const Poco::Util::AbstractConfiguration & config);
 
     /** Take the list of users, quotas and configuration profiles from this config.
       * The list of users is completely replaced.
@@ -216,54 +246,68 @@ public:
     void setUsersConfig(const ConfigurationPtr & config);
     ConfigurationPtr getUsersConfig();
 
+    /// Sets default_profile, must be called once during the initialization
+    void setDefaultProfiles();
+
+    /// Security configuration settings.
+    void setSecurityConfig(Poco::Util::AbstractConfiguration & config, const LoggerPtr & log);
+    TiFlashSecurityConfigPtr getSecurityConfig();
+
     /// Must be called before getClientInfo.
-    void setUser(const String & name, const String & password, const Poco::Net::SocketAddress & address, const String & quota_key);
+    void setUser(
+        const String & name,
+        const String & password,
+        const Poco::Net::SocketAddress & address,
+        const String & quota_key);
     /// Compute and set actual user settings, client_info.current_user should be set
     void calculateUserSettings();
 
-    ClientInfo & getClientInfo() { return client_info; };
-    const ClientInfo & getClientInfo() const { return client_info; };
+    ClientInfo & getClientInfo() { return client_info; }
+    const ClientInfo & getClientInfo() const { return client_info; }
 
-    void setQuota(const String & name, const String & quota_key, const String & user_name, const Poco::Net::IPAddress & address);
+    void setQuota(
+        const String & name,
+        const String & quota_key,
+        const String & user_name,
+        const Poco::Net::IPAddress & address);
     QuotaForIntervals & getQuota();
-
-    void addDependency(const DatabaseAndTableName & from, const DatabaseAndTableName & where);
-    void removeDependency(const DatabaseAndTableName & from, const DatabaseAndTableName & where);
-    Dependencies getDependencies(const String & database_name, const String & table_name) const;
 
     /// Checking the existence of the table/database. Database can be empty - in this case the current database is used.
     bool isTableExist(const String & database_name, const String & table_name) const;
     bool isDatabaseExist(const String & database_name) const;
-    bool isExternalTableExist(const String & table_name) const;
     void assertTableExists(const String & database_name, const String & table_name) const;
 
     /** The parameter check_database_access_rights exists to not check the permissions of the database again,
       * when assertTableDoesntExist or assertDatabaseExists is called inside another function that already
       * made this check.
       */
-    void assertTableDoesntExist(const String & database_name, const String & table_name, bool check_database_access_rights = true) const;
+    void assertTableDoesntExist(
+        const String & database_name,
+        const String & table_name,
+        bool check_database_access_rights = true) const;
     void assertDatabaseExists(const String & database_name, bool check_database_access_rights = true) const;
 
     void assertDatabaseDoesntExist(const String & database_name) const;
     void checkDatabaseAccessRights(const std::string & database_name) const;
 
-    Tables getExternalTables() const;
-    StoragePtr tryGetExternalTable(const String & table_name) const;
     StoragePtr getTable(const String & database_name, const String & table_name) const;
     StoragePtr tryGetTable(const String & database_name, const String & table_name) const;
-    void addExternalTable(const String & table_name, const StoragePtr & storage, const ASTPtr & ast = {});
-    StoragePtr tryRemoveExternalTable(const String & table_name);
-
-    StoragePtr executeTableFunction(const ASTPtr & table_expression);
 
     void addDatabase(const String & database_name, const DatabasePtr & database);
     DatabasePtr detachDatabase(const String & database_name);
 
+    DatabasePtr getDatabase(const String & database_name) const;
+    DatabasePtr tryGetDatabase(const String & database_name) const;
+    Databases getDatabases() const;
+
     /// Get an object that protects the table from concurrently executing multiple DDL operations.
     /// If such an object already exists, an exception is thrown.
-    std::unique_ptr<DDLGuard> getDDLGuard(const String & database, const String & table, const String & message) const;
+    std::unique_ptr<DDLGuard> getDDLGuard(const String & table, const String & message) const;
     /// If the table already exists, it returns nullptr, otherwise guard is created.
-    std::unique_ptr<DDLGuard> getDDLGuardIfTableDoesntExist(const String & database, const String & table, const String & message) const;
+    std::unique_ptr<DDLGuard> getDDLGuardIfTableDoesntExist(
+        const String & database,
+        const String & table,
+        const String & message) const;
 
     String getCurrentDatabase() const;
     String getCurrentQueryId() const;
@@ -273,33 +317,27 @@ public:
     String getDefaultFormat() const; /// If default_format is not specified, some global default format is returned.
     void setDefaultFormat(const String & name);
 
-    MultiVersion<Macros>::Version getMacros() const;
-    void setMacros(std::unique_ptr<Macros> && macros);
-
     Settings getSettings() const;
-    void setSettings(const Settings & settings_);
+    const Settings & getSettingsRef() const;
+    Settings & getSettingsRef();
 
+    void setSettings(const Settings & settings_);
     /// Set a setting by name.
     void setSetting(const String & name, const Field & value);
-
     /// Set a setting by name. Read the value in text form from a string (for example, from a config, or from a URL parameter).
     void setSetting(const String & name, const std::string & value);
 
     /// I/O formats.
-    BlockInputStreamPtr getInputFormat(const String & name, ReadBuffer & buf, const Block & sample, size_t max_block_size) const;
+    BlockInputStreamPtr getInputFormat(
+        const String & name,
+        ReadBuffer & buf,
+        const Block & sample,
+        size_t max_block_size) const;
     BlockOutputStreamPtr getOutputFormat(const String & name, WriteBuffer & buf, const Block & sample) const;
-
-    /// The port that the server listens for executing SQL queries.
-    UInt16 getTCPPort() const;
 
     /// Get query for the CREATE table.
     ASTPtr getCreateTableQuery(const String & database_name, const String & table_name) const;
-    ASTPtr getCreateExternalTableQuery(const String & table_name) const;
     ASTPtr getCreateDatabaseQuery(const String & database_name) const;
-
-    DatabasePtr getDatabase(const String & database_name) const;
-    DatabasePtr tryGetDatabase(const String & database_name) const;
-    Databases getDatabases() const;
 
     std::shared_ptr<Context> acquireSession(
         const String & session_id,
@@ -327,9 +365,6 @@ public:
     void setQueryContext(Context & context_) { query_context = &context_; }
     void setSessionContext(Context & context_) { session_context = &context_; }
     void setGlobalContext(Context & context_) { global_context = &context_; }
-    const Settings & getSettingsRef() const;
-    Settings & getSettingsRef();
-
 
     void setProgressCallback(ProgressCallback callback);
     /// Used in InterpreterSelectQuery to pass it to the IProfilingBlockInputStream.
@@ -345,19 +380,15 @@ public:
     void setDAGContext(DAGContext * dag_context);
     DAGContext * getDAGContext() const;
 
+    bool isCancelled() const { return is_cancelled(); }
+    void setCancellationHook(CancellationHook cancellation_hook) { is_cancelled = cancellation_hook; }
+
     /// List all queries.
     ProcessList & getProcessList();
     const ProcessList & getProcessList() const;
 
-    /// Create a cache of uncompressed blocks of specified size. This can be done only once.
-    void setUncompressedCache(size_t max_size_in_bytes);
-    std::shared_ptr<UncompressedCache> getUncompressedCache() const;
-    void dropUncompressedCache() const;
-
     /// Execute inner functions, debug only.
     DBGInvoker & getDBGInvoker() const;
-
-    TMTContext & getTMTContext() const;
 
     /// Create a cache of marks of specified size. This can be done only once.
     void setMarkCache(size_t cache_size_in_bytes);
@@ -367,6 +398,15 @@ public:
     void setMinMaxIndexCache(size_t cache_size_in_bytes);
     std::shared_ptr<DM::MinMaxIndexCache> getMinMaxIndexCache() const;
     void dropMinMaxIndexCache() const;
+
+    void setLocalIndexCache(size_t light_local_index_cache, size_t heavy_cache_entities);
+    std::shared_ptr<DM::LocalIndexCache> getLightLocalIndexCache() const;
+    std::shared_ptr<DM::LocalIndexCache> getHeavyLocalIndexCache() const;
+    void dropLocalIndexCache() const;
+
+    void setColumnCacheLongTerm(size_t cache_size_in_bytes);
+    std::shared_ptr<DM::ColumnCacheLongTerm> getColumnCacheLongTerm() const;
+    void dropColumnCacheLongTerm() const;
 
     bool isDeltaIndexLimited() const;
     void setDeltaIndexManager(size_t cache_size_in_bytes);
@@ -380,15 +420,15 @@ public:
       */
     void dropCaches() const;
 
-    void setUseL0Opt(bool use_l0_opt);
-    bool useL0Opt() const;
-
     BackgroundProcessingPool & initializeBackgroundPool(UInt16 pool_size);
     BackgroundProcessingPool & getBackgroundPool();
     BackgroundProcessingPool & initializeBlockableBackgroundPool(UInt16 pool_size);
     BackgroundProcessingPool & getBlockableBackgroundPool();
+    BackgroundProcessingPool & getPSBackgroundPool();
 
     void createTMTContext(const TiFlashRaftConfig & raft_config, pingcap::ClusterConfig && cluster_config);
+    bool isTMTContextInited() const;
+    TMTContext & getTMTContext() const;
 
     void initializeSchemaSyncService();
     SchemaSyncServicePtr & getSchemaSyncService();
@@ -398,15 +438,25 @@ public:
         const Strings & main_data_paths,
         const std::vector<size_t> & main_capacity_quota,
         const Strings & latest_data_paths,
-        const std::vector<size_t> & latest_capacity_quota);
+        const std::vector<size_t> & latest_capacity_quota,
+        const Strings & remote_cache_paths = {},
+        const std::vector<size_t> & remote_cache_capacity_quota = {});
     PathCapacityMetricsPtr getPathCapacity() const;
 
     void initializeTiFlashMetrics() const;
 
-    void initializeFileProvider(KeyManagerPtr key_manager, bool enable_encryption);
+    void initializeFileProvider(
+        KeyManagerPtr key_manager,
+        bool enable_encryption,
+        bool enable_keyspace_encryption = false);
     FileProviderPtr getFileProvider() const;
+    // For test only
+    void setFileProvider(FileProviderPtr file_provider);
 
-    void initializeRateLimiter(Poco::Util::AbstractConfiguration & config, BackgroundProcessingPool & bg_pool, BackgroundProcessingPool & blockable_bg_pool) const;
+    void initializeRateLimiter(
+        Poco::Util::AbstractConfiguration & config,
+        BackgroundProcessingPool & bg_pool,
+        BackgroundProcessingPool & blockable_bg_pool) const;
     WriteLimiterPtr getWriteLimiter() const;
     ReadLimiterPtr getReadLimiter() const;
     IORateLimiter & getIORateLimiter() const;
@@ -414,8 +464,27 @@ public:
     void initializePageStorageMode(const PathPool & path_pool, UInt64 storage_page_format_version);
     void setPageStorageRunMode(PageStorageRunMode run_mode) const;
     PageStorageRunMode getPageStorageRunMode() const;
+
+    bool initializeGlobalPageIdAllocator();
+    DM::GlobalPageIdAllocatorPtr getGlobalPageIdAllocator() const;
+
+    bool initializeGlobalLocalIndexerScheduler(size_t pool_size, size_t memory_limit);
+    DM::LocalIndexerSchedulerPtr getGlobalLocalIndexerScheduler() const;
+
     bool initializeGlobalStoragePoolIfNeed(const PathPool & path_pool);
     DM::GlobalStoragePoolPtr getGlobalStoragePool() const;
+
+    void initializeWriteNodePageStorageIfNeed(const PathPool & path_pool);
+    UniversalPageStoragePtr getWriteNodePageStorage() const;
+    UniversalPageStoragePtr tryGetWriteNodePageStorage() const;
+    bool tryUploadAllDataToRemoteStore() const;
+    void tryReleaseWriteNodePageStorageForTest();
+
+    void initializeJointThreadInfoJeallocMap();
+    JointThreadInfoJeallocMapPtr getJointThreadInfoJeallocMap() const;
+    JointThreadInfoJeallocMapPtr getJointThreadInfoJeallocMap(std::unique_lock<std::recursive_mutex> &) const;
+
+    SharedContextDisaggPtr getSharedContextDisagg() const;
 
     /// Call after initialization before using system logs. Call for global context.
     void initializeSystemLogs();
@@ -423,47 +492,21 @@ public:
     /// Nullptr if the query log is not ready for this moment.
     QueryLog * getQueryLog();
 
-    /// Prevents DROP TABLE if its size is greater than max_size (50GB by default, max_size=0 turn off this check)
-    void setMaxTableSizeToDrop(size_t max_size);
-    void checkTableCanBeDropped(const String & database, const String & table, size_t table_size);
-
     /// Get the server uptime in seconds.
     time_t getUptimeSeconds() const;
 
-    using ConfigReloadCallback = std::function<void()>;
-    void setConfigReloadCallback(ConfigReloadCallback && callback);
-    void reloadConfig() const;
-
     void shutdown();
 
-    enum class ApplicationType
-    {
-        SERVER, /// The program is run as clickhouse-server daemon (default behavior)
-        CLIENT, /// clickhouse-client
-        LOCAL /// clickhouse-local
-    };
-
-    ApplicationType getApplicationType() const;
-    void setApplicationType(ApplicationType type);
-
-    /// Sets default_profile and system_profile, must be called once during the initialization
-    void setDefaultProfiles(const Poco::Util::AbstractConfiguration & config);
-    String getDefaultProfileName() const;
-    String getSystemProfileName() const;
-
-    /// Base path for format schemas
-    String getFormatSchemaPath() const;
-    void setFormatSchemaPath(const String & path);
+    void setServerInfo(const ServerInfo & server_info);
+    const std::optional<ServerInfo> & getServerInfo() const;
 
     SharedQueriesPtr getSharedQueries();
 
-    const TimezoneInfo & getTimezoneInfo() const { return timezone_info; };
-    TimezoneInfo & getTimezoneInfo() { return timezone_info; };
+    const TimezoneInfo & getTimezoneInfo() const { return timezone_info; }
+    TimezoneInfo & getTimezoneInfo() { return timezone_info; }
 
     /// User name and session identifier. Named sessions are local to users.
     using SessionKey = std::pair<String, String>;
-
-    void reloadDeltaTreeConfig(const Poco::Util::AbstractConfiguration & config);
 
     size_t getMaxStreams() const;
 
@@ -474,14 +517,28 @@ public:
     void setCancelTest();
     bool isExecutorTest() const;
     void setExecutorTest();
+    bool isInterpreterTest() const;
+    void setInterpreterTest();
     void setCopTest();
     bool isCopTest() const;
     bool isTest() const;
 
-    void setMockStorage(MockStorage & mock_storage_);
-    MockStorage mockStorage() const;
+    void setMockStorage(MockStorage * mock_storage_);
+    MockStorage * mockStorage() const;
     MockMPPServerInfo mockMPPServerInfo() const;
     void setMockMPPServerInfo(MockMPPServerInfo & info);
+
+    const std::shared_ptr<DB::DM::SharedBlockSchemas> & getSharedBlockSchemas() const;
+    void initializeSharedBlockSchemas(size_t shared_block_schemas_size);
+
+    void initKeyspaceBlocklist(const std::unordered_set<KeyspaceID> & keyspace_ids);
+    bool isKeyspaceInBlocklist(KeyspaceID keyspace_id);
+    void initRegionBlocklist(const std::unordered_set<RegionID> & region_ids);
+    bool isRegionInBlocklist(RegionID region_id) const;
+    bool isRegionsContainsInBlocklist(const std::vector<RegionID> & regions) const;
+
+    bool initializeStoreIdBlockList(const String &);
+    const std::unordered_set<uint64_t> * getStoreIdBlockList() const;
 
 private:
     /** Check if the current client has access to the specified database.
@@ -498,11 +555,7 @@ private:
     void scheduleCloseSession(const SessionKey & key, std::chrono::steady_clock::duration timeout);
 
     void checkIsConfigLoaded() const;
-
-    bool is_config_loaded = false; /// Is configuration loaded from toml file.
 };
-
-using ContextPtr = std::shared_ptr<Context>;
 
 
 /// Puts an element into the map, erases it in the destructor.
@@ -514,7 +567,12 @@ public:
     /// NOTE: using std::map here (and not std::unordered_map) to avoid iterator invalidation on insertion.
     using Map = std::map<String, String>;
 
-    DDLGuard(Map & map_, std::mutex & mutex_, std::unique_lock<std::mutex> && lock, const String & elem, const String & message);
+    DDLGuard(
+        Map & map_,
+        std::mutex & mutex_,
+        std::unique_lock<std::mutex> && lock,
+        const String & elem,
+        const String & message);
     ~DDLGuard();
 
 private:

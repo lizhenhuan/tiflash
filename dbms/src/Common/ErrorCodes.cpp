@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Common/ErrorCodes.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -11,6 +13,8 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+
+#include <Common/config.h>
 
 namespace DB
 {
@@ -214,7 +218,7 @@ extern const int WRONG_PASSWORD = 193;
 extern const int REQUIRED_PASSWORD = 194;
 extern const int IP_ADDRESS_NOT_ALLOWED = 195;
 extern const int UNKNOWN_ADDRESS_PATTERN_TYPE = 196;
-extern const int SERVER_REVISION_IS_TOO_OLD = 197;
+// extern const int SERVER_REVISION_IS_TOO_OLD = 197; // Not Used anymore
 extern const int DNS_ERROR = 198;
 extern const int UNKNOWN_QUOTA = 199;
 extern const int QUOTA_DOESNT_ALLOW_KEYS = 200;
@@ -390,6 +394,17 @@ extern const int DECIMAL_OVERFLOW = 446;
 extern const int CANNOT_PARSE_BOOL = 447;
 extern const int CANNOT_FTRUNCATE = 448;
 extern const int UNKNOWN_WINDOW_FUNCTION = 449;
+extern const int UNSUPPORTED_URI_SCHEME = 450;
+extern const int UNACCEPTABLE_URL = 450;
+extern const int TOO_MANY_REDIRECTS = 450;
+extern const int ERROR_DURING_HASH_TABLE_OR_ARENA_RESIZE = 451;
+
+#if USE_QPL
+extern const int QPL_INIT_JOB_FAILED = 453;
+extern const int QPL_ACQUIRE_JOB_FAILED = 454;
+extern const int QPL_COMPRESS_DATA_FAILED = 455;
+extern const int QPL_DECOMPRESS_DATA_FAILED = 456;
+#endif
 
 extern const int KEEPER_EXCEPTION = 999;
 extern const int POCO_EXCEPTION = 1000;
@@ -425,6 +440,14 @@ extern const int PTHREAD_ERROR = 10014;
 extern const int PS_ENTRY_NOT_EXISTS = 10015;
 extern const int PS_ENTRY_NO_VALID_VERSION = 10016;
 extern const int PS_DIR_APPLY_INVALID_STATUS = 10017;
+extern const int DISAGG_ESTABLISH_RETRYABLE_ERROR = 10018;
+extern const int REGION_LOCKED = 10019;
+
+extern const int S3_ERROR = 11000;
+extern const int CANNOT_SCHEDULE_TASK = 11001;
+extern const int S3_LOCK_CONFLICT = 11002;
+extern const int DT_DELTA_INDEX_ERROR = 11003;
+extern const int FETCH_PAGES_ERROR = 11004;
 } // namespace ErrorCodes
 
 } // namespace DB

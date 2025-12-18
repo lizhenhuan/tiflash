@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/libs/libglibc-compatibility/glibc-compatibility.c
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -24,9 +26,13 @@ extern "C" {
 
 #include <pthread.h>
 
+// We can not remove this function before manually designating the signal stack.
+// However, the returned value could be set to 16KiB, so that we can save many VSZ.
+// Morever, though we can use SIGSTKSZ to define the size of signal stack,
+// it's too small to collect enough information.
 size_t __pthread_get_minstack(const pthread_attr_t * attr)
 {
-    return 1048576;        /// This is a guess. Don't sure it is correct.
+    return 16384;
 }
 
 #include <signal.h>
@@ -138,11 +144,6 @@ int __open_2(const char *path, int oflag)
 {
     return open(path, oflag);
 }
-
-
-/// No-ops.
-int pthread_setname_np(pthread_t thread, const char *name) { return 0; }
-int pthread_getname_np(pthread_t thread, char *name, size_t len) { name[0] = '\0'; return 0; };
 
 
 #define SHMDIR "/dev/shm/"

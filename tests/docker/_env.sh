@@ -1,5 +1,5 @@
 #!/bin/bash
-# Copyright 2022 PingCAP, Ltd.
+# Copyright 2023 PingCAP, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -26,7 +26,7 @@ export storage_server="127.0.0.1"
 export storage_port="9000"
 
 # Default database for scripts
-export storage_db="default"
+export storage_db="system"
 
 # TiDB address
 export tidb_server="tidb0"
@@ -39,6 +39,10 @@ export tidb_db="test"
 
 # TiDB default table
 export tidb_table="t"
+
+# Whether run scripts with verbose output
+# "true" or "false"
+export verbose=${verbose:-"false"}
 
 export LANG=en_US.utf-8
 export LC_ALL=en_US.utf-8

@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Common/ProfileEvents.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -40,6 +42,11 @@ extern std::atomic<Count> counters[];
 inline void increment(Event event, Count amount = 1)
 {
     counters[event].fetch_add(amount, std::memory_order_relaxed);
+}
+
+inline Count get(Event event)
+{
+    return counters[event].load();
 }
 
 /// Get index just after last event identifier.

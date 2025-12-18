@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/DataStreams/JSONEachRowRowOutputStream.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,9 +17,9 @@
 #pragma once
 
 #include <Core/Block.h>
-#include <IO/WriteBuffer.h>
 #include <DataStreams/IRowOutputStream.h>
 #include <DataTypes/FormatSettingsJSON.h>
+#include <IO/Buffer/WriteBuffer.h>
 
 
 namespace DB
@@ -36,10 +38,7 @@ public:
     void writeRowStartDelimiter() override;
     void writeRowEndDelimiter() override;
 
-    void flush() override
-    {
-        ostr.next();
-    }
+    void flush() override { ostr.next(); }
 
 private:
     WriteBuffer & ostr;
@@ -49,5 +48,4 @@ private:
     FormatSettingsJSON settings;
 };
 
-}
-
+} // namespace DB

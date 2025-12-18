@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Common/Allocator.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -42,7 +44,6 @@ public:
 
     /// Free memory range.
     void free(void * buf, size_t size);
-
     /** Enlarge memory range.
       * Data from old range is moved to the beginning of new range.
       * Address of memory range could change.
@@ -50,10 +51,7 @@ public:
     void * realloc(void * buf, size_t old_size, size_t new_size, size_t alignment = 0);
 
 protected:
-    static constexpr size_t getStackThreshold()
-    {
-        return 0;
-    }
+    static constexpr size_t getStackThreshold() { return 0; }
 };
 
 
@@ -110,10 +108,7 @@ public:
     }
 
 protected:
-    static constexpr size_t getStackThreshold()
-    {
-        return N;
-    }
+    static constexpr size_t getStackThreshold() { return N; }
 };
 
 

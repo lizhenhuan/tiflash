@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -55,7 +55,8 @@ size_t getInputStreamNRows(const BlockInputStreamPtr & stream);
     const char * block_expr,
     const BlockInputStreamPtr & stream,
     const Block & expect_block);
-#define ASSERT_INPUTSTREAM_BLOCK_UR(val1, val2) ASSERT_PRED_FORMAT2(::DB::tests::InputStreamVSBlockUnrestrictlyCompare, val1, val2)
+#define ASSERT_INPUTSTREAM_BLOCK_UR(val1, val2) \
+    ASSERT_PRED_FORMAT2(::DB::tests::InputStreamVSBlockUnrestrictlyCompare, val1, val2)
 
 // Unrestrictly checking a part of columns read from inputstream.
 // Allowing the inputstream break the rows into serval smaller blocks.
@@ -73,7 +74,7 @@ size_t getInputStreamNRows(const BlockInputStreamPtr & stream);
 
 // Similar to `InputStreamVSBlockUnrestrictlyCompareColumns` but assume inputstream's blocks are unordered.
 // It is only used for normal mode. (The blocks of fast mode have overlap.)
-// This function read all blocks first and sort them by handle column or column at position 0 if EXTRA_HANDLE_COLUMN_NAME not exist.
+// This function read all blocks first and sort them by handle column or column at position 0 if MutSup::extra_handle_column_name not exist.
 ::testing::AssertionResult UnorderedInputStreamVSBlockUnrestrictlyCompareColumns(
     const char * stream_expr,
     const char * colnames_expr,

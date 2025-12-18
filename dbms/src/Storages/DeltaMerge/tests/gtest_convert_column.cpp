@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,19 +14,17 @@
 
 #include <DataTypes/DataTypeString.h>
 #include <DataTypes/DataTypesNumber.h>
-#include <IO/ReadBufferFromString.h>
+#include <IO/Buffer/ReadBufferFromString.h>
 #include <Storages/DeltaMerge/DeltaMergeDefines.h>
 #include <Storages/DeltaMerge/SchemaUpdate.h>
 #include <Storages/DeltaMerge/convertColumnTypeHelpers.h>
 #include <Storages/DeltaMerge/tests/DMTestEnv.h>
-#include <Storages/Transaction/TiDB.h>
+#include <TiDB/Decode/TypeMapping.h>
+#include <TiDB/Schema/TiDB.h>
 
-namespace DB
+namespace DB::DM::tests
 {
-namespace DM
-{
-namespace tests
-{
+
 TEST(ConvertColumnTypeTest, CastNumeric)
 {
     {
@@ -34,8 +32,8 @@ TEST(ConvertColumnTypeTest, CastNumeric)
 
         DataTypePtr disk_data_type = typeFromString("UInt8");
         MutableColumnPtr disk_col = disk_data_type->createColumn();
-        disk_col->insert(Field(UInt64(15)));
-        disk_col->insert(Field(UInt64(255)));
+        disk_col->insert(Field(static_cast<UInt64>(15)));
+        disk_col->insert(Field(static_cast<UInt64>(255)));
 
         for (const String & to_type : to_types)
         {
@@ -54,8 +52,8 @@ TEST(ConvertColumnTypeTest, CastNumeric)
 
         DataTypePtr disk_data_type = typeFromString("UInt16");
         MutableColumnPtr disk_col = disk_data_type->createColumn();
-        disk_col->insert(Field(UInt64(15)));
-        disk_col->insert(Field(UInt64(255)));
+        disk_col->insert(Field(static_cast<UInt64>(15)));
+        disk_col->insert(Field(static_cast<UInt64>(255)));
 
         for (const String & to_type : to_types)
         {
@@ -74,8 +72,8 @@ TEST(ConvertColumnTypeTest, CastNumeric)
 
         DataTypePtr disk_data_type = typeFromString("UInt32");
         MutableColumnPtr disk_col = disk_data_type->createColumn();
-        disk_col->insert(Field(UInt64(15)));
-        disk_col->insert(Field(UInt64(255)));
+        disk_col->insert(Field(static_cast<UInt64>(15)));
+        disk_col->insert(Field(static_cast<UInt64>(255)));
 
         for (const String & to_type : to_types)
         {
@@ -94,8 +92,8 @@ TEST(ConvertColumnTypeTest, CastNumeric)
 
         DataTypePtr disk_data_type = typeFromString("Int8");
         MutableColumnPtr disk_col = disk_data_type->createColumn();
-        disk_col->insert(Field(Int64(127)));
-        disk_col->insert(Field(Int64(-1)));
+        disk_col->insert(Field(static_cast<Int64>(127)));
+        disk_col->insert(Field(static_cast<Int64>(-1)));
 
         for (const String & to_type : to_types)
         {
@@ -114,8 +112,8 @@ TEST(ConvertColumnTypeTest, CastNumeric)
 
         DataTypePtr disk_data_type = typeFromString("Int16");
         MutableColumnPtr disk_col = disk_data_type->createColumn();
-        disk_col->insert(Field(Int64(127)));
-        disk_col->insert(Field(Int64(-1)));
+        disk_col->insert(Field(static_cast<Int64>(127)));
+        disk_col->insert(Field(static_cast<Int64>(-1)));
 
         for (const String & to_type : to_types)
         {
@@ -134,8 +132,8 @@ TEST(ConvertColumnTypeTest, CastNumeric)
 
         DataTypePtr disk_data_type = typeFromString("Int32");
         MutableColumnPtr disk_col = disk_data_type->createColumn();
-        disk_col->insert(Field(Int64(127)));
-        disk_col->insert(Field(Int64(-1)));
+        disk_col->insert(Field(static_cast<Int64>(127)));
+        disk_col->insert(Field(static_cast<Int64>(-1)));
 
         for (const String & to_type : to_types)
         {
@@ -153,18 +151,18 @@ TEST(ConvertColumnTypeTest, CastNumeric)
         const Strings to_types = {"Float64"};
         DataTypePtr disk_data_type = typeFromString("Float32");
         auto disk_col = ColumnFloat32::create();
-        disk_col->insert(Float32(3.0));
-        disk_col->insert(Float32(3.1));
-        disk_col->insert(Float32(3.14));
-        disk_col->insert(Float32(3.141));
-        disk_col->insert(Float32(3.1415));
-        disk_col->insert(Float32(3.14151415141514151415141));
-        disk_col->insert(Float32(-3.0));
-        disk_col->insert(Float32(-3.1));
-        disk_col->insert(Float32(-3.14));
-        disk_col->insert(Float32(-3.141));
-        disk_col->insert(Float32(-3.1415));
-        disk_col->insert(Float32(-3.14151415141514151415141));
+        disk_col->insert(static_cast<Float32>(3.0));
+        disk_col->insert(static_cast<Float32>(3.1));
+        disk_col->insert(static_cast<Float32>(3.14));
+        disk_col->insert(static_cast<Float32>(3.141));
+        disk_col->insert(static_cast<Float32>(3.1415));
+        disk_col->insert(static_cast<Float32>(3.14151415141514151415141));
+        disk_col->insert(static_cast<Float32>(-3.0));
+        disk_col->insert(static_cast<Float32>(-3.1));
+        disk_col->insert(static_cast<Float32>(-3.14));
+        disk_col->insert(static_cast<Float32>(-3.141));
+        disk_col->insert(static_cast<Float32>(-3.1415));
+        disk_col->insert(static_cast<Float32>(-3.14151415141514151415141));
         for (const String & to_type : to_types)
         {
             ColumnDefine read_define(0, "c", typeFromString(to_type));
@@ -179,6 +177,45 @@ TEST(ConvertColumnTypeTest, CastNumeric)
     }
 }
 
+TEST(ConvertColumnTypeTest, CastMyDateTime)
+try
+{
+    {
+        const Strings to_types = {"MyDateTime(1)", "MyDateTime(3)", "MyDateTime(6)"};
+
+        DataTypePtr disk_data_type = typeFromString("MyDateTime(0)");
+        MutableColumnPtr disk_col = disk_data_type->createColumn();
+        disk_col->insert(Field(static_cast<UInt64>(MyDateTime(2023, 7, 17, 15, 39, 29, 20).toPackedUInt())));
+        disk_col->insert(Field(static_cast<UInt64>(MyDateTime(2020, 2, 29, 15, 39, 29, 20).toPackedUInt())));
+
+        for (const String & to_type : to_types)
+        {
+            ColumnDefine read_define(0, "c", typeFromString(to_type));
+            auto memory_column = convertColumnByColumnDefineIfNeed(disk_data_type, disk_col->getPtr(), read_define);
+
+            UInt64 val1 = memory_column->getUInt(0);
+            MyDateTime myval(val1);
+            EXPECT_EQ(myval.year, 2023);
+            EXPECT_EQ(myval.month, 7);
+            EXPECT_EQ(myval.day, 17);
+            EXPECT_EQ(myval.hour, 15);
+            EXPECT_EQ(myval.minute, 39);
+            EXPECT_EQ(myval.second, 29);
+            EXPECT_EQ(myval.micro_second, 20);
+
+            UInt64 val2 = memory_column->getUInt(1);
+            MyDateTime myval2(val2);
+            EXPECT_EQ(myval2.year, 2020);
+            EXPECT_EQ(myval2.month, 2);
+            EXPECT_EQ(myval2.day, 29);
+            EXPECT_EQ(myval2.hour, 15);
+            EXPECT_EQ(myval2.minute, 39);
+            EXPECT_EQ(myval2.second, 29);
+        }
+    }
+}
+CATCH
+
 TEST(ConvertColumnTypeTest, CastNullableToNotNull)
 {
     const Strings to_types = {"Int8", "Int16", "Int32", "Int64"};
@@ -186,13 +223,13 @@ TEST(ConvertColumnTypeTest, CastNullableToNotNull)
     DataTypePtr disk_data_type = typeFromString("Nullable(Int8)");
     MutableColumnPtr disk_col = disk_data_type->createColumn();
     disk_col->insert(Field()); // a "NULL" value
-    disk_col->insert(Field(Int64(127)));
-    disk_col->insert(Field(Int64(-1)));
+    disk_col->insert(Field(static_cast<Int64>(127)));
+    disk_col->insert(Field(static_cast<Int64>(-1)));
 
     for (const String & to_type : to_types)
     {
         ColumnDefine read_define(0, "c", typeFromString(to_type));
-        read_define.default_value = Field(Int64(99));
+        read_define.default_value = Field(static_cast<Int64>(99));
         auto memory_column = convertColumnByColumnDefineIfNeed(disk_data_type, disk_col->getPtr(), read_define);
 
         Int64 val1 = memory_column->getInt(0);
@@ -211,13 +248,13 @@ TEST(ConvertColumnTypeTest, CastNullableToNotNullWithNonZeroDefaultValue)
     DataTypePtr disk_data_type = typeFromString("Nullable(Int8)");
     MutableColumnPtr disk_col = disk_data_type->createColumn();
     disk_col->insert(Field()); // a "NULL" value
-    disk_col->insert(Field(Int64(127)));
-    disk_col->insert(Field(Int64(-1)));
+    disk_col->insert(Field(static_cast<Int64>(127)));
+    disk_col->insert(Field(static_cast<Int64>(-1)));
 
     for (const String & to_type : to_types)
     {
         ColumnDefine read_define(0, "c", typeFromString(to_type));
-        read_define.default_value = Field(Int64(5));
+        read_define.default_value = Field(static_cast<Int64>(5));
         auto memory_column = convertColumnByColumnDefineIfNeed(disk_data_type, disk_col->getPtr(), read_define);
 
         Int64 val1 = memory_column->getInt(0);
@@ -236,8 +273,8 @@ TEST(ConvertColumnTypeTest, CastNullableToNullable)
     DataTypePtr disk_data_type = typeFromString("Nullable(Int8)");
     MutableColumnPtr disk_col = disk_data_type->createColumn();
     disk_col->insert(Field()); // a "NULL" value
-    disk_col->insert(Field(Int64(127)));
-    disk_col->insert(Field(Int64(-1)));
+    disk_col->insert(Field(static_cast<Int64>(127)));
+    disk_col->insert(Field(static_cast<Int64>(-1)));
 
     for (const String & to_type : to_types)
     {
@@ -266,8 +303,8 @@ TEST(ConvertColumnTypeTest, CastNotNullToNullable)
 
     DataTypePtr disk_data_type = typeFromString("Int8");
     MutableColumnPtr disk_col = disk_data_type->createColumn();
-    disk_col->insert(Field(Int64(127)));
-    disk_col->insert(Field(Int64(-1)));
+    disk_col->insert(Field(static_cast<Int64>(127)));
+    disk_col->insert(Field(static_cast<Int64>(-1)));
 
     for (const String & to_type : to_types)
     {
@@ -289,8 +326,7 @@ TEST(ConvertColumnTypeTest, CastNotNullToNullable)
 TEST(ConvertColumnTypeTest, GetDefaultValue)
 try
 {
-    const String json_table_info
-        = R"json({
+    const String json_table_info = R"json({
 "cols":[
     {"comment":"","default":null,"default_bit":null,"id":1,"name":{"L":"a","O":"a"},"offset":0,"origin_default":null,"state":5,"type":{"Charset":"utf8mb4","Collate":"utf8mb4_bin","Decimal":0,"Elems":null,"Flag":4099,"Flen":768,"Tp":15}}
     ,{"comment":"","default":"3.14","default_bit":null,"id":2,"name":{"L":"f","O":"f"},"offset":1,"origin_default":"3.14","state":5,"type":{"Charset":"binary","Collate":"binary","Decimal":-1,"Elems":null,"Flag":0,"Flen":12,"Tp":4}}
@@ -301,7 +337,7 @@ try
 ,"comment":"","id":627,"name":{"L":"t","O":"t"},"partition":null,"pk_is_handle":false,"schema_version":252,"state":5,"tiflash_replica":{"Count":0},"update_timestamp":422031263342264329
 })json";
 
-    TiDB::TableInfo table_info(json_table_info);
+    TiDB::TableInfo table_info(json_table_info, NullspaceID);
     const auto & columns = table_info.columns;
     EXPECT_EQ(columns.size(), 5);
 
@@ -440,6 +476,4 @@ try
 }
 CATCH
 
-} // namespace tests
-} // namespace DM
-} // namespace DB
+} // namespace DB::DM::tests

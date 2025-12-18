@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/DataStreams/MaterializingBlockOutputStream.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,8 +16,8 @@
 
 #pragma once
 
-#include <DataStreams/materializeBlock.h>
 #include <DataStreams/IBlockOutputStream.h>
+#include <DataStreams/materializeBlock.h>
 
 
 namespace DB
@@ -27,22 +29,23 @@ class MaterializingBlockOutputStream : public IBlockOutputStream
 {
 public:
     MaterializingBlockOutputStream(const BlockOutputStreamPtr & output, const Block & header)
-        : output{output}, header(header) {}
+        : output{output}
+        , header(header)
+    {}
 
-    Block getHeader() const                           override { return header; }
-    void write(const Block & block)                   override { output->write(materializeBlock(block)); }
-    void flush()                                      override { output->flush(); }
-    void writePrefix()                                override { output->writePrefix(); }
-    void writeSuffix()                                override { output->writeSuffix(); }
+    Block getHeader() const override { return header; }
+    void write(const Block & block) override { output->write(materializeBlock(block)); }
+    void flush() override { output->flush(); }
+    void writePrefix() override { output->writePrefix(); }
+    void writeSuffix() override { output->writeSuffix(); }
     void setRowsBeforeLimit(size_t rows_before_limit) override { output->setRowsBeforeLimit(rows_before_limit); }
-    void setTotals(const Block & totals)              override { output->setTotals(materializeBlock(totals)); }
-    void setExtremes(const Block & extremes)          override { output->setExtremes(materializeBlock(extremes)); }
-    void onProgress(const Progress & progress)        override { output->onProgress(progress); }
-    String getContentType() const                     override { return output->getContentType(); }
+    void setExtremes(const Block & extremes) override { output->setExtremes(materializeBlock(extremes)); }
+    void onProgress(const Progress & progress) override { output->onProgress(progress); }
+    String getContentType() const override { return output->getContentType(); }
 
 private:
     BlockOutputStreamPtr output;
     Block header;
 };
 
-}
+} // namespace DB

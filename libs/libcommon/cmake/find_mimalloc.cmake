@@ -1,4 +1,4 @@
-# Copyright 2022 PingCAP, Ltd.
+# Copyright 2023 PingCAP, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,6 +13,11 @@
 # limitations under the License.
 
 option (ENABLE_MIMALLOC "Set to ON to use mimalloc" OFF)
+
+if (ENABLE_MIMALLOC AND (CMAKE_BUILD_TYPE_UC STREQUAL "ASAN" OR CMAKE_BUILD_TYPE_UC STREQUAL "UBSAN" OR CMAKE_BUILD_TYPE_UC STREQUAL "TSAN"))
+    message (WARNING "ENABLE_MIMALLOC is set to OFF implicitly: mimalloc doesn't work with ${CMAKE_BUILD_TYPE_UC}")
+    set (ENABLE_MIMALLOC OFF)
+endif ()
 
 if (ENABLE_MIMALLOC)
     set (MIMALLOC_LIBRARIES "mimalloc-obj")

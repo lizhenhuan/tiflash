@@ -1,4 +1,6 @@
-# Copyright 2022 PingCAP, Ltd.
+# Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/libs/CMakeLists.txt
+#
+# Copyright 2023 PingCAP, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,19 +19,21 @@ if (NOT NO_WERROR)
     set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Werror")
 endif ()
 
+# Optimized routines under arm
+add_subdirectory (libarm-optimized-routines)
 add_subdirectory (libcommon)
 add_subdirectory (libpocoext)
 add_subdirectory (libdaemon)
-
+# Optimized memcpy under x86_64
 add_subdirectory (libmemcpy)
 
 if (GLIBC_COMPATIBILITY)
     add_subdirectory (libglibc-compatibility)
 endif ()
 
-if (USE_MYSQL)
-    add_subdirectory (libmysqlxx)
-endif ()
-
-add_subdirectory (libconsistent-hashing)
 add_subdirectory (libsymbolization)
+add_subdirectory (libprocess_metrics)
+
+if (ENABLE_CLARA AND USE_INTERNAL_LIBCLARA)
+    add_subdirectory (libclara-cmake)
+endif ()

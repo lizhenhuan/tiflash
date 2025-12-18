@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Storages/System/StorageSystemSettings.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -26,7 +28,8 @@ class Context;
 
 /** implements system table "settings", which allows to get information about the current settings.
   */
-class StorageSystemSettings : public ext::SharedPtrHelper<StorageSystemSettings>
+class StorageSystemSettings
+    : public ext::SharedPtrHelper<StorageSystemSettings>
     , public IStorage
 {
 public:

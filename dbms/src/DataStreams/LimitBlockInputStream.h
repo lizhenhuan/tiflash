@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/DataStreams/LimitBlockInputStream.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,6 +17,7 @@
 #pragma once
 
 #include <DataStreams/IProfilingBlockInputStream.h>
+#include <DataStreams/LimitTransformAction.h>
 
 namespace DB
 {
@@ -30,12 +33,7 @@ public:
       * If always_read_till_end = true - reads all the data to the end, but ignores them. This is necessary in rare cases:
       *  when otherwise, due to the cancellation of the request, we would not have received the data for GROUP BY WITH TOTALS from the remote server.
       */
-    LimitBlockInputStream(
-        const BlockInputStreamPtr & input,
-        size_t limit_,
-        size_t offset_,
-        const String & req_id,
-        bool always_read_till_end_ = false);
+    LimitBlockInputStream(const BlockInputStreamPtr & input, size_t limit_, size_t offset_, const String & req_id);
 
     String getName() const override { return NAME; }
 
@@ -46,11 +44,11 @@ protected:
     void appendInfo(FmtBuffer & buffer) const override;
 
 private:
+    LoggerPtr log;
     size_t limit;
     size_t offset;
+    /// how many lines were read, including the last read block
     size_t pos = 0;
-    bool always_read_till_end;
-    LoggerPtr log;
 };
 
 } // namespace DB

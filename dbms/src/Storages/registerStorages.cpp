@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Storages/registerStorages.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,17 +22,10 @@
 namespace DB
 {
 void registerStorageLog(StorageFactory & factory);
-void registerStorageTinyLog(StorageFactory & factory);
 void registerStorageDeltaMerge(StorageFactory & factory);
-void registerStorageStripeLog(StorageFactory & factory);
 void registerStorageNull(StorageFactory & factory);
-void registerStorageMerge(StorageFactory & factory);
-void registerStorageBuffer(StorageFactory & factory);
 void registerStorageMemory(StorageFactory & factory);
 void registerStorageSet(StorageFactory & factory);
-void registerStorageJoin(StorageFactory & factory);
-void registerStorageView(StorageFactory & factory);
-void registerStorageMaterializedView(StorageFactory & factory);
 
 
 void registerStorages()
@@ -38,17 +33,10 @@ void registerStorages()
     auto & factory = StorageFactory::instance();
 
     registerStorageLog(factory);
-    registerStorageTinyLog(factory);
     registerStorageDeltaMerge(factory);
-    registerStorageStripeLog(factory);
     registerStorageNull(factory);
-    registerStorageMerge(factory);
-    registerStorageBuffer(factory);
     registerStorageMemory(factory);
     registerStorageSet(factory);
-    registerStorageJoin(factory);
-    registerStorageView(factory);
-    registerStorageMaterializedView(factory);
 }
 
 } // namespace DB

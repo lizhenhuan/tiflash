@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Server/StatusFile.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,11 +16,11 @@
 
 #include "StatusFile.h"
 
-#include <Common/ClickHouseRevision.h>
-#include <IO/LimitReadBuffer.h>
+#include <Common/TiFlashBuildInfo.h>
+#include <IO/Buffer/LimitReadBuffer.h>
+#include <IO/Buffer/ReadBufferFromFile.h>
+#include <IO/Buffer/WriteBufferFromFileDescriptor.h>
 #include <IO/Operators.h>
-#include <IO/ReadBufferFromFile.h>
-#include <IO/WriteBufferFromFileDescriptor.h>
 #include <Poco/File.h>
 #include <common/LocalDateTime.h>
 #include <common/logger_useful.h>
@@ -44,9 +46,16 @@ StatusFile::StatusFile(const std::string & path_)
         }
 
         if (!contents.empty())
-            LOG_FMT_INFO(&Poco::Logger::get("StatusFile"), "Status file {} already exists - unclean restart. Contents:\n{}", path, contents);
+            LOG_INFO(
+                &Poco::Logger::get("StatusFile"),
+                "Status file {} already exists - unclean restart. Contents:\n{}",
+                path,
+                contents);
         else
-            LOG_FMT_INFO(&Poco::Logger::get("StatusFile"), "Status file {} already exists and is empty - probably unclean hardware restart.", path);
+            LOG_INFO(
+                &Poco::Logger::get("StatusFile"),
+                "Status file {} already exists and is empty - probably unclean hardware restart.",
+                path);
     }
 
     fd = open(path.c_str(), O_WRONLY | O_CREAT, 0666);
@@ -60,7 +69,8 @@ StatusFile::StatusFile(const std::string & path_)
         if (-1 == flock_ret)
         {
             if (errno == EWOULDBLOCK)
-                throw Exception("Cannot lock file " + path + ". Another server instance in same directory is already running.");
+                throw Exception(
+                    "Cannot lock file " + path + ". Another server instance in same directory is already running.");
             else
                 throwFromErrno("Cannot lock file " + path);
         }
@@ -74,10 +84,9 @@ StatusFile::StatusFile(const std::string & path_)
         /// Write information about current server instance to the file.
         {
             WriteBufferFromFileDescriptor out(fd, 1024);
-            out
-                << "PID: " << getpid() << "\n"
+            out << "PID: " << getpid() << "\n"
                 << "Started at: " << LocalDateTime(time(nullptr)) << "\n"
-                << "Revision: " << ClickHouseRevision::get() << "\n";
+                << "Version: " << TiFlashBuildInfo::getReleaseVersion() << "\n";
         }
     }
     catch (...)
@@ -93,10 +102,20 @@ StatusFile::~StatusFile()
     char buf[128];
 
     if (0 != close(fd))
-        LOG_FMT_ERROR(&Poco::Logger::get("StatusFile"), "Cannot close file {}, errno: {}, strerror: {}", path, errno, strerror_r(errno, buf, sizeof(buf)));
+        LOG_ERROR(
+            &Poco::Logger::get("StatusFile"),
+            "Cannot close file {}, errno: {}, strerror: {}",
+            path,
+            errno,
+            strerror_r(errno, buf, sizeof(buf)));
 
     if (0 != unlink(path.c_str()))
-        LOG_FMT_ERROR(&Poco::Logger::get("StatusFile"), "Cannot unlink file {}, errno: {}, strerror: {}", path, errno, strerror_r(errno, buf, sizeof(buf)));
+        LOG_ERROR(
+            &Poco::Logger::get("StatusFile"),
+            "Cannot unlink file {}, errno: {}, strerror: {}",
+            path,
+            errno,
+            strerror_r(errno, buf, sizeof(buf)));
 }
 
 } // namespace DB

@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Interpreters/AggregationCommon.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -47,8 +49,9 @@ namespace
 template <typename T>
 constexpr auto getBitmapSize()
 {
-    return (sizeof(T) == 32) ? 4 : (sizeof(T) == 16) ? 2
-                                                     : ((sizeof(T) == 8) ? 1 : ((sizeof(T) == 4) ? 1 : ((sizeof(T) == 2) ? 1 : 0)));
+    return (sizeof(T) == 32) ? 4
+        : (sizeof(T) == 16)  ? 2
+                             : ((sizeof(T) == 8) ? 1 : ((sizeof(T) == 4) ? 1 : ((sizeof(T) == 2) ? 1 : 0)));
 }
 
 } // namespace
@@ -59,11 +62,8 @@ using KeysNullMap = std::array<UInt8, getBitmapSize<T>()>;
 /// Pack into a binary blob of type T a set of fixed-size keys. Granted that all the keys fit into the
 /// binary blob, they are disposed in it consecutively.
 template <typename T>
-static inline T ALWAYS_INLINE packFixed(
-    size_t i,
-    size_t keys_size,
-    const ColumnRawPtrs & key_columns,
-    const Sizes & key_sizes)
+static inline T ALWAYS_INLINE
+packFixed(size_t i, size_t keys_size, const ColumnRawPtrs & key_columns, const Sizes & key_sizes)
 {
     union
     {
@@ -94,7 +94,10 @@ static inline T ALWAYS_INLINE packFixed(
             offset += 8;
             break;
         default:
-            memcpy(bytes + offset, &static_cast<const ColumnFixedString *>(key_columns[j])->getChars()[i * key_sizes[j]], key_sizes[j]);
+            memcpy(
+                bytes + offset,
+                &static_cast<const ColumnFixedString *>(key_columns[j])->getChars()[i * key_sizes[j]],
+                key_sizes[j]);
             offset += key_sizes[j];
         }
     }
@@ -163,7 +166,10 @@ static inline T ALWAYS_INLINE packFixed(
             offset += 8;
             break;
         default:
-            memcpy(bytes + offset, &static_cast<const ColumnFixedString *>(key_columns[j])->getChars()[i * key_sizes[j]], key_sizes[j]);
+            memcpy(
+                bytes + offset,
+                &static_cast<const ColumnFixedString *>(key_columns[j])->getChars()[i * key_sizes[j]],
+                key_sizes[j]);
             offset += key_sizes[j];
         }
     }
@@ -231,103 +237,6 @@ static inline UInt128 ALWAYS_INLINE hash128(
     return key;
 }
 
-
-/// Copy keys to the pool. Then put into pool StringRefs to them and return the pointer to the first.
-static inline StringRef * ALWAYS_INLINE placeKeysInPool(
-    size_t keys_size,
-    StringRefs & keys,
-    Arena & pool)
-{
-    for (size_t j = 0; j < keys_size; ++j)
-    {
-        char * place = pool.alloc(keys[j].size);
-        memcpy(place, keys[j].data, keys[j].size); /// TODO padding in Arena and memcpySmall
-        keys[j].data = place;
-    }
-
-    /// Place the StringRefs on the newly copied keys in the pool.
-    char * res = pool.alloc(keys_size * sizeof(StringRef));
-    memcpy(res, keys.data(), keys_size * sizeof(StringRef));
-
-    return reinterpret_cast<StringRef *>(res);
-}
-
-/*
-/// Copy keys to the pool. Then put into pool StringRefs to them and return the pointer to the first.
-static inline StringRef * ALWAYS_INLINE extractKeysAndPlaceInPool(
-    size_t i,
-    size_t keys_size,
-    const ColumnRawPtrs & key_columns,
-    StringRefs & keys,
-    Arena & pool)
-{
-    for (size_t j = 0; j < keys_size; ++j)
-    {
-        keys[j] = key_columns[j]->getDataAtWithTerminatingZero(i);
-        char * place = pool.alloc(keys[j].size);
-        memcpy(place, keys[j].data, keys[j].size);
-        keys[j].data = place;
-    }
-
-    /// Place the StringRefs on the newly copied keys in the pool.
-    char * res = pool.alloc(keys_size * sizeof(StringRef));
-    memcpy(res, keys.data(), keys_size * sizeof(StringRef));
-
-    return reinterpret_cast<StringRef *>(res);
-}
-
-
-/// Copy the specified keys to a continuous memory chunk of a pool.
-/// Subsequently append StringRef objects referring to each key.
-///
-/// [key1][key2]...[keyN][ref1][ref2]...[refN]
-///   ^     ^        :     |     |
-///   +-----|--------:-----+     |
-///   :     +--------:-----------+
-///   :              :
-///   <-------------->
-///        (1)
-///
-/// Return a StringRef object, referring to the area (1) of the memory
-/// chunk that contains the keys. In other words, we ignore their StringRefs.
-inline StringRef ALWAYS_INLINE extractKeysAndPlaceInPoolContiguous(
-    size_t i,
-    size_t keys_size,
-    const ColumnRawPtrs & key_columns,
-    StringRefs & keys,
-    const TiDB::TiDBCollators & collators,
-    std::vector<std::string> & sort_key_containers,
-    Arena & pool)
-{
-    size_t sum_keys_size = 0;
-    for (size_t j = 0; j < keys_size; ++j)
-    {
-        keys[j] = key_columns[j]->getDataAtWithTerminatingZero(i);
-        if (!collators.empty() && collators[j] != nullptr)
-        {
-            // todo check if need to handle the terminating zero
-            keys[j] = collators[j]->sortKey(keys[j].data, keys[j].size - 1, sort_key_containers[j]);
-        }
-        sum_keys_size += keys[j].size;
-    }
-
-    char * res = pool.alloc(sum_keys_size + keys_size * sizeof(StringRef));
-    char * place = res;
-
-    for (size_t j = 0; j < keys_size; ++j)
-    {
-        memcpy(place, keys[j].data, keys[j].size);
-        keys[j].data = place;
-        place += keys[j].size;
-    }
-
-    /// Place the StringRefs on the newly copied keys in the pool.
-    memcpy(place, keys.data(), keys_size * sizeof(StringRef));
-
-    return {res, sum_keys_size};
-}
-*/
-
 /** Serialize keys into a continuous chunk of memory.
   */
 static inline StringRef ALWAYS_INLINE serializeKeysToPoolContiguous(
@@ -344,12 +253,14 @@ static inline StringRef ALWAYS_INLINE serializeKeysToPoolContiguous(
     if (!collators.empty())
     {
         for (size_t j = 0; j < keys_size; ++j)
-            sum_size += key_columns[j]->serializeValueIntoArena(i, pool, begin, collators[j], sort_key_containers[j]).size;
+            sum_size
+                += key_columns[j]->serializeValueIntoArena(i, pool, begin, collators[j], sort_key_containers[j]).size;
     }
     else
     {
         for (size_t j = 0; j < keys_size; ++j)
-            sum_size += key_columns[j]->serializeValueIntoArena(i, pool, begin, nullptr, TiDB::dummy_sort_key_contaner).size;
+            sum_size
+                += key_columns[j]->serializeValueIntoArena(i, pool, begin, nullptr, TiDB::dummy_sort_key_contaner).size;
     }
 
     return {begin, sum_size};
@@ -375,10 +286,11 @@ static T inline packFixedShuffle(
 
     for (size_t i = 1; i < num_srcs; ++i)
     {
-        res = _mm_xor_si128(res,
-                            _mm_shuffle_epi8(
-                                _mm_loadu_si128(reinterpret_cast<const __m128i *>(srcs[i] + elem_sizes[i] * idx)),
-                                _mm_loadu_si128(reinterpret_cast<const __m128i *>(&masks[i * sizeof(T)]))));
+        res = _mm_xor_si128(
+            res,
+            _mm_shuffle_epi8(
+                _mm_loadu_si128(reinterpret_cast<const __m128i *>(srcs[i] + elem_sizes[i] * idx)),
+                _mm_loadu_si128(reinterpret_cast<const __m128i *>(&masks[i * sizeof(T)]))));
     }
 
     T out;
@@ -406,7 +318,12 @@ void fillFixedBatch(size_t num_rows, const T * source, T * dest)
 /// out[1] : [--------****----]
 /// ...
 template <typename T, typename Key>
-void fillFixedBatch(size_t keys_size, const ColumnRawPtrs & key_columns, const Sizes & key_sizes, PaddedPODArray<Key> & out, size_t & offset)
+void fillFixedBatch(
+    size_t keys_size,
+    const ColumnRawPtrs & key_columns,
+    const Sizes & key_sizes,
+    PaddedPODArray<Key> & out,
+    size_t & offset)
 {
     for (size_t i = 0; i < keys_size; ++i)
     {
@@ -414,7 +331,7 @@ void fillFixedBatch(size_t keys_size, const ColumnRawPtrs & key_columns, const S
         {
             const auto * column = key_columns[i];
             size_t num_rows = column->size();
-            out.resize_fill(num_rows);
+            out.resize_fill_zero(num_rows);
 
             /// Note: here we violate strict aliasing.
             /// It should be ok as log as we do not reffer to any value from `out` before filling.
@@ -429,7 +346,11 @@ void fillFixedBatch(size_t keys_size, const ColumnRawPtrs & key_columns, const S
 /// Pack into a binary blob of type T a set of fixed-size keys. Granted that all the keys fit into the
 /// binary blob. Keys are placed starting from the longest one.
 template <typename T>
-void packFixedBatch(size_t keys_size, const ColumnRawPtrs & key_columns, const Sizes & key_sizes, PaddedPODArray<T> & out)
+void packFixedBatch(
+    size_t keys_size,
+    const ColumnRawPtrs & key_columns,
+    const Sizes & key_sizes,
+    PaddedPODArray<T> & out)
 {
     size_t offset = 0;
     fillFixedBatch<UInt128>(keys_size, key_columns, key_sizes, out, offset);

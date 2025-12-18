@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/DataStreams/OwningBlockInputStream.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,9 +16,9 @@
 
 #pragma once
 
-#include <memory>
-
 #include <DataStreams/IProfilingBlockInputStream.h>
+
+#include <memory>
 
 namespace DB
 {
@@ -29,7 +31,8 @@ class OwningBlockInputStream : public IProfilingBlockInputStream
 {
 public:
     OwningBlockInputStream(const BlockInputStreamPtr & stream, std::unique_ptr<OwnType> own)
-        : stream{stream}, own{std::move(own)}
+        : stream{stream}
+        , own{std::move(own)}
     {
         children.push_back(stream);
     }
@@ -46,4 +49,4 @@ protected:
     std::unique_ptr<OwnType> own;
 };
 
-}
+} // namespace DB

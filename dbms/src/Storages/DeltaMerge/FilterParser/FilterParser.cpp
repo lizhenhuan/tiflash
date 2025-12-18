@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,13 +16,12 @@
 #include <Flash/Coprocessor/DAGCodec.h>
 #include <Flash/Coprocessor/DAGQueryInfo.h>
 #include <Flash/Coprocessor/DAGUtils.h>
-#include <Poco/Logger.h>
 #include <Storages/DeltaMerge/Filter/RSOperator.h>
 #include <Storages/DeltaMerge/FilterParser/FilterParser.h>
-#include <Storages/Transaction/TiDB.h>
+#include <TiDB/Schema/TiDB.h>
 #include <common/logger_useful.h>
 
-#include <cassert>
+#include <magic_enum.hpp>
 
 
 namespace DB
@@ -66,6 +65,7 @@ inline bool isRoughSetFilterSupportType(const Int32 field_type)
     case TiDB::TypeString:
         return false;
     // Unknown.
+    case TiDB::TypeTiDBVectorFloat32:
     case TiDB::TypeDecimal:
     case TiDB::TypeNewDecimal:
     case TiDB::TypeFloat:
@@ -80,226 +80,226 @@ inline bool isRoughSetFilterSupportType(const Int32 field_type)
     return false;
 }
 
-ColumnID getColumnIDForColumnExpr(const tipb::Expr & expr, const ColumnDefines & columns_to_read)
+ColumnID getColumnIDForColumnExpr(const tipb::Expr & expr, const TiDB::ColumnInfos & scan_column_infos)
 {
     assert(isColumnExpr(expr));
     auto column_index = decodeDAGInt64(expr.val());
-    if (column_index < 0 || column_index >= static_cast<Int64>(columns_to_read.size()))
+    if (column_index < 0 || column_index >= static_cast<Int64>(scan_column_infos.size()))
     {
-        throw TiFlashException("Column index out of bound: " + DB::toString(column_index) + ", should in [0,"
-                                   + DB::toString(columns_to_read.size()) + ")",
-                               Errors::Coprocessor::BadRequest);
+        throw TiFlashException(
+            Errors::Coprocessor::BadRequest,
+            "Column index out of bound: {}, should in [0,{})",
+            column_index,
+            scan_column_infos.size());
     }
-    return columns_to_read[column_index].id;
+    return scan_column_infos[column_index].id;
 }
 
-enum class OperandType
+// convert literal value from timezone specified in cop request to UTC in-place
+inline void convertFieldWithTimezone(Field & value, const TimezoneInfo & timezone_info)
 {
-    Unknown = 0,
-    Column,
-    Literal,
-};
+    static const auto & time_zone_utc = DateLUT::instance("UTC");
+    UInt64 from_time = value.get<UInt64>();
+    UInt64 result_time = from_time;
+    if (timezone_info.is_name_based)
+        convertTimeZone(from_time, result_time, *timezone_info.timezone, time_zone_utc);
+    else if (timezone_info.timezone_offset != 0)
+        convertTimeZoneByOffset(from_time, result_time, false, timezone_info.timezone_offset);
+    value = Field(result_time);
+}
 
 inline RSOperatorPtr parseTiCompareExpr( //
     const tipb::Expr & expr,
     const FilterParser::RSFilterType filter_type,
-    const ColumnDefines & columns_to_read,
-    const FilterParser::AttrCreatorByColumnID & creator,
-    const TimezoneInfo & timezone_info,
-    const LoggerPtr & /*log*/)
+    const TiDB::ColumnInfos & scan_column_infos,
+    const FilterParser::ColumnIDToAttrMap & id_to_attr,
+    const TimezoneInfo & timezone_info)
 {
-    if (unlikely(expr.children_size() != 2))
-        return createUnsupported(expr.ShortDebugString(),
-                                 tipb::ScalarFuncSig_Name(expr.sig()) + " with " + DB::toString(expr.children_size())
-                                     + " children is not supported",
-                                 false);
+    if (unlikely(expr.children_size() != 2 && filter_type != FilterParser::RSFilterType::In))
+        return createUnsupported(fmt::format(
+            "{} with {} children is not supported",
+            tipb::ScalarFuncSig_Name(expr.sig()),
+            expr.children_size()));
 
-    /// Only support `column` `op` `literal` now.
+    // Support three types of expression:
+    // 1. op(column, literal), in sql: column op literal
+    // 2. op(literal, column), in sql: literal op column
+    // 3. in(coloumn, literal1, literal2, ...), in sql: column in (literal1, literal2, ...)
+    // op is one of: =, !=, >, >=, <, <=
 
     Attr attr;
-    Field value;
-    OperandType left = OperandType::Unknown;
-    OperandType right = OperandType::Unknown;
+    std::vector<Field> values;
     bool is_timestamp_column = false;
     for (const auto & child : expr.children())
     {
         if (isColumnExpr(child))
+        {
             is_timestamp_column = (child.field_type().tp() == TiDB::TypeTimestamp);
+            break;
+        }
     }
-    for (int32_t child_idx = 0; child_idx < expr.children_size(); child_idx++)
+    int column_expr_child_idx = -1;
+    for (int child_idx = 0; child_idx < expr.children_size(); ++child_idx)
     {
         const auto & child = expr.children(child_idx);
         if (isColumnExpr(child))
         {
+            // If iter to the second column, return unsupported.
+            if (column_expr_child_idx == -1)
+                column_expr_child_idx = child_idx;
+            else
+                return createUnsupported(fmt::format(
+                    "Multiple ColumnRef in expression is not supported, sig={}",
+                    tipb::ScalarFuncSig_Name(expr.sig())));
+
             if (unlikely(!child.has_field_type()))
-                return createUnsupported(expr.ShortDebugString(), "ColumnRef with no field type is not supported", false);
+                return createUnsupported(fmt::format(
+                    "ColumnRef with no field type is not supported, sig={}",
+                    tipb::ScalarFuncSig_Name(expr.sig())));
 
             auto field_type = child.field_type().tp();
             if (!isRoughSetFilterSupportType(field_type))
-                return createUnsupported(
-                    expr.ShortDebugString(),
-                    "ColumnRef with field type(" + DB::toString(field_type) + ") is not supported",
-                    false);
+                return createUnsupported(fmt::format(
+                    "ColumnRef with field type is not supported, sig={} field_type={}",
+                    tipb::ScalarFuncSig_Name(expr.sig()),
+                    field_type));
 
-            ColumnID id = getColumnIDForColumnExpr(child, columns_to_read);
-            attr = creator(id);
-            if (child_idx == 0)
-                left = OperandType::Column;
-            else if (child_idx == 1)
-                right = OperandType::Column;
+            auto col_id = getColumnIDForColumnExpr(child, scan_column_infos);
+            attr = id_to_attr.at(col_id);
         }
         else if (isLiteralExpr(child))
         {
-            value = decodeLiteral(child);
-            if (child_idx == 0)
-                left = OperandType::Literal;
-            else if (child_idx == 1)
-                right = OperandType::Literal;
-
+            Field value = decodeLiteral(child);
             if (is_timestamp_column)
             {
                 auto literal_type = child.field_type().tp();
                 if (unlikely(literal_type != TiDB::TypeTimestamp && literal_type != TiDB::TypeDatetime))
-                    return createUnsupported(expr.ShortDebugString(),
-                                             "Compare timestamp column with literal type(" + DB::toString(literal_type)
-                                                 + ") is not supported",
-                                             false);
+                    return createUnsupported(fmt::format(
+                        "Compare timestamp column with literal type is not supported, sig={} literal_type={}",
+                        tipb::ScalarFuncSig_Name(expr.sig()),
+                        literal_type));
                 // convert literal value from timezone specified in cop request to UTC
                 if (literal_type == TiDB::TypeDatetime && !timezone_info.is_utc_timezone)
-                {
-                    static const auto & time_zone_utc = DateLUT::instance("UTC");
-                    UInt64 from_time = value.get<UInt64>();
-                    UInt64 result_time = from_time;
-                    if (timezone_info.is_name_based)
-                        convertTimeZone(from_time, result_time, *timezone_info.timezone, time_zone_utc);
-                    else if (timezone_info.timezone_offset != 0)
-                        convertTimeZoneByOffset(from_time, result_time, false, timezone_info.timezone_offset);
-                    value = Field(result_time);
-                }
+                    convertFieldWithTimezone(value, timezone_info);
             }
+            values.push_back(value);
         }
-    }
-
-    bool normal_cmp = (left == OperandType::Column && right == OperandType::Literal);
-    bool inverse_cmp = (left == OperandType::Literal && right == OperandType::Column);
-    if (!(normal_cmp || inverse_cmp))
-        return createUnsupported(expr.ShortDebugString(),
-                                 tipb::ScalarFuncSig_Name(expr.sig()) + " is not supported [left=" + DB::toString(static_cast<int>(left))
-                                     + "] [right=" + DB::toString(static_cast<int>(right)) + "]",
-                                 false);
-
-    // Correct the filter type by the direction of operands
-    auto filter_type_with_direction = filter_type;
-    if (inverse_cmp)
-    {
-        switch (filter_type)
+        else
         {
-        case FilterParser::RSFilterType::Greater:
-            filter_type_with_direction = FilterParser::RSFilterType::Less;
-            break;
-        case FilterParser::RSFilterType::GreaterEqual:
-            filter_type_with_direction = FilterParser::RSFilterType::LessEqual;
-            break;
-        case FilterParser::RSFilterType::Less:
-            filter_type_with_direction = FilterParser::RSFilterType::Greater;
-            break;
-        case FilterParser::RSFilterType::LessEqual:
-            filter_type_with_direction = FilterParser::RSFilterType::GreaterEqual;
-            break;
-            // Commutative operators, ignored.
-            // case FilterParser::RSFilterType::Equal:
-            // case FilterParser::RSFilterType::NotEqual:
-        default:
-            break;
+            // Any other type of child is not supported, like: ScalarFunc.
+            // case like `cast(a as signed) > 1`, `a in (0, cast(a as signed))` is not supported.
+            return createUnsupported(fmt::format(
+                "Unknown child type, sig={} child_tp={}",
+                tipb::ScalarFuncSig_Name(expr.sig()),
+                tipb::ExprType_Name(child.tp())));
         }
     }
 
-    // TODO: null_direction
-    RSOperatorPtr op;
-    switch (filter_type_with_direction)
+    // At least one ColumnRef and one Literal
+    if (unlikely(column_expr_child_idx == -1))
+        return createUnsupported("No ColumnRef in expression");
+    if (unlikely(values.empty()))
+        return createUnsupported("No Literal in expression");
+    // For compare expression, only support one Literal
+    if (unlikely(values.size() > 1 && filter_type != FilterParser::RSFilterType::In))
+        return createUnsupported(
+            fmt::format("Multiple Literal in compare expression is not supported, size={}", values.size()));
+    // For In type, the first child must be ColumnRef
+    if (column_expr_child_idx != 0 && filter_type == FilterParser::RSFilterType::In)
+        return createUnsupported("the first child of In expression must be ColumnRef");
+
+    bool inverse_cmp = column_expr_child_idx == 1;
+    switch (filter_type)
     {
     case FilterParser::RSFilterType::Equal:
-        op = createEqual(attr, value);
-        break;
+        return createEqual(attr, values[0]);
     case FilterParser::RSFilterType::NotEqual:
-        op = createNotEqual(attr, value);
-        break;
+        return createNotEqual(attr, values[0]);
     case FilterParser::RSFilterType::Greater:
-        op = createGreater(attr, value, -1);
-        break;
+        if (inverse_cmp)
+            return createLess(attr, values[0]);
+        else
+            return createGreater(attr, values[0]);
     case FilterParser::RSFilterType::GreaterEqual:
-        op = createGreaterEqual(attr, value, -1);
-        break;
+        if (inverse_cmp)
+            return createLessEqual(attr, values[0]);
+        else
+            return createGreaterEqual(attr, values[0]);
     case FilterParser::RSFilterType::Less:
-        op = createLess(attr, value, -1);
-        break;
+        if (inverse_cmp)
+            return createGreater(attr, values[0]);
+        else
+            return createLess(attr, values[0]);
     case FilterParser::RSFilterType::LessEqual:
-        op = createLessEqual(attr, value, -1);
-        break;
+        if (inverse_cmp)
+            return createGreaterEqual(attr, values[0]);
+        else
+            return createLessEqual(attr, values[0]);
+    case FilterParser::RSFilterType::In:
+        return createIn(attr, values);
     default:
-        op = createUnsupported(expr.ShortDebugString(), "Unknown compare type: " + tipb::ExprType_Name(expr.tp()), false);
-        break;
+        return createUnsupported(fmt::format("Unknown compare type: {}", tipb::ExprType_Name(expr.tp())));
     }
-    return op;
 }
 
-RSOperatorPtr parseTiExpr(const tipb::Expr & expr,
-                          const ColumnDefines & columns_to_read,
-                          const FilterParser::AttrCreatorByColumnID & creator,
-                          const TimezoneInfo & timezone_info,
-                          const LoggerPtr & log)
+RSOperatorPtr parseTiExpr(
+    const tipb::Expr & expr,
+    const TiDB::ColumnInfos & scan_column_infos,
+    const FilterParser::ColumnIDToAttrMap & id_to_attr,
+    const TimezoneInfo & timezone_info,
+    const LoggerPtr & log)
 {
-    assert(isFunctionExpr(expr));
-
-    RSOperatorPtr op = EMPTY_FILTER;
+    if (unlikely(!isFunctionExpr(expr)))
+        return createUnsupported(
+            fmt::format("child of logical and is not function, expr.tp={}", tipb::ExprType_Name(expr.tp())));
     if (unlikely(isAggFunctionExpr(expr)))
-    {
-        op = createUnsupported(expr.ShortDebugString(), "agg function: " + tipb::ExprType_Name(expr.tp()), false);
-        return op;
-    }
+        return createUnsupported(
+            fmt::format("agg function is not support, expr.tp={}", tipb::ExprType_Name(expr.tp())));
 
-
-    if (auto iter = FilterParser::scalar_func_rs_filter_map.find(expr.sig()); iter != FilterParser::scalar_func_rs_filter_map.end())
+    String reason = fmt::format("{} is not supported", tipb::ScalarFuncSig_Name(expr.sig()));
+    if (auto iter = FilterParser::scalar_func_rs_filter_map.find(expr.sig());
+        iter != FilterParser::scalar_func_rs_filter_map.end())
     {
         FilterParser::RSFilterType filter_type = iter->second;
         switch (filter_type)
         {
+        // Not/And/Or only support when the child is FunctionExpr, thus expr like `a and null` can not do filter here.
+        // If later we want to support Not/And/Or do filter not only FunctionExpr but also ColumnExpr and Literal,
+        // we must take a special consideration about null value, due to we just ignore the null value in other filter(such as equal, greater, etc.)
+        // Therefore, null value may bring some extra correctness problem if we expand Not/And/Or filtering areas.
         case FilterParser::RSFilterType::Not:
         {
             if (unlikely(expr.children_size() != 1))
-                op = createUnsupported(
-                    expr.ShortDebugString(),
-                    "logical not with " + DB::toString(expr.children_size()) + " children",
-                    false);
+                return createUnsupported(
+                    fmt::format("logical not with {} children is not supported", expr.children_size()));
+
+            if (const auto & child = expr.children(0); likely(isFunctionExpr(child)))
+                return createNot(parseTiExpr(child, scan_column_infos, id_to_attr, timezone_info, log));
             else
-            {
-                const auto & child = expr.children(0);
-                if (likely(isFunctionExpr(child)))
-                    op = createNot(parseTiExpr(child, columns_to_read, creator, timezone_info, log));
-                else
-                    op = createUnsupported(child.ShortDebugString(), "child of logical not is not function", false);
-            }
+                return createUnsupported(fmt::format(
+                    "child of logical not is not function, child_type={}",
+                    tipb::ExprType_Name(child.tp())));
+            break;
         }
-        break;
 
         case FilterParser::RSFilterType::And:
         case FilterParser::RSFilterType::Or:
         {
             RSOperators children;
-            for (Int32 i = 0; i < expr.children_size(); ++i)
+            for (const auto & child : expr.children())
             {
-                const auto & child = expr.children(i);
                 if (likely(isFunctionExpr(child)))
-                    children.emplace_back(parseTiExpr(child, columns_to_read, creator, timezone_info, log));
+                    children.emplace_back(parseTiExpr(child, scan_column_infos, id_to_attr, timezone_info, log));
                 else
-                    children.emplace_back(createUnsupported(child.ShortDebugString(), "child of logical operator is not function", false));
+                    children.emplace_back(createUnsupported(fmt::format(
+                        "child of logical operator is not function, child_type={}",
+                        tipb::ExprType_Name(child.tp()))));
             }
             if (expr.sig() == tipb::ScalarFuncSig::LogicalAnd)
-                op = createAnd(children);
+                return createAnd(children);
             else
-                op = createOr(children);
+                return createOr(children);
         }
-        break;
 
         case FilterParser::RSFilterType::Equal:
         case FilterParser::RSFilterType::NotEqual:
@@ -307,134 +307,214 @@ RSOperatorPtr parseTiExpr(const tipb::Expr & expr,
         case FilterParser::RSFilterType::GreaterEqual:
         case FilterParser::RSFilterType::Less:
         case FilterParser::RSFilterType::LessEqual:
-            op = parseTiCompareExpr(expr, filter_type, columns_to_read, creator, timezone_info, log);
-            break;
-
         case FilterParser::RSFilterType::In:
-        case FilterParser::RSFilterType::NotIn:
-        case FilterParser::RSFilterType::Like:
-        case FilterParser::RSFilterType::NotLike:
-        case FilterParser::RSFilterType::Unsupported:
-            op = createUnsupported(expr.ShortDebugString(), tipb::ScalarFuncSig_Name(expr.sig()) + " is not supported", false);
+            return parseTiCompareExpr(expr, filter_type, scan_column_infos, id_to_attr, timezone_info);
+
+        case FilterParser::RSFilterType::IsNull:
+        {
+            // for IsNULL filter, we only support do filter when the child is ColumnExpr.
+            // That is, we only do filter when the statement likes `where a is null`, but not `where (a > 1) is null`
+            // because in other filter calculation(like Equal/Less/LessEqual/Greater/GreateEqual/NotEqual), we just make filter ignoring the null value.
+            // Therefore, if we support IsNull with sub expr, there could be correctness problem.
+            // For example, we have a table t(a int, b int), and the data is: (1, 2), (0, null), (null, 1)
+            // and then we execute `select * from t where (a > 1) is null`, we want to get (null, 1)
+            // but in RSResult (a > 1), we will get the result RSResult::None, and then we think the result is the empty set.
+            if (unlikely(expr.children_size() != 1))
+            {
+                return createUnsupported(
+                    fmt::format("filter IsNull with {} children is not supported", expr.children_size()));
+            }
+
+            const auto & child = expr.children(0);
+            if (likely(isColumnExpr(child)))
+            {
+                auto field_type = child.field_type().tp();
+                if (isRoughSetFilterSupportType(field_type))
+                {
+                    auto col_id = getColumnIDForColumnExpr(child, scan_column_infos);
+                    const auto & attr = id_to_attr.at(col_id);
+                    return createIsNull(attr);
+                }
+                return createUnsupported(
+                    fmt::format("ColumnRef with field type is not supported, filed_type={}", field_type));
+            }
+            else
+            {
+                return createUnsupported(
+                    fmt::format("child of IsNull is not ColumnRef, expr_tp={}", tipb::ExprType_Name(child.tp())));
+            }
             break;
         }
+        // Unsupported filter type:
+        case FilterParser::RSFilterType::Like:
+        case FilterParser::RSFilterType::Unsupported:
+            return createUnsupported(reason);
+        }
     }
-    else
-    {
-        op = createUnsupported(expr.ShortDebugString(), tipb::ScalarFuncSig_Name(expr.sig()) + " is not supported", false);
-    }
-
-    return op;
-}
-
-inline RSOperatorPtr tryParse(const tipb::Expr & filter,
-                              const ColumnDefines & columns_to_read,
-                              const FilterParser::AttrCreatorByColumnID & creator,
-                              const TimezoneInfo & timezone_info,
-                              const LoggerPtr & log)
-{
-    if (isFunctionExpr(filter))
-        return cop::parseTiExpr(filter, columns_to_read, creator, timezone_info, log);
-    else
-        return createUnsupported(filter.ShortDebugString(), "child of logical and is not function", false);
+    return createUnsupported(reason);
 }
 
 } // namespace cop
 
 
-RSOperatorPtr FilterParser::parseDAGQuery(const DAGQueryInfo & dag_info,
-                                          const ColumnDefines & columns_to_read,
-                                          FilterParser::AttrCreatorByColumnID && creator,
-                                          const LoggerPtr & log)
+RSOperatorPtr FilterParser::parseDAGQuery(
+    const DAGQueryInfo & dag_info,
+    const TiDB::ColumnInfos & scan_column_infos,
+    const ColumnIDToAttrMap & id_to_attr,
+    const LoggerPtr & log)
 {
-    RSOperatorPtr op = EMPTY_FILTER;
-    if (dag_info.filters.empty())
-        return op;
+    /// By default, multiple conditions with operator "and"
+    RSOperators children;
+    children.reserve(dag_info.filters.size() + dag_info.pushed_down_filters.size());
+    for (const auto & filter : dag_info.filters)
+    {
+        children.emplace_back(cop::parseTiExpr(filter, scan_column_infos, id_to_attr, dag_info.timezone_info, log));
+    }
+    for (const auto & filter : dag_info.pushed_down_filters)
+    {
+        children.emplace_back(cop::parseTiExpr(filter, scan_column_infos, id_to_attr, dag_info.timezone_info, log));
+    }
 
-    if (dag_info.filters.size() == 1)
-    {
-        op = cop::tryParse(*dag_info.filters[0], columns_to_read, creator, dag_info.timezone_info, log);
-    }
+    if (children.empty())
+        return EMPTY_RS_OPERATOR;
+    else if (children.size() == 1)
+        return children[0];
     else
+        return createAnd(children);
+}
+
+RSOperatorPtr FilterParser::parseRFInExpr(
+    const tipb::RuntimeFilterType rf_type,
+    const tipb::Expr & target_expr,
+    const std::optional<Attr> & target_attr,
+    const std::set<Field> & setElements,
+    const TimezoneInfo & timezone_info)
+{
+    switch (rf_type)
     {
-        /// By default, multiple conditions with operator "and"
-        RSOperators children;
-        for (size_t i = 0; i < dag_info.filters.size(); ++i)
+    case tipb::IN:
+    {
+        if (!isColumnExpr(target_expr) || !target_attr)
+            return createUnsupported(fmt::format(
+                "rf target expr is {}",
+                target_attr.has_value() ? fmt::format("not column expr, tp={}", tipb::ExprType_Name(target_expr.tp()))
+                                        : "not found"));
+        const auto & attr = *target_attr;
+        if (target_expr.field_type().tp() == TiDB::TypeTimestamp && !timezone_info.is_utc_timezone)
         {
-            const auto & filter = *dag_info.filters[i];
-            children.emplace_back(cop::tryParse(filter, columns_to_read, creator, dag_info.timezone_info, log));
+            Fields values;
+            values.reserve(setElements.size());
+            std::for_each(setElements.begin(), setElements.end(), [&](Field element) {
+                // convert literal value from timezone specified in cop request to UTC
+                cop::convertFieldWithTimezone(element, timezone_info);
+                values.push_back(element);
+            });
+            return createIn(attr, values);
         }
-        op = createAnd(children);
+        else
+        {
+            Fields values(setElements.begin(), setElements.end());
+            return createIn(attr, values);
+        }
     }
-    return op;
+    case tipb::MIN_MAX:
+    case tipb::BLOOM_FILTER:
+        return createUnsupported("function params should be in predicate");
+    }
+}
+
+std::optional<Attr> FilterParser::createAttr(
+    const tipb::Expr & expr,
+    const TiDB::ColumnInfos & scan_column_infos,
+    const ColumnDefines & table_column_defines)
+{
+    if (!isColumnExpr(expr))
+    {
+        return std::nullopt;
+    }
+    auto col_id = cop::getColumnIDForColumnExpr(expr, scan_column_infos);
+    auto it = std::find_if( //
+        table_column_defines.cbegin(),
+        table_column_defines.cend(),
+        [col_id](const ColumnDefine & cd) { return cd.id == col_id; });
+    if (it != table_column_defines.cend())
+    {
+        return Attr{.col_name = it->name, .col_id = it->id, .type = it->type};
+    }
+    return std::nullopt;
+}
+
+bool FilterParser::isRSFilterSupportType(const Int32 field_type)
+{
+    return cop::isRoughSetFilterSupportType(field_type);
 }
 
 std::unordered_map<tipb::ScalarFuncSig, FilterParser::RSFilterType> FilterParser::scalar_func_rs_filter_map{
     /*
-    {tipb::ScalarFuncSig::CastIntAsInt, "cast"},
-    {tipb::ScalarFuncSig::CastIntAsReal, "cast"},
-    {tipb::ScalarFuncSig::CastIntAsString, "cast"},
-    {tipb::ScalarFuncSig::CastIntAsDecimal, "cast"},
-    {tipb::ScalarFuncSig::CastIntAsTime, "cast"},
-    {tipb::ScalarFuncSig::CastIntAsDuration, "cast"},
-    {tipb::ScalarFuncSig::CastIntAsJson, "cast"},
+        {tipb::ScalarFuncSig::CastIntAsInt, "cast"},
+        {tipb::ScalarFuncSig::CastIntAsReal, "cast"},
+        {tipb::ScalarFuncSig::CastIntAsString, "cast"},
+        {tipb::ScalarFuncSig::CastIntAsDecimal, "cast"},
+        {tipb::ScalarFuncSig::CastIntAsTime, "cast"},
+        {tipb::ScalarFuncSig::CastIntAsDuration, "cast"},
+        {tipb::ScalarFuncSig::CastIntAsJson, "cast"},
 
-    {tipb::ScalarFuncSig::CastRealAsInt, "cast"},
-    {tipb::ScalarFuncSig::CastRealAsReal, "cast"},
-    {tipb::ScalarFuncSig::CastRealAsString, "cast"},
-    {tipb::ScalarFuncSig::CastRealAsDecimal, "cast"},
-    {tipb::ScalarFuncSig::CastRealAsTime, "cast"},
-    {tipb::ScalarFuncSig::CastRealAsDuration, "cast"},
-    {tipb::ScalarFuncSig::CastRealAsJson, "cast"},
+        {tipb::ScalarFuncSig::CastRealAsInt, "cast"},
+        {tipb::ScalarFuncSig::CastRealAsReal, "cast"},
+        {tipb::ScalarFuncSig::CastRealAsString, "cast"},
+        {tipb::ScalarFuncSig::CastRealAsDecimal, "cast"},
+        {tipb::ScalarFuncSig::CastRealAsTime, "cast"},
+        {tipb::ScalarFuncSig::CastRealAsDuration, "cast"},
+        {tipb::ScalarFuncSig::CastRealAsJson, "cast"},
 
-    {tipb::ScalarFuncSig::CastDecimalAsInt, "cast"},
-    {tipb::ScalarFuncSig::CastDecimalAsReal, "cast"},
-    {tipb::ScalarFuncSig::CastDecimalAsString, "cast"},
-    {tipb::ScalarFuncSig::CastDecimalAsDecimal, "cast"},
-    {tipb::ScalarFuncSig::CastDecimalAsTime, "cast"},
-    {tipb::ScalarFuncSig::CastDecimalAsDuration, "cast"},
-    {tipb::ScalarFuncSig::CastDecimalAsJson, "cast"},
+        {tipb::ScalarFuncSig::CastDecimalAsInt, "cast"},
+        {tipb::ScalarFuncSig::CastDecimalAsReal, "cast"},
+        {tipb::ScalarFuncSig::CastDecimalAsString, "cast"},
+        {tipb::ScalarFuncSig::CastDecimalAsDecimal, "cast"},
+        {tipb::ScalarFuncSig::CastDecimalAsTime, "cast"},
+        {tipb::ScalarFuncSig::CastDecimalAsDuration, "cast"},
+        {tipb::ScalarFuncSig::CastDecimalAsJson, "cast"},
 
-    {tipb::ScalarFuncSig::CastStringAsInt, "cast"},
-    {tipb::ScalarFuncSig::CastStringAsReal, "cast"},
-    {tipb::ScalarFuncSig::CastStringAsString, "cast"},
-    {tipb::ScalarFuncSig::CastStringAsDecimal, "cast"},
-    {tipb::ScalarFuncSig::CastStringAsTime, "cast"},
-    {tipb::ScalarFuncSig::CastStringAsDuration, "cast"},
-    {tipb::ScalarFuncSig::CastStringAsJson, "cast"},
+        {tipb::ScalarFuncSig::CastStringAsInt, "cast"},
+        {tipb::ScalarFuncSig::CastStringAsReal, "cast"},
+        {tipb::ScalarFuncSig::CastStringAsString, "cast"},
+        {tipb::ScalarFuncSig::CastStringAsDecimal, "cast"},
+        {tipb::ScalarFuncSig::CastStringAsTime, "cast"},
+        {tipb::ScalarFuncSig::CastStringAsDuration, "cast"},
+        {tipb::ScalarFuncSig::CastStringAsJson, "cast"},
 
-    {tipb::ScalarFuncSig::CastTimeAsInt, "cast"},
-    {tipb::ScalarFuncSig::CastTimeAsReal, "cast"},
-    {tipb::ScalarFuncSig::CastTimeAsString, "cast"},
-    {tipb::ScalarFuncSig::CastTimeAsDecimal, "cast"},
-    {tipb::ScalarFuncSig::CastTimeAsTime, "cast"},
-    {tipb::ScalarFuncSig::CastTimeAsDuration, "cast"},
-    {tipb::ScalarFuncSig::CastTimeAsJson, "cast"},
+        {tipb::ScalarFuncSig::CastTimeAsInt, "cast"},
+        {tipb::ScalarFuncSig::CastTimeAsReal, "cast"},
+        {tipb::ScalarFuncSig::CastTimeAsString, "cast"},
+        {tipb::ScalarFuncSig::CastTimeAsDecimal, "cast"},
+        {tipb::ScalarFuncSig::CastTimeAsTime, "cast"},
+        {tipb::ScalarFuncSig::CastTimeAsDuration, "cast"},
+        {tipb::ScalarFuncSig::CastTimeAsJson, "cast"},
 
-    {tipb::ScalarFuncSig::CastDurationAsInt, "cast"},
-    {tipb::ScalarFuncSig::CastDurationAsReal, "cast"},
-    {tipb::ScalarFuncSig::CastDurationAsString, "cast"},
-    {tipb::ScalarFuncSig::CastDurationAsDecimal, "cast"},
-    {tipb::ScalarFuncSig::CastDurationAsTime, "cast"},
-    {tipb::ScalarFuncSig::CastDurationAsDuration, "cast"},
-    {tipb::ScalarFuncSig::CastDurationAsJson, "cast"},
+        {tipb::ScalarFuncSig::CastDurationAsInt, "cast"},
+        {tipb::ScalarFuncSig::CastDurationAsReal, "cast"},
+        {tipb::ScalarFuncSig::CastDurationAsString, "cast"},
+        {tipb::ScalarFuncSig::CastDurationAsDecimal, "cast"},
+        {tipb::ScalarFuncSig::CastDurationAsTime, "cast"},
+        {tipb::ScalarFuncSig::CastDurationAsDuration, "cast"},
+        {tipb::ScalarFuncSig::CastDurationAsJson, "cast"},
 
-    {tipb::ScalarFuncSig::CastJsonAsInt, "cast"},
-    {tipb::ScalarFuncSig::CastJsonAsReal, "cast"},
-    {tipb::ScalarFuncSig::CastJsonAsString, "cast"},
-    {tipb::ScalarFuncSig::CastJsonAsDecimal, "cast"},
-    {tipb::ScalarFuncSig::CastJsonAsTime, "cast"},
-    {tipb::ScalarFuncSig::CastJsonAsDuration, "cast"},
-    {tipb::ScalarFuncSig::CastJsonAsJson, "cast"},
+        {tipb::ScalarFuncSig::CastJsonAsInt, "cast"},
+        {tipb::ScalarFuncSig::CastJsonAsReal, "cast"},
+        {tipb::ScalarFuncSig::CastJsonAsString, "cast"},
+        {tipb::ScalarFuncSig::CastJsonAsDecimal, "cast"},
+        {tipb::ScalarFuncSig::CastJsonAsTime, "cast"},
+        {tipb::ScalarFuncSig::CastJsonAsDuration, "cast"},
+        {tipb::ScalarFuncSig::CastJsonAsJson, "cast"},
 
-    {tipb::ScalarFuncSig::CoalesceInt, "coalesce"},
-    {tipb::ScalarFuncSig::CoalesceReal, "coalesce"},
-    {tipb::ScalarFuncSig::CoalesceString, "coalesce"},
-    {tipb::ScalarFuncSig::CoalesceDecimal, "coalesce"},
-    {tipb::ScalarFuncSig::CoalesceTime, "coalesce"},
-    {tipb::ScalarFuncSig::CoalesceDuration, "coalesce"},
-    {tipb::ScalarFuncSig::CoalesceJson, "coalesce"},
-    */
+        {tipb::ScalarFuncSig::CoalesceInt, "coalesce"},
+        {tipb::ScalarFuncSig::CoalesceReal, "coalesce"},
+        {tipb::ScalarFuncSig::CoalesceString, "coalesce"},
+        {tipb::ScalarFuncSig::CoalesceDecimal, "coalesce"},
+        {tipb::ScalarFuncSig::CoalesceTime, "coalesce"},
+        {tipb::ScalarFuncSig::CoalesceDuration, "coalesce"},
+        {tipb::ScalarFuncSig::CoalesceJson, "coalesce"},
+        */
 
     {tipb::ScalarFuncSig::LTInt, FilterParser::RSFilterType::Less},
     {tipb::ScalarFuncSig::LTReal, FilterParser::RSFilterType::Less},
@@ -595,13 +675,13 @@ std::unordered_map<tipb::ScalarFuncSig, FilterParser::RSFilterType> FilterParser
     // {tipb::ScalarFuncSig::UnaryMinusReal, "negate"},
     // {tipb::ScalarFuncSig::UnaryMinusDecimal, "negate"},
 
-    // {tipb::ScalarFuncSig::DecimalIsNull, "isNull"},
-    // {tipb::ScalarFuncSig::DurationIsNull, "isNull"},
-    // {tipb::ScalarFuncSig::RealIsNull, "isNull"},
-    // {tipb::ScalarFuncSig::StringIsNull, "isNull"},
-    // {tipb::ScalarFuncSig::TimeIsNull, "isNull"},
-    // {tipb::ScalarFuncSig::IntIsNull, "isNull"},
-    // {tipb::ScalarFuncSig::JsonIsNull, "isNull"},
+    {tipb::ScalarFuncSig::DecimalIsNull, FilterParser::RSFilterType::IsNull},
+    {tipb::ScalarFuncSig::DurationIsNull, FilterParser::RSFilterType::IsNull},
+    {tipb::ScalarFuncSig::RealIsNull, FilterParser::RSFilterType::IsNull},
+    {tipb::ScalarFuncSig::StringIsNull, FilterParser::RSFilterType::IsNull},
+    {tipb::ScalarFuncSig::TimeIsNull, FilterParser::RSFilterType::IsNull},
+    {tipb::ScalarFuncSig::IntIsNull, FilterParser::RSFilterType::IsNull},
+    {tipb::ScalarFuncSig::JsonIsNull, FilterParser::RSFilterType::IsNull},
 
     //{tipb::ScalarFuncSig::BitAndSig, "cast"},
     //{tipb::ScalarFuncSig::BitOrSig, "cast"},
@@ -630,12 +710,12 @@ std::unordered_map<tipb::ScalarFuncSig, FilterParser::RSFilterType> FilterParser
     //{tipb::ScalarFuncSig::ValuesString, "cast"},
     //{tipb::ScalarFuncSig::ValuesTime, "cast"},
 
-    // {tipb::ScalarFuncSig::InInt, "in"},
-    // {tipb::ScalarFuncSig::InReal, "in"},
-    // {tipb::ScalarFuncSig::InString, "in"},
-    // {tipb::ScalarFuncSig::InDecimal, "in"},
-    // {tipb::ScalarFuncSig::InTime, "in"},
-    // {tipb::ScalarFuncSig::InDuration, "in"},
+    {tipb::ScalarFuncSig::InInt, FilterParser::RSFilterType::In},
+    {tipb::ScalarFuncSig::InReal, FilterParser::RSFilterType::In},
+    {tipb::ScalarFuncSig::InString, FilterParser::RSFilterType::In},
+    {tipb::ScalarFuncSig::InDecimal, FilterParser::RSFilterType::In},
+    {tipb::ScalarFuncSig::InTime, FilterParser::RSFilterType::In},
+    {tipb::ScalarFuncSig::InDuration, FilterParser::RSFilterType::In},
     // {tipb::ScalarFuncSig::InJson, "in"},
 
     // {tipb::ScalarFuncSig::IfNullInt, "ifNull"},

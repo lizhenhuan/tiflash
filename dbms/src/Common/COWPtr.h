@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Common/COWPtr.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -102,7 +104,10 @@ private:
         using boost::intrusive_ptr<T>::intrusive_ptr;
 
         T & operator*() const & { return boost::intrusive_ptr<T>::operator*(); }
-        T && operator*() const && { return const_cast<typename std::remove_const<T>::type &&>(*boost::intrusive_ptr<T>::get()); }
+        T && operator*() const &&
+        {
+            return const_cast<typename std::remove_const<T>::type &&>(*boost::intrusive_ptr<T>::get());
+        }
     };
 
 protected:
@@ -222,15 +227,9 @@ public:
             return assumeMutable();
     }
 
-    MutablePtr assumeMutable() const
-    {
-        return const_cast<COWPtr *>(this)->getPtr();
-    }
+    MutablePtr assumeMutable() const { return const_cast<COWPtr *>(this)->getPtr(); }
 
-    Derived & assumeMutableRef() const
-    {
-        return const_cast<Derived &>(*derived());
-    }
+    Derived & assumeMutableRef() const { return const_cast<Derived &>(*derived()); }
 };
 
 

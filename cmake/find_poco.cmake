@@ -1,4 +1,6 @@
-# Copyright 2022 PingCAP, Ltd.
+# Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/cmake/find_poco.cmake
+#
+# Copyright 2023 PingCAP, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -23,7 +25,7 @@ if (NOT EXISTS "${TiFlash_SOURCE_DIR}/contrib/poco/CMakeLists.txt")
 endif ()
 
 if (NOT USE_INTERNAL_POCO_LIBRARY)
-    find_package (Poco COMPONENTS Net NetSSL XML SQL Data Crypto DataODBC MongoDB)
+    find_package (Poco COMPONENTS Net NetSSL SQL Data Crypto DataODBC MongoDB)
 endif ()
 
 if (Poco_INCLUDE_DIRS AND Poco_Foundation_LIBRARY)
@@ -87,10 +89,9 @@ elseif (NOT MISSING_INTERNAL_POCO_LIBRARY)
     set (Poco_Foundation_LIBRARY PocoFoundation)
     set (Poco_Util_LIBRARY PocoUtil)
     set (Poco_Net_LIBRARY PocoNet)
-    set (Poco_XML_LIBRARY PocoXML)
 endif ()
 
-message(STATUS "Using Poco: ${Poco_INCLUDE_DIRS} : ${Poco_Foundation_LIBRARY},${Poco_Util_LIBRARY},${Poco_Net_LIBRARY},${Poco_NetSSL_LIBRARY},${Poco_XML_LIBRARY},${Poco_Data_LIBRARY},${Poco_DataODBC_LIBRARY},${Poco_MongoDB_LIBRARY}; MongoDB=${Poco_MongoDB_FOUND}, DataODBC=${Poco_DataODBC_FOUND}, NetSSL=${Poco_NetSSL_FOUND}")
+message(STATUS "Using Poco: ${Poco_INCLUDE_DIRS} : ${Poco_Foundation_LIBRARY},${Poco_Util_LIBRARY},${Poco_Net_LIBRARY},${Poco_NetSSL_LIBRARY},${Poco_Data_LIBRARY},${Poco_DataODBC_LIBRARY},${Poco_MongoDB_LIBRARY}; MongoDB=${Poco_MongoDB_FOUND}, DataODBC=${Poco_DataODBC_FOUND}, NetSSL=${Poco_NetSSL_FOUND}")
 
 # How to make sutable poco:
 # use branch:

@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/DataStreams/verbosePrintString.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,8 +14,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <DataStreams/verbosePrintString.h>
 #include <Common/hex.h>
+#include <DataStreams/verbosePrintString.h>
 #include <IO/Operators.h>
 
 
@@ -30,49 +32,49 @@ void verbosePrintString(const char * begin, const char * end, WriteBuffer & out)
 
     out << "\"";
 
-    for (auto pos = begin; pos < end; ++pos)
+    for (const auto * pos = begin; pos < end; ++pos)
     {
         switch (*pos)
         {
-            case '\0':
-                out << "<ASCII NUL>";
-                break;
-            case '\b':
-                out << "<BACKSPACE>";
-                break;
-            case '\f':
-                out << "<FORM FEED>";
-                break;
-            case '\n':
-                out << "<LINE FEED>";
-                break;
-            case '\r':
-                out << "<CARRIAGE RETURN>";
-                break;
-            case '\t':
-                out << "<TAB>";
-                break;
-            case '\\':
-                out << "<BACKSLASH>";
-                break;
-            case '"':
-                out << "<DOUBLE QUOTE>";
-                break;
-            case '\'':
-                out << "<SINGLE QUOTE>";
-                break;
+        case '\0':
+            out << "<ASCII NUL>";
+            break;
+        case '\b':
+            out << "<BACKSPACE>";
+            break;
+        case '\f':
+            out << "<FORM FEED>";
+            break;
+        case '\n':
+            out << "<LINE FEED>";
+            break;
+        case '\r':
+            out << "<CARRIAGE RETURN>";
+            break;
+        case '\t':
+            out << "<TAB>";
+            break;
+        case '\\':
+            out << "<BACKSLASH>";
+            break;
+        case '"':
+            out << "<DOUBLE QUOTE>";
+            break;
+        case '\'':
+            out << "<SINGLE QUOTE>";
+            break;
 
-            default:
-            {
-                if (static_cast<unsigned char>(*pos) < 32)  /// ASCII control characters
-                    out << "<0x" << hexDigitUppercase(*pos / 16) << hexDigitUppercase(*pos % 16) << ">";
-                else
-                    out << *pos;
-            }
+        default:
+        {
+            if (static_cast<unsigned char>(*pos) < 32) /// ASCII control characters
+                out << "<0x" << hexDigitUppercase(*pos / 16) << hexDigitUppercase(*pos % 16) << ">";
+            else
+                out << *pos;
+        }
         }
     }
 
     out << "\"";
 }
 
-}
+} // namespace DB

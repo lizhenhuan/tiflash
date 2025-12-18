@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Dictionaries/IDictionarySource.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,6 +17,7 @@
 #pragma once
 
 #include <DataStreams/IBlockInputStream.h>
+
 #include <vector>
 
 namespace DB
@@ -50,8 +53,7 @@ public:
       * `requested_rows` contains indices of all rows containing unique keys.
       * It must be guaranteed, that 'requested_rows' array will live at least until all data will be read from returned stream.
       */
-    virtual BlockInputStreamPtr loadKeys(
-        const Columns & key_columns, const std::vector<size_t> & requested_rows) = 0;
+    virtual BlockInputStreamPtr loadKeys(const Columns & key_columns, const std::vector<size_t> & requested_rows) = 0;
 
     /// indicates whether the source has been modified since last load* operation
     virtual bool isModified() const = 0;
@@ -67,4 +69,4 @@ public:
     virtual ~IDictionarySource() = default;
 };
 
-}
+} // namespace DB

@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/DataStreams/AsynchronousBlockInputStream.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,7 +18,6 @@
 
 #include <Common/CurrentMetrics.h>
 #include <Common/MemoryTracker.h>
-#include <Common/setThreadName.h>
 #include <Common/wrapInvocable.h>
 #include <DataStreams/IProfilingBlockInputStream.h>
 #include <Poco/Event.h>
@@ -35,10 +36,7 @@ namespace DB
 class AsynchronousBlockInputStream : public IProfilingBlockInputStream
 {
 public:
-    AsynchronousBlockInputStream(const BlockInputStreamPtr & in)
-    {
-        children.push_back(in);
-    }
+    AsynchronousBlockInputStream(const BlockInputStreamPtr & in) { children.push_back(in); }
 
     String getName() const override { return "Asynchronous"; }
 
@@ -90,7 +88,7 @@ public:
     }
 
 protected:
-    ThreadPool pool{1};
+    legacy::ThreadPool pool{1};
     Poco::Event ready;
     bool started = false;
     bool first = true;

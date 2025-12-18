@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/libs/libcommon/include/common/ErrorHandlers.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -26,9 +28,9 @@
 class KillingErrorHandler : public Poco::ErrorHandler
 {
 public:
-    void exception(const Poco::Exception &) { std::terminate(); }
-    void exception(const std::exception &) { std::terminate(); }
-    void exception() { std::terminate(); }
+    void exception(const Poco::Exception &) override { std::terminate(); }
+    void exception(const std::exception &) override { std::terminate(); }
+    void exception() override { std::terminate(); }
 };
 
 
@@ -37,15 +39,12 @@ public:
 class ServerErrorHandler : public Poco::ErrorHandler
 {
 public:
-    void exception(const Poco::Exception &) { logException(); }
-    void exception(const std::exception &) { logException(); }
-    void exception() { logException(); }
+    void exception(const Poco::Exception &) override { logException(); }
+    void exception(const std::exception &) override { logException(); }
+    void exception() override { logException(); }
 
 private:
     Poco::Logger * log = &Poco::Logger::get("ServerErrorHandler");
 
-    void logException()
-    {
-        DB::tryLogCurrentException(log);
-    }
+    void logException() { DB::tryLogCurrentException(log); }
 };

@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Parsers/ParserRenameQuery.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,8 +16,8 @@
 
 #pragma once
 
-#include <Parsers/IParserBase.h>
 #include <Parsers/ExpressionElementParsers.h>
+#include <Parsers/IParserBase.h>
 
 
 namespace DB
@@ -32,4 +34,4 @@ protected:
     bool parseImpl(Pos & pos, ASTPtr & node, Expected & expected);
 };
 
-}
+} // namespace DB

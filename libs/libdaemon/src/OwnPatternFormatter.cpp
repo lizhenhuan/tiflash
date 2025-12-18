@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/libs/libdaemon/src/OwnPatternFormatter.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,15 +14,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <daemon/OwnPatternFormatter.h>
-
-#include <functional>
-#include <IO/WriteBufferFromString.h>
+#include <IO/Buffer/WriteBufferFromString.h>
 #include <IO/WriteHelpers.h>
-#include <optional>
-#include <sys/time.h>
 #include <Poco/Ext/ThreadNumber.h>
 #include <daemon/BaseDaemon.h>
+#include <daemon/OwnPatternFormatter.h>
+#include <sys/time.h>
+
+#include <functional>
+#include <optional>
 
 
 void OwnPatternFormatter::format(const Poco::Message & msg, std::string & text)
@@ -40,7 +42,7 @@ void OwnPatternFormatter::format(const Poco::Message & msg, std::string & text)
     }
 
     /// Output time with microsecond resolution.
-    timeval tv;
+    timeval tv{};
     if (0 != gettimeofday(&tv, nullptr))
         DB::throwFromErrno("Cannot gettimeofday");
 

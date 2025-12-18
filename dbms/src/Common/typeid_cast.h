@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Common/typeid_cast.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -42,8 +44,9 @@ std::enable_if_t<std::is_reference_v<To>, To> typeid_cast(From & from)
     if (typeid(from) == typeid(To))
         return static_cast<To>(from);
     else
-        throw DB::Exception("Bad cast from type " + demangle(typeid(from).name()) + " to " + demangle(typeid(To).name()),
-                            DB::ErrorCodes::BAD_CAST);
+        throw DB::Exception(
+            "Bad cast from type " + demangle(typeid(from).name()) + " to " + demangle(typeid(To).name()),
+            DB::ErrorCodes::BAD_CAST);
 }
 
 template <typename To, typename From>

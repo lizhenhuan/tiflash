@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Parsers/ParserSelectQuery.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,26 +14,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <memory>
-#include <Parsers/ASTSelectQuery.h>
 #include <Parsers/ASTIdentifier.h>
-#include <Parsers/IParserBase.h>
+#include <Parsers/ASTSelectQuery.h>
 #include <Parsers/CommonParsers.h>
 #include <Parsers/ExpressionElementParsers.h>
 #include <Parsers/ExpressionListParsers.h>
-#include <Parsers/ParserSetQuery.h>
+#include <Parsers/IParserBase.h>
+#include <Parsers/ParserPartition.h>
 #include <Parsers/ParserSampleRatio.h>
 #include <Parsers/ParserSelectQuery.h>
+#include <Parsers/ParserSetQuery.h>
 #include <Parsers/ParserTablesInSelectQuery.h>
-#include <Parsers/ParserPartition.h>
+
+#include <memory>
 
 
 namespace DB
 {
-
 namespace ErrorCodes
 {
-    extern const int SYNTAX_ERROR;
+extern const int SYNTAX_ERROR;
 }
 
 
@@ -47,7 +49,6 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
     ParserKeyword s_from("FROM");
     ParserKeyword s_partition("PARTITION");
     ParserKeyword s_segment("SEGMENT");
-    ParserKeyword s_prewhere("PREWHERE");
     ParserKeyword s_where("WHERE");
     ParserKeyword s_group_by("GROUP BY");
     ParserKeyword s_with("WITH");
@@ -59,8 +60,10 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
     ParserKeyword s_by("BY");
 
     ParserNotEmptyExpressionList exp_list(false);
-    ParserNotEmptyExpressionList exp_list_for_with_clause(false, true); /// Set prefer_alias_to_column_name for each alias.
-    ParserNotEmptyExpressionList exp_list_for_select_clause(true);    /// Allows aliases without AS keyword.
+    ParserNotEmptyExpressionList exp_list_for_with_clause(
+        false,
+        true); /// Set prefer_alias_to_column_name for each alias.
+    ParserNotEmptyExpressionList exp_list_for_select_clause(true); /// Allows aliases without AS keyword.
     ParserExpressionWithOptionalAlias exp_elem(false);
     ParserOrderByExpressionList order_list;
 
@@ -112,13 +115,6 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
             return false;
     }
 
-    /// PREWHERE expr
-    if (s_prewhere.ignore(pos, expected))
-    {
-        if (!exp_elem.parse(pos, select_query->prewhere_expression, expected))
-            return false;
-    }
-
     /// WHERE expr
     if (s_where.ignore(pos, expected))
     {
@@ -139,7 +135,7 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
         if (!s_totals.ignore(pos, expected))
             return false;
 
-        select_query->group_by_with_totals = true;
+        throw Exception("WITH TOTALS is no longer supported");
     }
 
     /// HAVING expr
@@ -215,8 +211,6 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
     select_query->children.push_back(select_query->select_expression_list);
     if (select_query->tables)
         select_query->children.push_back(select_query->tables);
-    if (select_query->prewhere_expression)
-        select_query->children.push_back(select_query->prewhere_expression);
     if (select_query->where_expression)
         select_query->children.push_back(select_query->where_expression);
     if (select_query->group_expression_list)
@@ -239,4 +233,4 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
     return true;
 }
 
-}
+} // namespace DB

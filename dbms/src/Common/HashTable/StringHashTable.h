@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,10 +16,10 @@
 
 #include <Common/HashTable/HashMap.h>
 #include <Common/HashTable/HashTable.h>
+#include <IO/Endian.h>
 
 #include <new>
 #include <variant>
-
 
 using StringKey8 = UInt64;
 using StringKey16 = DB::UInt128;
@@ -50,46 +50,51 @@ inline StringRef ALWAYS_INLINE toStringRef(const StringKey24 & n)
 
 struct StringHashTableHash
 {
+#if defined(__SSE4_2__) || (defined(__aarch64__) && defined(__ARM_FEATURE_CRC32))
+    static inline UInt32 crc32U64(UInt32 crc, UInt64 data)
+    {
 #if defined(__SSE4_2__)
-    size_t ALWAYS_INLINE operator()(StringKey8 key) const
+        return _mm_crc32_u64(crc, data);
+#elif defined(__aarch64__)
+        return __crc32cd(crc, data);
+#endif
+    }
+    static size_t ALWAYS_INLINE operator()(StringKey8 key)
     {
         size_t res = -1ULL;
-        res = _mm_crc32_u64(res, key);
+        res = crc32U64(res, key);
         return res;
     }
-    size_t ALWAYS_INLINE operator()(const StringKey16 & key) const
+    static size_t ALWAYS_INLINE operator()(const StringKey16 & key)
     {
         size_t res = -1ULL;
-        res = _mm_crc32_u64(res, key.low);
-        res = _mm_crc32_u64(res, key.high);
+        res = crc32U64(res, key.low);
+        res = crc32U64(res, key.high);
         return res;
     }
-    size_t ALWAYS_INLINE operator()(const StringKey24 & key) const
+    static size_t ALWAYS_INLINE operator()(const StringKey24 & key)
     {
         size_t res = -1ULL;
-        res = _mm_crc32_u64(res, key.a);
-        res = _mm_crc32_u64(res, key.b);
-        res = _mm_crc32_u64(res, key.c);
+        res = crc32U64(res, key.a);
+        res = crc32U64(res, key.b);
+        res = crc32U64(res, key.c);
         return res;
     }
 #else
-    size_t ALWAYS_INLINE operator()(StringKey8 key) const
+    static size_t ALWAYS_INLINE operator()(StringKey8 key)
     {
         return CityHash_v1_0_2::CityHash64(reinterpret_cast<const char *>(&key), 8);
     }
-    size_t ALWAYS_INLINE operator()(const StringKey16 & key) const
+    static size_t ALWAYS_INLINE operator()(const StringKey16 & key)
     {
         return CityHash_v1_0_2::CityHash64(reinterpret_cast<const char *>(&key), 16);
     }
-    size_t ALWAYS_INLINE operator()(const StringKey24 & key) const
+    static size_t ALWAYS_INLINE operator()(const StringKey24 & key)
     {
         return CityHash_v1_0_2::CityHash64(reinterpret_cast<const char *>(&key), 24);
     }
 #endif
-    size_t ALWAYS_INLINE operator()(StringRef key) const
-    {
-        return StringRefHash()(key);
-    }
+    static size_t ALWAYS_INLINE operator()(StringRef key) { return StringRefHash()(key); }
 };
 
 template <typename Cell>
@@ -153,6 +158,7 @@ public:
         return hasZero() ? zeroValue() : nullptr;
     }
 
+    ALWAYS_INLINE inline void prefetch(size_t) {}
     void write(DB::WriteBuffer & wb) const { zeroValue()->write(wb); }
     void writeText(DB::WriteBuffer & wb) const { zeroValue()->writeText(wb); }
     void read(DB::ReadBuffer & rb) { zeroValue()->read(rb); }
@@ -160,6 +166,8 @@ public:
     size_t size() const { return hasZero() ? 1 : 0; }
     bool empty() const { return !hasZero(); }
     size_t getBufferSizeInBytes() const { return sizeof(Cell); }
+    size_t getBufferSizeInCells() const { return 1; }
+    void setResizeCallback(const ResizeCallback &) {}
     size_t getCollisions() const { return 0; }
 };
 
@@ -197,6 +205,8 @@ class StringHashTable : private boost::noncopyable
 {
 protected:
     static constexpr size_t NUM_MAPS = 5;
+    using Self = StringHashTable;
+
     // Map for storing empty string
     using T0 = typename SubMaps::T0;
 
@@ -207,7 +217,6 @@ protected:
 
     // Long strings are stored as StringRef along with saved hash
     using Ts = typename SubMaps::Ts;
-    using Self = StringHashTable;
 
     template <typename, typename, size_t>
     friend class TwoLevelStringHashTable;
@@ -228,6 +237,9 @@ public:
     using LookupResult = StringHashTableLookupResult<typename cell_type::mapped_type>;
     using ConstLookupResult = StringHashTableLookupResult<const typename cell_type::mapped_type>;
 
+    static constexpr bool is_string_hash_map = true;
+    static constexpr bool is_two_level = false;
+
     StringHashTable() = default;
 
     explicit StringHashTable(size_t reserve_for_num_elements)
@@ -235,16 +247,14 @@ public:
         , m2{reserve_for_num_elements / 4}
         , m3{reserve_for_num_elements / 4}
         , ms{reserve_for_num_elements / 4}
-    {
-    }
+    {}
 
     StringHashTable(StringHashTable && rhs)
         : m1(std::move(rhs.m1))
         , m2(std::move(rhs.m2))
         , m3(std::move(rhs.m3))
         , ms(std::move(rhs.ms))
-    {
-    }
+    {}
 
     ~StringHashTable() = default;
 
@@ -252,11 +262,15 @@ public:
     // 1. Always memcpy 8 times bytes
     // 2. Use switch case extension to generate fast dispatching table
     // 3. Funcs are named callables that can be force_inlined
-    // NOTE: It relies on Little Endianness
     template <typename Self, typename KeyHolder, typename Func>
-    static auto ALWAYS_INLINE dispatch(Self & self, KeyHolder && key_holder, Func && func)
+    static auto
+#if defined(ADDRESS_SANITIZER) || defined(THREAD_SANITIZER)
+        NO_INLINE NO_SANITIZE_ADDRESS NO_SANITIZE_THREAD
+#else
+        ALWAYS_INLINE
+#endif
+        dispatch(Self & self, KeyHolder && key_holder, Func && func)
     {
-        StringHashTableHash hash;
         const StringRef & x = keyHolderGetKey(key_holder);
         const size_t sz = x.size;
         if (sz == 0)
@@ -269,7 +283,7 @@ public:
         {
             // Strings with trailing zeros are not representable as fixed-size
             // string keys. Put them to the generic table.
-            return func(self.ms, std::forward<KeyHolder>(key_holder), hash(x));
+            return func(self.ms, std::forward<KeyHolder>(key_holder), StringHashTableHash::operator()(x));
         }
 
         const char * p = x.data;
@@ -290,38 +304,50 @@ public:
             if ((reinterpret_cast<uintptr_t>(p) & 2048) == 0)
             {
                 memcpy(&n[0], p, 8);
-                n[0] &= -1ul >> s;
+                if constexpr (DB::isLittleEndian())
+                    n[0] &= (-1ULL >> s);
+                else
+                    n[0] &= (-1ULL << s);
             }
             else
             {
                 const char * lp = x.data + x.size - 8;
                 memcpy(&n[0], lp, 8);
-                n[0] >>= s;
+                if constexpr (DB::isLittleEndian())
+                    n[0] >>= s;
+                else
+                    n[0] <<= s;
             }
             keyHolderDiscardKey(key_holder);
-            return func(self.m1, k8, hash(k8));
+            return func(self.m1, k8, StringHashTableHash::operator()(k8));
         }
         case 1: // 9..16 bytes
         {
             memcpy(&n[0], p, 8);
             const char * lp = x.data + x.size - 8;
             memcpy(&n[1], lp, 8);
-            n[1] >>= s;
+            if constexpr (DB::isLittleEndian())
+                n[1] >>= s;
+            else
+                n[1] <<= s;
             keyHolderDiscardKey(key_holder);
-            return func(self.m2, k16, hash(k16));
+            return func(self.m2, k16, StringHashTableHash::operator()(k16));
         }
         case 2: // 17..24 bytes
         {
             memcpy(&n[0], p, 16);
             const char * lp = x.data + x.size - 8;
             memcpy(&n[2], lp, 8);
-            n[2] >>= s;
+            if constexpr (DB::isLittleEndian())
+                n[2] >>= s;
+            else
+                n[2] <<= s;
             keyHolderDiscardKey(key_holder);
-            return func(self.m3, k24, hash(k24));
+            return func(self.m3, k24, StringHashTableHash::operator()(k24));
         }
         default: // >= 25 bytes
         {
-            return func(self.ms, std::forward<KeyHolder>(key_holder), hash(x));
+            return func(self.ms, std::forward<KeyHolder>(key_holder), StringHashTableHash::operator()(x));
         }
         }
     }
@@ -367,20 +393,11 @@ public:
         }
     };
 
-    LookupResult ALWAYS_INLINE find(const Key & x)
-    {
-        return dispatch(*this, x, FindCallable{});
-    }
+    LookupResult ALWAYS_INLINE find(const Key & x) { return dispatch(*this, x, FindCallable{}); }
 
-    ConstLookupResult ALWAYS_INLINE find(const Key & x) const
-    {
-        return dispatch(*this, x, FindCallable{});
-    }
+    ConstLookupResult ALWAYS_INLINE find(const Key & x) const { return dispatch(*this, x, FindCallable{}); }
 
-    bool ALWAYS_INLINE has(const Key & x, size_t = 0) const
-    {
-        return dispatch(*this, x, FindCallable{}) != nullptr;
-    }
+    bool ALWAYS_INLINE has(const Key & x, size_t = 0) const { return dispatch(*this, x, FindCallable{}) != nullptr; }
 
     void write(DB::WriteBuffer & wb) const
     {
@@ -430,10 +447,24 @@ public:
 
     bool empty() const { return m0.empty() && m1.empty() && m2.empty() && m3.empty() && ms.empty(); }
 
+    size_t getBufferSizeInCells() const
+    {
+        return m0.getBufferSizeInCells() + m1.getBufferSizeInCells() + m2.getBufferSizeInCells()
+            + m3.getBufferSizeInCells() + ms.getBufferSizeInCells();
+    }
     size_t getBufferSizeInBytes() const
     {
-        return m0.getBufferSizeInBytes() + m1.getBufferSizeInBytes() + m2.getBufferSizeInBytes() + m3.getBufferSizeInBytes()
-            + ms.getBufferSizeInBytes();
+        return m0.getBufferSizeInBytes() + m1.getBufferSizeInBytes() + m2.getBufferSizeInBytes()
+            + m3.getBufferSizeInBytes() + ms.getBufferSizeInBytes();
+    }
+
+    void setResizeCallback(const ResizeCallback & resize_callback)
+    {
+        m0.setResizeCallback(resize_callback);
+        m1.setResizeCallback(resize_callback);
+        m2.setResizeCallback(resize_callback);
+        m3.setResizeCallback(resize_callback);
+        ms.setResizeCallback(resize_callback);
     }
 
     void clearAndShrink()

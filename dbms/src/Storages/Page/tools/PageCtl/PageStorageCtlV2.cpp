@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,27 +12,31 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <Encryption/MockKeyManager.h>
+#include <Common/Exception.h>
+#include <IO/Encryption/MockKeyManager.h>
 #include <Poco/ConsoleChannel.h>
 #include <Poco/FormattingChannel.h>
 #include <Poco/Logger.h>
 #include <Poco/PatternFormatter.h>
 #include <Poco/Runnable.h>
-#include <Poco/ThreadPool.h>
 #include <Poco/Timer.h>
+#include <Storages/BackgroundProcessingPool.h>
 #include <Storages/Page/V2/PageStorage.h>
 #include <Storages/Page/V2/gc/DataCompactor.h>
-#include <Storages/Page/WriteBatch.h>
+#include <Storages/Page/WriteBatchImpl.h>
 #include <Storages/PathPool.h>
 #include <TestUtils/MockDiskDelegator.h>
+
+#include <magic_enum.hpp>
 
 using namespace DB::PS::V2;
 DB::WriteBatch::SequenceID debugging_recover_stop_sequence = 0;
 
 void Usage()
 {
-    fprintf(stderr,
-            R"HELP(
+    fprintf(
+        stderr,
+        R"HELP(
 Usage: <path> <mode>
     mode == 1 -> dump all page entries
             2 -> dump valid page entries
@@ -45,17 +49,18 @@ Usage: <path> <mode>
             )HELP");
 }
 
-void printPageEntry(const DB::PageId pid, const DB::PageEntry & entry)
+void printPageEntry(const DB::PageIdU64 pid, const DB::PageEntry & entry)
 {
-    printf("\tpid:%9lld\t\t"
-           "%9llu\t%9u\t%9u\t%9llu\t%9llu\t%016llx\n",
-           pid, //
-           entry.file_id,
-           entry.level,
-           entry.size,
-           entry.offset,
-           entry.tag,
-           entry.checksum);
+    printf(
+        "\tpid:%9llu\t\t"
+        "%9llu\t%9u\t%9llu\t%9llu\t%9llu\t%016llu\n",
+        pid, //
+        entry.file_id,
+        entry.level,
+        entry.size,
+        entry.offset,
+        entry.tag,
+        entry.checksum);
 }
 
 enum DebugMode
@@ -70,11 +75,11 @@ enum DebugMode
 };
 
 void dump_all_entries(PageFileSet & page_files, int32_t mode = DebugMode::DUMP_ALL_ENTRIES);
-void list_all_capacity(const PageFileSet & page_files, PageStorage & storage, const PageStorage::Config & config);
+void list_all_capacity(const PageFileSet & page_files, PageStorage & storage, const DB::PageStorageConfig & config);
 
-PageStorage::Config parse_storage_config(int argc, char ** argv, Poco::Logger * logger)
+DB::PageStorageConfig parse_storage_config(int argc, char ** argv, DB::LoggerPtr logger)
 {
-    PageStorage::Config config;
+    DB::PageStorageConfig config;
     if (argc > 4)
     {
         size_t num = strtoull(argv[4], nullptr, 10);
@@ -95,7 +100,7 @@ PageStorage::Config parse_storage_config(int argc, char ** argv, Poco::Logger * 
         config.gc_max_valid_rate = n;
     }
 
-    LOG_FMT_INFO(
+    LOG_INFO(
         logger,
         "[gc_min_files={}] [gc_min_bytes={}] [gc_max_valid_rate={:.3f}]",
         config.gc_min_files,
@@ -127,7 +132,7 @@ try
     DB::String mode_str = argv[2];
     int32_t mode = strtol(mode_str.c_str(), nullptr, 10);
 
-    Poco::Logger * logger = &Poco::Logger::get("root");
+    DB::LoggerPtr logger = DB::Logger::get("root");
 
     switch (mode)
     {
@@ -137,7 +142,7 @@ try
     case LIST_ALL_CAPACITY:
     case LIST_ALL_PAGE_FILE:
     case RUN_GC:
-        LOG_FMT_INFO(logger, "Running with [mode={}]", mode);
+        LOG_INFO(logger, "Running with [mode={}]", mode);
         break;
     default:
         Usage();
@@ -173,8 +178,12 @@ try
         return 0;
     }
 
-    PageStorage::Config config = parse_storage_config(argc, argv, logger);
-    PageStorage storage("PageCtl", delegator, config, file_provider);
+    auto bkg_pool = std::make_shared<DB::BackgroundProcessingPool>(
+        4,
+        "bg-page-",
+        std::make_shared<DB::JointThreadInfoJeallocMap>());
+    DB::PageStorageConfig config = parse_storage_config(argc, argv, logger);
+    PageStorage storage("PageCtl", delegator, config, file_provider, *bkg_pool);
     storage.restore();
     switch (mode)
     {
@@ -203,9 +212,9 @@ try
         }
         for (Int64 idx = 0; num_gc == -1 || idx < num_gc; ++idx)
         {
-            LOG_FMT_INFO(logger, "Running GC, [round={}] [num_gc={}]", (idx + 1), num_gc);
+            LOG_INFO(logger, "Running GC, [round={}] [num_gc={}]", (idx + 1), num_gc);
             storage.gcImpl(/*not_skip=*/true, nullptr, nullptr);
-            LOG_FMT_INFO(logger, "Run GC done, [round={}] [num_gc={}]", (idx + 1), num_gc);
+            LOG_INFO(logger, "Run GC done, [round={}] [num_gc={}]", (idx + 1), num_gc);
         }
         break;
     }
@@ -218,11 +227,9 @@ catch (const DB::Exception & e)
     std::string text = e.displayText();
 
     auto embedded_stack_trace_pos = text.find("Stack trace");
-    std::cerr << "Code: " << e.code() << ". " << text << std::endl
-              << std::endl;
+    std::cerr << "Code: " << e.code() << ". " << text << std::endl << std::endl;
     if (std::string::npos == embedded_stack_trace_pos)
-        std::cerr << "Stack trace:" << std::endl
-                  << e.getStackTrace().toString() << std::endl;
+        std::cerr << "Stack trace:" << std::endl << e.getStackTrace().toString() << std::endl;
 
     return -1;
 }
@@ -232,7 +239,7 @@ void dump_all_entries(PageFileSet & page_files, int32_t mode)
     for (const auto & page_file : page_files)
     {
         PageEntriesEdit edit;
-        DB::PageIdAndEntries id_and_caches;
+        DB::PageIdU64AndEntries id_and_caches;
 
         auto reader = PageFile::MetaMergingReader::createFrom(const_cast<PageFile &>(page_file));
 
@@ -246,29 +253,37 @@ void dump_all_entries(PageFileSet & page_files, int32_t mode)
                 printf("%s\tseq: %9llu\t", page_file.toString().c_str(), sequence);
                 switch (record.type)
                 {
-                case DB::WriteBatch::WriteType::PUT_EXTERNAL:
-                case DB::WriteBatch::WriteType::PUT:
+                case DB::WriteBatchWriteType::PUT_EXTERNAL:
+                case DB::WriteBatchWriteType::PUT:
                     printf("PUT");
                     printPageEntry(record.page_id, record.entry);
                     id_and_caches.emplace_back(std::make_pair(record.page_id, record.entry));
                     break;
-                case DB::WriteBatch::WriteType::UPSERT:
+                case DB::WriteBatchWriteType::UPSERT:
                     printf("UPSERT");
                     printPageEntry(record.page_id, record.entry);
                     id_and_caches.emplace_back(std::make_pair(record.page_id, record.entry));
                     break;
-                case DB::WriteBatch::WriteType::DEL:
-                    printf("DEL\t%lld\t%llu\t%u\n", //
-                           record.page_id,
-                           page_file.getFileId(),
-                           page_file.getLevel());
+                case DB::WriteBatchWriteType::DEL:
+                    printf(
+                        "DEL\t%llu\t%llu\t%u\n", //
+                        record.page_id,
+                        page_file.getFileId(),
+                        page_file.getLevel());
                     break;
-                case DB::WriteBatch::WriteType::REF:
-                    printf("REF\t%lld\t%lld\t\t%llu\t%u\n", //
-                           record.page_id,
-                           record.ori_page_id,
-                           page_file.getFileId(),
-                           page_file.getLevel());
+                case DB::WriteBatchWriteType::REF:
+                    printf(
+                        "REF\t%llu\t%llu\t\t%llu\t%u\n", //
+                        record.page_id,
+                        record.ori_page_id,
+                        page_file.getFileId(),
+                        page_file.getLevel());
+                    break;
+                default:
+                    throw DB::Exception(
+                        DB::ErrorCodes::LOGICAL_ERROR,
+                        "illegal type: {}",
+                        magic_enum::enum_name(record.type));
                     break;
                 }
             }
@@ -292,7 +307,7 @@ void dump_all_entries(PageFileSet & page_files, int32_t mode)
     }
 }
 
-void list_all_capacity(const PageFileSet & page_files, PageStorage & storage, const PageStorage::Config & config)
+void list_all_capacity(const PageFileSet & page_files, PageStorage & storage, const DB::PageStorageConfig & config)
 {
     static constexpr double MB = 1.0 * 1024 * 1024;
 
@@ -318,7 +333,7 @@ void list_all_capacity(const PageFileSet & page_files, PageStorage & storage, co
 
         const size_t total_size = page_file.getDataFileSize();
         size_t valid_size = 0;
-        DB::PageIdSet valid_pages;
+        DB::PageIdU64Set valid_pages;
         if (auto iter = file_valid_pages.find(page_file.fileIdLevel()); iter != file_valid_pages.end())
         {
             valid_size = iter->second.first;
@@ -327,15 +342,16 @@ void list_all_capacity(const PageFileSet & page_files, PageStorage & storage, co
         global_total_size += total_size;
         global_total_valid_size += valid_size;
         // PageFileId, level, size, valid size, valid percentage
-        printf("%s\t"
-               "%9.2f\t%9.2f\t%9.2f%%\t"
-               "%6zu"
-               "\n",
-               page_file.toString().c_str(),
-               total_size / MB,
-               valid_size / MB,
-               total_size == 0 ? 0 : (100.0 * valid_size / total_size),
-               valid_pages.size());
+        printf(
+            "%s\t"
+            "%9.2f\t%9.2f\t%9.2f%%\t"
+            "%6zu"
+            "\n",
+            page_file.toString().c_str(),
+            total_size / MB,
+            valid_size / MB,
+            total_size == 0 ? 0 : (100.0 * valid_size / total_size),
+            valid_pages.size());
     }
     printf("Total size: %.2f MB over %.2f MB\n", global_total_valid_size / MB, global_total_size / MB);
 }

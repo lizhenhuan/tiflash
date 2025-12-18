@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Functions/FunctionsMath.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -27,28 +29,6 @@
 #include <common/preciseExp10.h>
 #include <fmt/core.h>
 
-/** More efficient implementations of mathematical functions are possible when using a separate library.
-  * Disabled due to licence compatibility limitations.
-  * To enable: download http://www.agner.org/optimize/vectorclass.zip and unpack to contrib/vectorclass
-  * Then rebuild with -DENABLE_VECTORCLASS=1
-  */
-
-#if USE_VECTORCLASS
-#if __clang__
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wshift-negative-value"
-#endif
-
-#include <vectorf128.h>
-#include <vectormath_exp.h>
-#include <vectormath_trig.h>
-
-#if __clang__
-#pragma clang diagnostic pop
-#endif
-#endif
-
-
 namespace DB
 {
 namespace ErrorCodes
@@ -75,7 +55,8 @@ private:
 
     void executeImpl(Block & block, const ColumnNumbers & /*arguments*/, const size_t result) const override
     {
-        block.getByPosition(result).column = block.getByPosition(result).type->createColumnConst(block.rows(), Impl::value);
+        block.getByPosition(result).column
+            = block.getByPosition(result).type->createColumnConst(block.rows(), Impl::value);
     }
 };
 
@@ -138,7 +119,10 @@ private:
                 {
                     FieldType src_remaining[Impl::rows_per_iteration];
                     memcpy(src_remaining, &src_data[rows_size], rows_remaining * sizeof(FieldType));
-                    memset(src_remaining + rows_remaining, 0, (Impl::rows_per_iteration - rows_remaining) * sizeof(FieldType));
+                    memset(
+                        src_remaining + rows_remaining,
+                        0,
+                        (Impl::rows_per_iteration - rows_remaining) * sizeof(FieldType));
                     Float64 dst_remaining[Impl::rows_per_iteration];
                     UInt8 null_map_remaining[Impl::rows_per_iteration];
 
@@ -160,7 +144,10 @@ private:
                 {
                     FieldType src_remaining[Impl::rows_per_iteration];
                     memcpy(src_remaining, &src_data[rows_size], rows_remaining * sizeof(FieldType));
-                    memset(src_remaining + rows_remaining, 0, (Impl::rows_per_iteration - rows_remaining) * sizeof(FieldType));
+                    memset(
+                        src_remaining + rows_remaining,
+                        0,
+                        (Impl::rows_per_iteration - rows_remaining) * sizeof(FieldType));
                     Float64 dst_remaining[Impl::rows_per_iteration];
 
                     Impl::execute(src_remaining, dst_remaining);
@@ -182,7 +169,11 @@ private:
     {
         const auto * const arg = block.getByPosition(arguments[0]).column.get();
 
-        if (!execute<UInt8>(block, arg, result) && !execute<UInt16>(block, arg, result) && !execute<UInt32>(block, arg, result) && !execute<UInt64>(block, arg, result) && !execute<Int8>(block, arg, result) && !execute<Int16>(block, arg, result) && !execute<Int32>(block, arg, result) && !execute<Int64>(block, arg, result) && !execute<Float32>(block, arg, result) && !execute<Float64>(block, arg, result))
+        if (!execute<UInt8>(block, arg, result) && !execute<UInt16>(block, arg, result)
+            && !execute<UInt32>(block, arg, result) && !execute<UInt64>(block, arg, result)
+            && !execute<Int8>(block, arg, result) && !execute<Int16>(block, arg, result)
+            && !execute<Int32>(block, arg, result) && !execute<Int64>(block, arg, result)
+            && !execute<Float32>(block, arg, result) && !execute<Float64>(block, arg, result))
         {
             throw Exception(
                 fmt::format("Illegal column {} of argument of function {}", arg->getName(), getName()),
@@ -220,29 +211,8 @@ struct UnaryFunctionPlain
     }
 };
 
-#if USE_VECTORCLASS
-
-template <typename Name, Vec2d(Function)(const Vec2d &)>
-struct UnaryFunctionVectorized
-{
-    static constexpr auto name = Name::name;
-    static constexpr auto rows_per_iteration = 2;
-
-    template <typename T>
-    static void execute(const T * src, Float64 * dst)
-    {
-        const auto result = Function(Vec2d(src[0], src[1]));
-        result.store(dst);
-    }
-};
-
-#else
-
 #define UnaryFunctionVectorized UnaryFunctionPlain
 #define UnaryFunctionNullableVectorized UnaryFunctionNullablePlain
-
-#endif
-
 
 template <typename Impl, bool Nullable = false>
 class FunctionMathBinaryFloat64 : public IFunction
@@ -310,7 +280,10 @@ private:
                 {
                     RightType right_src_remaining[Impl::rows_per_iteration];
                     memcpy(right_src_remaining, &right_src_data[rows_size], rows_remaining * sizeof(RightType));
-                    memset(right_src_remaining + rows_remaining, 0, (Impl::rows_per_iteration - rows_remaining) * sizeof(RightType));
+                    memset(
+                        right_src_remaining + rows_remaining,
+                        0,
+                        (Impl::rows_per_iteration - rows_remaining) * sizeof(RightType));
                     Float64 dst_remaining[Impl::rows_per_iteration];
                     UInt8 null_map_remaining[Impl::rows_per_iteration];
 
@@ -331,7 +304,10 @@ private:
                 {
                     RightType right_src_remaining[Impl::rows_per_iteration];
                     memcpy(right_src_remaining, &right_src_data[rows_size], rows_remaining * sizeof(RightType));
-                    memset(right_src_remaining + rows_remaining, 0, (Impl::rows_per_iteration - rows_remaining) * sizeof(RightType));
+                    memset(
+                        right_src_remaining + rows_remaining,
+                        0,
+                        (Impl::rows_per_iteration - rows_remaining) * sizeof(RightType));
                     Float64 dst_remaining[Impl::rows_per_iteration];
 
                     Impl::execute(left_src_data, right_src_remaining, dst_remaining);
@@ -349,7 +325,11 @@ private:
     }
 
     template <typename LeftType, typename RightType>
-    bool executeRight(Block & block, const size_t result, const ColumnVector<LeftType> * left_arg, const IColumn * right_arg) const
+    bool executeRight(
+        Block & block,
+        const size_t result,
+        const ColumnVector<LeftType> * left_arg,
+        const IColumn * right_arg) const
     {
         if (const auto right_arg_typed = checkAndGetColumn<ColumnVector<RightType>>(right_arg))
         {
@@ -377,10 +357,16 @@ private:
                 {
                     LeftType left_src_remaining[Impl::rows_per_iteration];
                     memcpy(left_src_remaining, &left_src_data[rows_size], rows_remaining * sizeof(LeftType));
-                    memset(left_src_remaining + rows_remaining, 0, (Impl::rows_per_iteration - rows_remaining) * sizeof(LeftType));
+                    memset(
+                        left_src_remaining + rows_remaining,
+                        0,
+                        (Impl::rows_per_iteration - rows_remaining) * sizeof(LeftType));
                     RightType right_src_remaining[Impl::rows_per_iteration];
                     memcpy(right_src_remaining, &right_src_data[rows_size], rows_remaining * sizeof(RightType));
-                    memset(right_src_remaining + rows_remaining, 0, (Impl::rows_per_iteration - rows_remaining) * sizeof(RightType));
+                    memset(
+                        right_src_remaining + rows_remaining,
+                        0,
+                        (Impl::rows_per_iteration - rows_remaining) * sizeof(RightType));
                     Float64 dst_remaining[Impl::rows_per_iteration];
                     UInt8 null_map_remaining[Impl::rows_per_iteration];
 
@@ -401,10 +387,16 @@ private:
                 {
                     LeftType left_src_remaining[Impl::rows_per_iteration];
                     memcpy(left_src_remaining, &left_src_data[rows_size], rows_remaining * sizeof(LeftType));
-                    memset(left_src_remaining + rows_remaining, 0, (Impl::rows_per_iteration - rows_remaining) * sizeof(LeftType));
+                    memset(
+                        left_src_remaining + rows_remaining,
+                        0,
+                        (Impl::rows_per_iteration - rows_remaining) * sizeof(LeftType));
                     RightType right_src_remaining[Impl::rows_per_iteration];
                     memcpy(right_src_remaining, &right_src_data[rows_size], rows_remaining * sizeof(RightType));
-                    memset(right_src_remaining + rows_remaining, 0, (Impl::rows_per_iteration - rows_remaining) * sizeof(RightType));
+                    memset(
+                        right_src_remaining + rows_remaining,
+                        0,
+                        (Impl::rows_per_iteration - rows_remaining) * sizeof(RightType));
                     Float64 dst_remaining[Impl::rows_per_iteration];
 
                     Impl::execute(left_src_remaining, right_src_remaining, dst_remaining);
@@ -422,7 +414,10 @@ private:
 
             const auto & left_src_data = left_arg->getData();
             RightType right_src_data[Impl::rows_per_iteration];
-            std::fill(std::begin(right_src_data), std::end(right_src_data), right_arg_typed->template getValue<RightType>());
+            std::fill(
+                std::begin(right_src_data),
+                std::end(right_src_data),
+                right_arg_typed->template getValue<RightType>());
             const auto src_size = left_src_data.size();
             auto & dst_data = dst->getData();
             dst_data.resize(src_size);
@@ -443,7 +438,10 @@ private:
                 {
                     LeftType left_src_remaining[Impl::rows_per_iteration];
                     memcpy(left_src_remaining, &left_src_data[rows_size], rows_remaining * sizeof(LeftType));
-                    memset(left_src_remaining + rows_remaining, 0, (Impl::rows_per_iteration - rows_remaining) * sizeof(LeftType));
+                    memset(
+                        left_src_remaining + rows_remaining,
+                        0,
+                        (Impl::rows_per_iteration - rows_remaining) * sizeof(LeftType));
                     Float64 dst_remaining[Impl::rows_per_iteration];
                     UInt8 null_map_remaining[Impl::rows_per_iteration];
 
@@ -464,7 +462,10 @@ private:
                 {
                     LeftType left_src_remaining[Impl::rows_per_iteration];
                     memcpy(left_src_remaining, &left_src_data[rows_size], rows_remaining * sizeof(LeftType));
-                    memset(left_src_remaining + rows_remaining, 0, (Impl::rows_per_iteration - rows_remaining) * sizeof(LeftType));
+                    memset(
+                        left_src_remaining + rows_remaining,
+                        0,
+                        (Impl::rows_per_iteration - rows_remaining) * sizeof(LeftType));
                     Float64 dst_remaining[Impl::rows_per_iteration];
 
                     Impl::execute(left_src_remaining, right_src_data, dst_remaining);
@@ -481,20 +482,33 @@ private:
     }
 
     template <typename LeftType>
-    bool executeLeft(Block & block, const ColumnNumbers & arguments, const size_t result, const IColumn * left_arg) const
+    bool executeLeft(Block & block, const ColumnNumbers & arguments, const size_t result, const IColumn * left_arg)
+        const
     {
         if (const auto left_arg_typed = checkAndGetColumn<ColumnVector<LeftType>>(left_arg))
         {
             const auto * right_arg = block.getByPosition(arguments[1]).column.get();
 
-            if (executeRight<LeftType, UInt8>(block, result, left_arg_typed, right_arg) || executeRight<LeftType, UInt16>(block, result, left_arg_typed, right_arg) || executeRight<LeftType, UInt32>(block, result, left_arg_typed, right_arg) || executeRight<LeftType, UInt64>(block, result, left_arg_typed, right_arg) || executeRight<LeftType, Int8>(block, result, left_arg_typed, right_arg) || executeRight<LeftType, Int16>(block, result, left_arg_typed, right_arg) || executeRight<LeftType, Int32>(block, result, left_arg_typed, right_arg) || executeRight<LeftType, Int64>(block, result, left_arg_typed, right_arg) || executeRight<LeftType, Float32>(block, result, left_arg_typed, right_arg) || executeRight<LeftType, Float64>(block, result, left_arg_typed, right_arg))
+            if (executeRight<LeftType, UInt8>(block, result, left_arg_typed, right_arg)
+                || executeRight<LeftType, UInt16>(block, result, left_arg_typed, right_arg)
+                || executeRight<LeftType, UInt32>(block, result, left_arg_typed, right_arg)
+                || executeRight<LeftType, UInt64>(block, result, left_arg_typed, right_arg)
+                || executeRight<LeftType, Int8>(block, result, left_arg_typed, right_arg)
+                || executeRight<LeftType, Int16>(block, result, left_arg_typed, right_arg)
+                || executeRight<LeftType, Int32>(block, result, left_arg_typed, right_arg)
+                || executeRight<LeftType, Int64>(block, result, left_arg_typed, right_arg)
+                || executeRight<LeftType, Float32>(block, result, left_arg_typed, right_arg)
+                || executeRight<LeftType, Float64>(block, result, left_arg_typed, right_arg))
             {
                 return true;
             }
             else
             {
                 throw Exception(
-                    fmt::format("Illegal column {} of second argument of function {}", block.getByPosition(arguments[1]).column->getName(), getName()),
+                    fmt::format(
+                        "Illegal column {} of second argument of function {}",
+                        block.getByPosition(arguments[1]).column->getName(),
+                        getName()),
                     ErrorCodes::ILLEGAL_COLUMN);
             }
         }
@@ -502,14 +516,26 @@ private:
         {
             const auto * right_arg = block.getByPosition(arguments[1]).column.get();
 
-            if (executeRight<LeftType, UInt8>(block, result, left_arg_typed, right_arg) || executeRight<LeftType, UInt16>(block, result, left_arg_typed, right_arg) || executeRight<LeftType, UInt32>(block, result, left_arg_typed, right_arg) || executeRight<LeftType, UInt64>(block, result, left_arg_typed, right_arg) || executeRight<LeftType, Int8>(block, result, left_arg_typed, right_arg) || executeRight<LeftType, Int16>(block, result, left_arg_typed, right_arg) || executeRight<LeftType, Int32>(block, result, left_arg_typed, right_arg) || executeRight<LeftType, Int64>(block, result, left_arg_typed, right_arg) || executeRight<LeftType, Float32>(block, result, left_arg_typed, right_arg) || executeRight<LeftType, Float64>(block, result, left_arg_typed, right_arg))
+            if (executeRight<LeftType, UInt8>(block, result, left_arg_typed, right_arg)
+                || executeRight<LeftType, UInt16>(block, result, left_arg_typed, right_arg)
+                || executeRight<LeftType, UInt32>(block, result, left_arg_typed, right_arg)
+                || executeRight<LeftType, UInt64>(block, result, left_arg_typed, right_arg)
+                || executeRight<LeftType, Int8>(block, result, left_arg_typed, right_arg)
+                || executeRight<LeftType, Int16>(block, result, left_arg_typed, right_arg)
+                || executeRight<LeftType, Int32>(block, result, left_arg_typed, right_arg)
+                || executeRight<LeftType, Int64>(block, result, left_arg_typed, right_arg)
+                || executeRight<LeftType, Float32>(block, result, left_arg_typed, right_arg)
+                || executeRight<LeftType, Float64>(block, result, left_arg_typed, right_arg))
             {
                 return true;
             }
             else
             {
                 throw Exception(
-                    fmt::format("Illegal column {} of second argument of function {}", block.getByPosition(arguments[1]).column->getName(), getName()),
+                    fmt::format(
+                        "Illegal column {} of second argument of function {}",
+                        block.getByPosition(arguments[1]).column->getName(),
+                        getName()),
                     ErrorCodes::ILLEGAL_COLUMN);
             }
         }
@@ -521,7 +547,16 @@ private:
     {
         const auto * left_arg = block.getByPosition(arguments[0]).column.get();
 
-        if (!executeLeft<UInt8>(block, arguments, result, left_arg) && !executeLeft<UInt16>(block, arguments, result, left_arg) && !executeLeft<UInt32>(block, arguments, result, left_arg) && !executeLeft<UInt64>(block, arguments, result, left_arg) && !executeLeft<Int8>(block, arguments, result, left_arg) && !executeLeft<Int16>(block, arguments, result, left_arg) && !executeLeft<Int32>(block, arguments, result, left_arg) && !executeLeft<Int64>(block, arguments, result, left_arg) && !executeLeft<Float32>(block, arguments, result, left_arg) && !executeLeft<Float64>(block, arguments, result, left_arg))
+        if (!executeLeft<UInt8>(block, arguments, result, left_arg)
+            && !executeLeft<UInt16>(block, arguments, result, left_arg)
+            && !executeLeft<UInt32>(block, arguments, result, left_arg)
+            && !executeLeft<UInt64>(block, arguments, result, left_arg)
+            && !executeLeft<Int8>(block, arguments, result, left_arg)
+            && !executeLeft<Int16>(block, arguments, result, left_arg)
+            && !executeLeft<Int32>(block, arguments, result, left_arg)
+            && !executeLeft<Int64>(block, arguments, result, left_arg)
+            && !executeLeft<Float32>(block, arguments, result, left_arg)
+            && !executeLeft<Float64>(block, arguments, result, left_arg))
         {
             throw Exception(
                 fmt::format("Illegal column {} of argument of function {}", left_arg->getName(), getName()),
@@ -561,28 +596,7 @@ struct BinaryFunctionPlain
     }
 };
 
-#if USE_VECTORCLASS
-
-template <typename Name, Vec2d(Function)(const Vec2d &, const Vec2d &)>
-struct BinaryFunctionVectorized
-{
-    static constexpr auto name = Name::name;
-    static constexpr auto rows_per_iteration = 2;
-
-    template <typename T1, typename T2>
-    static void execute(const T1 * src_left, const T2 * src_right, Float64 * dst)
-    {
-        const auto result = Function(Vec2d(src_left[0], src_left[1]), Vec2d(src_right[0], src_right[1]));
-        result.store(dst);
-    }
-};
-
-#else
-
 #define BinaryFunctionVectorized BinaryFunctionPlain
-
-#endif
-
 
 struct EImpl
 {
@@ -597,9 +611,33 @@ struct PiImpl
 };
 
 
+bool logNullable(double b, double & result)
+{
+    if (b <= 0)
+        return true;
+    result = log(b);
+    return false;
+}
+
+bool log2Nullable(double b, double & result)
+{
+    if (b <= 0)
+        return true;
+    result = log2(b);
+    return false;
+}
+
+bool log10Nullable(double b, double & result)
+{
+    if (b <= 0)
+        return true;
+    result = log10(b);
+    return false;
+}
+
 bool log2args(double b, double e, double & result)
 {
-    if (b == 1 || b < 0 || e < 0)
+    if (b == 1 || b <= 0 || e <= 0)
     {
         return true;
     }
@@ -722,21 +760,15 @@ using FunctionSign = FunctionMathUnaryFloat64<UnaryFunctionPlain<SignName, DB::s
 using FunctionE = FunctionMathNullaryConstFloat64<EImpl>;
 using FunctionPi = FunctionMathNullaryConstFloat64<PiImpl>;
 using FunctionExp = FunctionMathUnaryFloat64<UnaryFunctionVectorized<ExpName, exp>>;
-using FunctionLog = FunctionMathUnaryFloat64<UnaryFunctionVectorized<LogName, log>>;
+using FunctionLog = FunctionMathUnaryFloat64Nullable<UnaryFunctionNullableVectorized<LogName, DB::logNullable>>;
 using FunctionLog2Args = FunctionMathBinaryFloat64Nullable<BinaryFunctionNullablePlain<Log2ArgsName, DB::log2args>>;
 using FunctionExp2 = FunctionMathUnaryFloat64<UnaryFunctionVectorized<Exp2Name, exp2>>;
-using FunctionLog2 = FunctionMathUnaryFloat64<UnaryFunctionVectorized<Log2Name, log2>>;
+using FunctionLog2 = FunctionMathUnaryFloat64Nullable<UnaryFunctionNullableVectorized<Log2Name, DB::log2Nullable>>;
 using FunctionExp10 = FunctionMathUnaryFloat64<UnaryFunctionVectorized<Exp10Name, preciseExp10>>;
-using FunctionLog10 = FunctionMathUnaryFloat64<UnaryFunctionVectorized<Log10Name, log10>>;
+using FunctionLog10 = FunctionMathUnaryFloat64Nullable<UnaryFunctionNullableVectorized<Log10Name, DB::log10Nullable>>;
 using FunctionSqrt = FunctionMathUnaryFloat64Nullable<UnaryFunctionNullableVectorized<SqrtName, DB::sqrtNullable>>;
 
-using FunctionCbrt = FunctionMathUnaryFloat64<UnaryFunctionVectorized<CbrtName,
-#if USE_VECTORCLASS
-                                                                      Power_rational<1, 3>::pow
-#else
-                                                                      cbrt
-#endif
-                                                                      >>;
+using FunctionCbrt = FunctionMathUnaryFloat64<UnaryFunctionVectorized<CbrtName, cbrt>>;
 
 using FunctionSin = FunctionMathUnaryFloat64<UnaryFunctionVectorized<SinName, sin>>;
 using FunctionCos = FunctionMathUnaryFloat64<UnaryFunctionVectorized<CosName, cos>>;

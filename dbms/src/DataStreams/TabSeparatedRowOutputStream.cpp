@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/DataStreams/TabSeparatedRowOutputStream.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,17 +15,22 @@
 // limitations under the License.
 
 #include <DataStreams/TabSeparatedRowOutputStream.h>
-
 #include <IO/WriteHelpers.h>
 
 
 namespace DB
 {
 
-TabSeparatedRowOutputStream::TabSeparatedRowOutputStream(WriteBuffer & ostr_, const Block & sample_, bool with_names_, bool with_types_)
-    : ostr(ostr_), sample(sample_), with_names(with_names_), with_types(with_types_)
-{
-}
+TabSeparatedRowOutputStream::TabSeparatedRowOutputStream(
+    WriteBuffer & ostr_,
+    const Block & sample_,
+    bool with_names_,
+    bool with_types_)
+    : ostr(ostr_)
+    , sample(sample_)
+    , with_names(with_names_)
+    , with_types(with_types_)
+{}
 
 
 void TabSeparatedRowOutputStream::flush()
@@ -76,31 +83,8 @@ void TabSeparatedRowOutputStream::writeRowEndDelimiter()
 
 void TabSeparatedRowOutputStream::writeSuffix()
 {
-    writeTotals();
     writeExtremes();
 }
-
-
-void TabSeparatedRowOutputStream::writeTotals()
-{
-    if (totals)
-    {
-        size_t columns = totals.columns();
-
-        writeChar('\n', ostr);
-        writeRowStartDelimiter();
-
-        for (size_t j = 0; j < columns; ++j)
-        {
-            if (j != 0)
-                writeFieldDelimiter();
-            writeField(*totals.getByPosition(j).column.get(), *totals.getByPosition(j).type.get(), 0);
-        }
-
-        writeRowEndDelimiter();
-    }
-}
-
 
 void TabSeparatedRowOutputStream::writeExtremes()
 {
@@ -131,4 +115,4 @@ void TabSeparatedRowOutputStream::writeExtremes()
 }
 
 
-}
+} // namespace DB

@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Common/HashTable/SmallTable.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -37,11 +39,9 @@ extern const int INCORRECT_DATA;
   *  you should check if the table is not full,
   *  and do a `fallback` in this case (for example, use a real hash table).
   */
-template <
-    typename Key,
-    typename Cell,
-    size_t capacity>
-class SmallTable : private boost::noncopyable
+template <typename Key, typename Cell, size_t capacity>
+class SmallTable
+    : private boost::noncopyable
     , protected Cell::State
 {
 protected:
@@ -87,13 +87,15 @@ public:
     using value_type = typename Cell::value_type;
     using cell_type = Cell;
 
+    static constexpr bool is_string_hash_map = false;
+    static constexpr bool is_two_level = false;
+
     class Reader final : private Cell::State
     {
     public:
         explicit Reader(DB::ReadBuffer & in_)
             : in(in_)
-        {
-        }
+        {}
 
         DISALLOW_COPY(Reader);
 
@@ -219,10 +221,7 @@ public:
     /** The table is full.
       * You can not insert anything into the full table.
       */
-    bool full()
-    {
-        return m_size == capacity;
-    }
+    bool full() { return m_size == capacity; }
 
 
     /// Insert the value. In the case of any more complex values, it is better to use the `emplace` function.
@@ -302,6 +301,7 @@ public:
     iterator ALWAYS_INLINE find(Key x) { return iteratorTo(findCell(x)); }
     const_iterator ALWAYS_INLINE find(Key x) const { return iteratorTo(findCell(x)); }
 
+    void ALWAYS_INLINE prefetch(size_t) {}
 
     void write(DB::WriteBuffer & wb) const
     {
@@ -364,15 +364,9 @@ public:
     }
 
 
-    size_t size() const
-    {
-        return m_size;
-    }
+    size_t size() const { return m_size; }
 
-    bool empty() const
-    {
-        return 0 == m_size;
-    }
+    bool empty() const { return 0 == m_size; }
 
     void clear()
     {
@@ -383,10 +377,9 @@ public:
         m_size = 0;
     }
 
-    size_t getBufferSizeInBytes() const
-    {
-        return sizeof(buf);
-    }
+    size_t getBufferSizeInBytes() const { return sizeof(buf); }
+
+    void setResizeCallback(const ResizeCallback &) {}
 };
 
 
@@ -395,16 +388,11 @@ struct HashUnused
 };
 
 
-template <
-    typename Key,
-    size_t capacity>
+template <typename Key, size_t capacity>
 using SmallSet = SmallTable<Key, HashTableCell<Key, HashUnused>, capacity>;
 
 
-template <
-    typename Key,
-    typename Cell,
-    size_t capacity>
+template <typename Key, typename Cell, size_t capacity>
 class SmallMapTable : public SmallTable<Key, Cell, capacity>
 {
 public:
@@ -424,8 +412,5 @@ public:
 };
 
 
-template <
-    typename Key,
-    typename Mapped,
-    size_t capacity>
+template <typename Key, typename Mapped, size_t capacity>
 using SmallMap = SmallMapTable<Key, HashMapCell<Key, Mapped, HashUnused>, capacity>;

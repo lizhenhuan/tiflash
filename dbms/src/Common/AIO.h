@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Common/AIO.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -70,10 +72,7 @@ struct AIOContext : private boost::noncopyable
             DB::throwFromErrno("io_setup failed");
     }
 
-    ~AIOContext()
-    {
-        io_destroy(ctx);
-    }
+    ~AIOContext() { io_destroy(ctx); }
 };
 
 
@@ -152,9 +151,10 @@ class AIOContextPool : public ext::Singleton<AIOContextPool>
         /// request 1 to `max_events` events
         while ((num_events = io_getevents(aio_context.ctx, 1, max_events, events, &timeout)) < 0)
             if (errno != EINTR)
-                throwFromErrno("io_getevents: Failed to wait for asynchronous IO completion",
-                               ErrorCodes::AIO_COMPLETION_ERROR,
-                               errno);
+                throwFromErrno(
+                    "io_getevents: Failed to wait for asynchronous IO completion",
+                    ErrorCodes::AIO_COMPLETION_ERROR,
+                    errno);
 
         return num_events;
     }
@@ -176,7 +176,7 @@ class AIOContextPool : public ext::Singleton<AIOContextPool>
             const auto it = promises.find(id);
             if (it == std::end(promises))
             {
-                LOG_FMT_ERROR(&Poco::Logger::get("AIOcontextPool"), "Found io_event with unknown id {}", id);
+                LOG_ERROR(Logger::get("AIOcontextPool"), "Found io_event with unknown id {}", id);
                 continue;
             }
 
@@ -227,9 +227,10 @@ public:
                 /// wait until at least one event has been completed (or a spurious wakeup) and try again
                 have_resources.wait(lock);
             else if (errno != EINTR)
-                throwFromErrno("io_submit: Failed to submit a request for asynchronous IO",
-                               ErrorCodes::AIO_SUBMIT_ERROR,
-                               errno);
+                throwFromErrno(
+                    "io_submit: Failed to submit a request for asynchronous IO",
+                    ErrorCodes::AIO_SUBMIT_ERROR,
+                    errno);
         }
 
         return promises[request_id].get_future();

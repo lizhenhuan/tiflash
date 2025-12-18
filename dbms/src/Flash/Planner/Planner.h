@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,23 +17,20 @@
 #include <Common/Logger.h>
 #include <DataStreams/IBlockInputStream.h>
 #include <Flash/Coprocessor/DAGPipeline.h>
-#include <Flash/Planner/PlanQuerySource.h>
 
 namespace DB
 {
 class Context;
 class DAGContext;
 
-class Planner : public IInterpreter
+class Planner
 {
 public:
-    Planner(
-        Context & context_,
-        const PlanQuerySource & plan_source_);
+    explicit Planner(Context & context_);
 
     ~Planner() = default;
 
-    BlockIO execute() override;
+    BlockInputStreamPtr execute();
 
 private:
     DAGContext & dagContext() const;
@@ -42,8 +39,6 @@ private:
 
 private:
     Context & context;
-
-    const PlanQuerySource & plan_source;
 
     /// Max streams we will do processing.
     size_t max_streams = 1;

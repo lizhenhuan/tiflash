@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/DataStreams/ParallelInputsProcessor.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,7 +22,6 @@
 #include <Common/MemoryTracker.h>
 #include <Common/ThreadFactory.h>
 #include <Common/ThreadManager.h>
-#include <Common/setThreadName.h>
 #include <DataStreams/IProfilingBlockInputStream.h>
 #include <common/logger_useful.h>
 
@@ -148,15 +149,9 @@ public:
         }
     }
 
-    size_t getNumActiveThreads() const
-    {
-        return active_threads;
-    }
+    size_t getNumActiveThreads() const { return active_threads; }
 
-    size_t getMaxThreads() const
-    {
-        return max_threads;
-    }
+    size_t getMaxThreads() const { return max_threads; }
 
 private:
     /// Single source data
@@ -231,7 +226,7 @@ private:
                       * (for example, the connection is broken for distributed query processing)
                       * - then do not care.
                       */
-                    LOG_FMT_ERROR(log, "Exception while cancelling {}", p_child->getName());
+                    LOG_ERROR(log, "Exception while cancelling {}", p_child->getName());
                 }
             }
         }

@@ -1,3 +1,6 @@
+# We want to use C++23, but GRPC is not ready
+set (CMAKE_CXX_STANDARD 20)
+
 set(_gRPC_SOURCE_DIR "${TiFlash_SOURCE_DIR}/contrib/grpc")
 set(_gRPC_BINARY_DIR "${TiFlash_BINARY_DIR}/contrib/grpc")
 
@@ -65,6 +68,7 @@ endif ()
 # reject to start w/o it. While this is completelly different library.
 #
 #   [3]: https://packages.debian.org/bullseye/libnsl2
+
 if (NOT CMAKE_SYSTEM_NAME STREQUAL "SunOS")
   set(HAVE_LIBNSL OFF CACHE BOOL "" FORCE)
 endif()
@@ -72,15 +76,19 @@ endif()
 # We don't want to build C# extensions.
 set(gRPC_BUILD_CSHARP_EXT OFF)
 
+no_warning(deprecated-builtins)
 add_subdirectory("${_gRPC_SOURCE_DIR}" "${_gRPC_BINARY_DIR}")
 
 # clean up some clang warnings
 target_no_warning(grpc deprecated-declarations)
 target_no_warning(grpc non-c-typedef-for-linkage)
 target_no_warning(grpc implicit-const-int-float-conversion)
+target_no_warning(grpc unused-but-set-variable)
+target_no_warning(grpc unused-function)
 target_no_warning(grpc++ deprecated-declarations)
 target_no_warning(grpc++ non-c-typedef-for-linkage)
 target_no_warning(grpc++ implicit-const-int-float-conversion)
+target_no_warning(grpc++ unused-but-set-variable)
 
 execute_process(
   COMMAND grep "//gpr_log(GPR_DEBUG, \"cannot set inq fd=%d errno=%d\", tcp->fd, errno);" "${_gRPC_SOURCE_DIR}/src/core/lib/iomgr/tcp_posix.cc"

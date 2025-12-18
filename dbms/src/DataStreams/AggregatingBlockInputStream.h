@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/DataStreams/AggregatingBlockInputStream.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,7 +17,6 @@
 #pragma once
 
 #include <DataStreams/IProfilingBlockInputStream.h>
-#include <DataStreams/TemporaryFileStream.h>
 #include <Interpreters/Aggregator.h>
 
 namespace DB
@@ -37,13 +38,18 @@ public:
     AggregatingBlockInputStream(
         const BlockInputStreamPtr & input,
         const Aggregator::Params & params_,
-        const FileProviderPtr & file_provider_,
         bool final_,
-        const String & req_id)
-        : log(Logger::get(NAME, req_id))
+        const String & req_id,
+        const RegisterOperatorSpillContext & register_operator_spill_context)
+        : log(Logger::get(req_id))
         , params(params_)
-        , aggregator(params, req_id)
-        , file_provider{file_provider_}
+        , aggregator(
+              params,
+              req_id,
+              1,
+              register_operator_spill_context,
+              /*is_auto_pass_through=*/false,
+              params.use_magic_hash)
         , final(final_)
     {
         children.push_back(input);
@@ -60,12 +66,9 @@ protected:
 
     Aggregator::Params params;
     Aggregator aggregator;
-    FileProviderPtr file_provider;
     bool final;
 
     bool executed = false;
-
-    TemporaryFileStreams temporary_inputs;
 
     /** From here we will get the completed blocks after the aggregation. */
     std::unique_ptr<IBlockInputStream> impl;

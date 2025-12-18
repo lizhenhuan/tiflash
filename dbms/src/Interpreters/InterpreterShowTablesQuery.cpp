@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Interpreters/InterpreterShowTablesQuery.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,7 +15,7 @@
 // limitations under the License.
 
 #include <Common/typeid_cast.h>
-#include <IO/ReadBufferFromString.h>
+#include <IO/Buffer/ReadBufferFromString.h>
 #include <Interpreters/Context.h>
 #include <Interpreters/InterpreterShowTablesQuery.h>
 #include <Interpreters/executeQuery.h>
@@ -34,8 +36,7 @@ extern const int SYNTAX_ERROR;
 InterpreterShowTablesQuery::InterpreterShowTablesQuery(const ASTPtr & query_ptr_, Context & context_)
     : query_ptr(query_ptr_)
     , context(context_)
-{
-}
+{}
 
 
 String InterpreterShowTablesQuery::getRewrittenQuery()
@@ -47,7 +48,9 @@ String InterpreterShowTablesQuery::getRewrittenQuery()
         return "SELECT name FROM system.databases";
 
     if (query.temporary && !query.from.empty())
-        throw Exception("The `FROM` and `TEMPORARY` cannot be used together in `SHOW TABLES`", ErrorCodes::SYNTAX_ERROR);
+        throw Exception(
+            "The `FROM` and `TEMPORARY` cannot be used together in `SHOW TABLES`",
+            ErrorCodes::SYNTAX_ERROR);
 
     String database = query.from.empty() ? context.getCurrentDatabase() : query.from;
 

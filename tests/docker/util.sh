@@ -1,5 +1,5 @@
 #!/bin/bash
-# Copyright 2022 PingCAP, Ltd.
+# Copyright 2023 PingCAP, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,6 +21,7 @@ function show_env() {
   grep ^ /sys/block/*/queue/rotational
 
   cat /proc/cpuinfo | grep name | cut -f2 -d: | uniq -c
+  lscpu
   cat /proc/meminfo
   uname -a
   hostname
@@ -28,6 +29,7 @@ function show_env() {
   dmidecode | grep 'Product Name'
   free -mh
   cat /proc/loadavg
+  ldd --version
 
   set -e
 }
@@ -40,7 +42,7 @@ function wait_env() {
 
   for (( i = 0; i < "${timeout}"; i++ )); do
     if [[ -n $(cat ./log/tidb0/tidb.log | grep "server is running MySQL protocol") && \
-          -n $(cat ./log/tiflash/server.log | grep "Ready for connections") ]]; then
+          -n $(cat ./log/tiflash/tiflash.log | grep "Start to wait for terminal signal") ]]; then
         local failed='false'
         break
     fi
@@ -67,7 +69,7 @@ function wait_tiflash_env() {
   echo "=> wait for env available"
 
   for (( i = 0; i < "${timeout}"; i++ )); do
-    if [[ -n $(cat ./log/tiflash/server.log | grep "Ready for connections") ]]; then
+    if [[ -n $(cat ./log/tiflash/tiflash.log | grep "Start to wait for terminal signal") ]]; then
         local failed='false'
         break
     fi
@@ -84,7 +86,35 @@ function wait_tiflash_env() {
     exit 1
   else
     echo "   available"
-    cat ./log/tiflash/server.log
+  fi
+}
+
+function wait_next_gen_env() {
+  local timeout='200'
+  local failed='true'
+
+  echo "=> wait for env available"
+
+  for (( i = 0; i < "${timeout}"; i++ )); do
+    if [[ -n $(cat ./log/tidb0/tidb.log | grep "server is running MySQL protocol") && \
+          -n $(cat ./log/tiflash-wn0/tiflash.log | grep "Start to wait for terminal signal") && \
+          -n $(cat ./log/tiflash-cn0/tiflash.log | grep "Start to wait for terminal signal") ]]; then
+        local failed='false'
+        break
+    fi
+
+    if [ $((${i} % 10)) = 0 ] && [ ${i} -ge 10 ]; then
+      echo "   #${i} waiting for env available"
+    fi
+
+    sleep 1
+  done
+
+  if [ "${failed}" == 'true' ]; then
+    echo "   can not set up env" >&2
+    exit 1
+  else
+    echo "   available"
   fi
 }
 
@@ -105,15 +135,48 @@ function clean_data_log() {
 
 function check_env() {
   local cur_dir=$(pwd)
-  if [[ ! -d ${cur_dir}/../../tests/.build/tiflash ]]; then
-    echo "No pre-build tiflash binary directory: ${cur_dir}/../../tests/.build/tiflash"
+  local prebuilt_bin_dir=$(realpath "${cur_dir}/../../tests/.build/tiflash")
+  if [[ ! -d ${prebuilt_bin_dir} ]]; then
+    echo "No pre-build tiflash binary directory: ${prebuilt_bin_dir}"
     exit -1
+  else
+    echo "Running tests with pre-built tiflash binary: ${prebuilt_bin_dir}/tiflash"
+    ls -l ${prebuilt_bin_dir}
+    ${prebuilt_bin_dir}/tiflash --version
+  fi
+}
+
+function check_docker_compose() {
+  # Try to use these compose tools:
+  # - `docker-compose`, the original compose tool on CI
+  # - `podman compose`, the podman compose tool, which is compatible with docker compose,
+  #   and supports rootless mode
+  # - `docker compose`, the new docker provide compose command, which is compatible
+  #   with `docker-compose`
+  if command -v docker-compose &>/dev/null; then
+    echo "docker-compose is installed."
+    export COMPOSE="docker-compose"
+  else
+    if command -v podman &>/dev/null; then
+      echo "podman is installed, using it as docker-compose."
+      export COMPOSE="podman compose"
+    else
+      if command -v docker &>/dev/null; then
+        echo "docker compose is installed."
+        export COMPOSE="docker compose"
+      else
+        echo "Neither docker-compose nor docker noo podman could be found, please install one of them first."
+        exit 1
+      fi
+    fi
   fi
 }
 
 export -f show_env
 export -f wait_env
 export -f wait_tiflash_env
+export -f wait_next_gen_env
 export -f set_branch
 export -f clean_data_log
 export -f check_env
+export -f check_docker_compose

@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Columns/ColumnArray.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,15 +19,20 @@
 #include <Columns/ColumnNullable.h>
 #include <Columns/ColumnString.h>
 #include <Columns/ColumnTuple.h>
-#include <Columns/ColumnsCommon.h>
 #include <Columns/ColumnsNumber.h>
+#include <Columns/filterColumn.h>
 #include <Common/Arena.h>
 #include <Common/Exception.h>
 #include <Common/HashTable/Hash.h>
 #include <Common/SipHash.h>
 #include <Common/typeid_cast.h>
+#include <Core/Defines.h>
 #include <DataStreams/ColumnGathererStream.h>
+#include <Functions/FunctionHelpers.h>
+#include <IO/Endian.h>
+#include <IO/WriteHelpers.h>
 #include <string.h> // memcpy
+
 
 namespace DB
 {
@@ -181,7 +188,12 @@ void ColumnArray::insertData(const char * pos, size_t length)
 }
 
 
-StringRef ColumnArray::serializeValueIntoArena(size_t n, Arena & arena, char const *& begin, const TiDB::TiDBCollatorPtr & collator, String & sort_key_container) const
+StringRef ColumnArray::serializeValueIntoArena(
+    size_t n,
+    Arena & arena,
+    char const *& begin,
+    const TiDB::TiDBCollatorPtr & collator,
+    String & sort_key_container) const
 {
     size_t array_size = sizeAt(n);
     size_t offset = offsetAt(n);
@@ -209,8 +221,221 @@ const char * ColumnArray::deserializeAndInsertFromArena(const char * pos, const 
     return pos;
 }
 
+size_t ColumnArray::serializeByteSize() const
+{
+    return getData().serializeByteSize() + getOffsets().size() * sizeof(UInt32);
+}
 
-void ColumnArray::updateHashWithValue(size_t n, SipHash & hash, const TiDB::TiDBCollatorPtr & collator, String & sort_key_container) const
+void ColumnArray::countSerializeByteSize(PaddedPODArray<size_t> & byte_size) const
+{
+    countSerializeByteSizeImpl<false>(byte_size, nullptr, nullptr);
+}
+
+void ColumnArray::countSerializeByteSizeForCmp(
+    PaddedPODArray<size_t> & byte_size,
+    const NullMap * nullmap,
+    const TiDB::TiDBCollatorPtr & collator) const
+{
+    countSerializeByteSizeImpl<true>(byte_size, nullmap, collator);
+}
+
+template <bool compare_semantics>
+void ColumnArray::countSerializeByteSizeImpl(
+    PaddedPODArray<size_t> & byte_size,
+    const NullMap * nullmap,
+    const TiDB::TiDBCollatorPtr & collator) const
+{
+    RUNTIME_CHECK_MSG(byte_size.size() == size(), "size of byte_size({}) != column size({})", byte_size.size(), size());
+
+    if unlikely (!getOffsets().empty() && getOffsets().back() > UINT32_MAX)
+    {
+        size_t sz = size();
+        for (size_t i = 0; i < sz; ++i)
+            RUNTIME_CHECK_MSG(
+                sizeAt(i) <= UINT32_MAX,
+                "size of ({}) is ({}), which is greater than UINT32_MAX",
+                i,
+                sizeAt(i));
+    }
+
+    size_t size = byte_size.size();
+    for (size_t i = 0; i < size; ++i)
+        byte_size[i] += sizeof(UInt32);
+
+    if constexpr (compare_semantics)
+        getData().countSerializeByteSizeForCmpColumnArray(byte_size, getOffsets(), nullmap, collator);
+    else
+        getData().countSerializeByteSizeForColumnArray(byte_size, getOffsets());
+}
+
+void ColumnArray::serializeToPosForCmp(
+    PaddedPODArray<char *> & pos,
+    size_t start,
+    size_t length,
+    bool has_null,
+    const NullMap * nullmap,
+    const TiDB::TiDBCollatorPtr & collator,
+    String * sort_key_container) const
+{
+    if (has_null)
+    {
+        if (nullmap != nullptr)
+            serializeToPosImpl</*has_null=*/true, /*compare_semantics=*/true, /*has_nullmap=*/true>(
+                pos,
+                start,
+                length,
+                collator,
+                sort_key_container,
+                nullmap);
+        else
+            serializeToPosImpl</*has_null=*/true, /*compare_semantics=*/true, /*has_nullmap=*/false>(
+                pos,
+                start,
+                length,
+                collator,
+                sort_key_container,
+                nullptr);
+    }
+    else
+    {
+        if (nullmap != nullptr)
+            serializeToPosImpl</*has_null=*/false, /*compare_semantics=*/true, /*has_nullmap=*/true>(
+                pos,
+                start,
+                length,
+                collator,
+                sort_key_container,
+                nullmap);
+        else
+            serializeToPosImpl</*has_null=*/false, /*compare_semantics=*/true, /*has_nullmap=*/false>(
+                pos,
+                start,
+                length,
+                collator,
+                sort_key_container,
+                nullptr);
+    }
+}
+
+void ColumnArray::serializeToPos(PaddedPODArray<char *> & pos, size_t start, size_t length, bool has_null) const
+{
+    if (has_null)
+        serializeToPosImpl</*has_null=*/true, /*compare_semantics=*/false, /*has_nullmap=*/false>(
+            pos,
+            start,
+            length,
+            nullptr,
+            nullptr,
+            nullptr);
+    else
+        serializeToPosImpl</*has_null=*/false, /*compare_semantics=*/false, /*has_nullmap=*/false>(
+            pos,
+            start,
+            length,
+            nullptr,
+            nullptr,
+            nullptr);
+}
+
+template <bool has_null, bool compare_semantics, bool has_nullmap>
+void ColumnArray::serializeToPosImpl(
+    PaddedPODArray<char *> & pos,
+    size_t start,
+    size_t length,
+    const TiDB::TiDBCollatorPtr & collator,
+    String * sort_key_container,
+    const NullMap * nullmap) const
+{
+    RUNTIME_CHECK_MSG(length <= pos.size(), "length({}) > size of pos({})", length, pos.size());
+    RUNTIME_CHECK_MSG(start + length <= size(), "start({}) + length({}) > size of column({})", start, length, size());
+
+    RUNTIME_CHECK(!has_nullmap || (nullmap && nullmap->size() == size()));
+
+    /// countSerializeByteSize has already checked that the size of one element is not greater than UINT32_MAX
+    for (size_t i = 0; i < length; ++i)
+    {
+        if constexpr (has_null)
+        {
+            if (pos[i] == nullptr)
+                continue;
+        }
+
+        UInt32 len = sizeAt(start + i);
+        if constexpr (has_nullmap)
+        {
+            if (DB::isNullAt(*nullmap, start + i))
+                len = 0;
+        }
+        tiflash_compiler_builtin_memcpy(pos[i], &len, sizeof(UInt32));
+        pos[i] += sizeof(UInt32);
+    }
+
+    if constexpr (compare_semantics)
+        getData().serializeToPosForCmpColumnArray(
+            pos,
+            start,
+            length,
+            has_null,
+            nullmap,
+            getOffsets(),
+            collator,
+            sort_key_container);
+    else
+        getData().serializeToPosForColumnArray(pos, start, length, has_null, getOffsets());
+}
+
+void ColumnArray::deserializeAndInsertFromPos(PaddedPODArray<char *> & pos, bool use_nt_align_buffer)
+{
+    auto & offsets = getOffsets();
+    size_t prev_size = offsets.size();
+    size_t size = pos.size();
+
+    offsets.resize(prev_size + size);
+    for (size_t i = 0; i < size; ++i)
+    {
+        UInt32 len;
+        tiflash_compiler_builtin_memcpy(&len, pos[i], sizeof(UInt32));
+        offsets[prev_size + i] = len + offsets[prev_size + i - 1];
+        pos[i] += sizeof(UInt32);
+    }
+
+    getData().deserializeAndInsertFromPosForColumnArray(pos, offsets, use_nt_align_buffer);
+}
+
+void ColumnArray::flushNTAlignBuffer()
+{
+    getData().flushNTAlignBuffer();
+}
+
+void ColumnArray::deserializeAndAdvancePos(PaddedPODArray<char *> & pos) const
+{
+    static thread_local IColumn::Offsets offsets;
+
+    size_t size = pos.size();
+    offsets.resize(size);
+    for (size_t i = 0; i < size; ++i)
+    {
+        UInt32 len;
+        tiflash_compiler_builtin_memcpy(&len, pos[i], sizeof(UInt32));
+        pos[i] += sizeof(UInt32);
+        offsets[i] = offsets[i - 1] + len;
+    }
+
+    getData().deserializeAndAdvancePosForColumnArray(pos, offsets);
+
+    // Free the memory of offsets if the size of pos is too large.
+    if unlikely (offsets.size() > DEFAULT_BLOCK_SIZE)
+    {
+        IColumn::Offsets tmp_offsets;
+        offsets.swap(tmp_offsets);
+    }
+}
+
+void ColumnArray::updateHashWithValue(
+    size_t n,
+    SipHash & hash,
+    const TiDB::TiDBCollatorPtr & collator,
+    String & sort_key_container) const
 {
     size_t array_size = sizeAt(n);
     size_t offset = offsetAt(n);
@@ -220,7 +445,10 @@ void ColumnArray::updateHashWithValue(size_t n, SipHash & hash, const TiDB::TiDB
         getData().updateHashWithValue(offset + i, hash, collator, sort_key_container);
 }
 
-void ColumnArray::updateHashWithValues(IColumn::HashValues & hash_values, const TiDB::TiDBCollatorPtr & collator, String & sort_key_container) const
+void ColumnArray::updateHashWithValues(
+    IColumn::HashValues & hash_values,
+    const TiDB::TiDBCollatorPtr & collator,
+    String & sort_key_container) const
 {
     for (size_t i = 0, sz = size(); i < sz; ++i)
     {
@@ -236,33 +464,76 @@ void ColumnArray::updateHashWithValues(IColumn::HashValues & hash_values, const 
     }
 }
 
-void ColumnArray::updateWeakHash32(WeakHash32 & hash, const TiDB::TiDBCollatorPtr & collator, String & sort_key_container) const
+void ColumnArray::updateWeakHash32(
+    WeakHash32 & hash,
+    const TiDB::TiDBCollatorPtr & collator,
+    String & sort_key_container) const
 {
-    auto s = offsets->size();
-    if (hash.getData().size() != s)
-        throw Exception("Size of WeakHash32 does not match size of column: column size is " + std::to_string(s) + ", hash size is " + std::to_string(hash.getData().size()), ErrorCodes::LOGICAL_ERROR);
+    updateWeakHash32Impl<false>(hash, collator, sort_key_container, {});
+}
+
+void ColumnArray::updateWeakHash32(
+    WeakHash32 & hash,
+    const TiDB::TiDBCollatorPtr & collator,
+    String & sort_key_container,
+    const BlockSelective & selective) const
+{
+    updateWeakHash32Impl<true>(hash, collator, sort_key_container, selective);
+}
+
+template <bool selective_block>
+void ColumnArray::updateWeakHash32Impl(
+    WeakHash32 & hash,
+    const TiDB::TiDBCollatorPtr & collator,
+    String & sort_key_container,
+    const BlockSelective & selective) const
+{
+    size_t rows;
+    if constexpr (selective_block)
+    {
+        rows = selective.size();
+    }
+    else
+    {
+        rows = offsets->size();
+    }
+
+    RUNTIME_CHECK_MSG(
+        rows == hash.getData().size(),
+        "size of WeakHash32({}) doesn't match size of column({})",
+        hash.getData().size(),
+        rows);
 
     WeakHash32 internal_hash(data->size());
     data->updateWeakHash32(internal_hash, collator, sort_key_container);
 
-    Offset prev_offset = 0;
     const auto & offsets_data = getOffsets();
-    auto & hash_data = hash.getData();
-    auto & internal_hash_data = internal_hash.getData();
+    UInt32 * hash_data = hash.getData().data();
+    const auto & internal_hash_data = internal_hash.getData();
 
-    for (size_t i = 0; i < s; ++i)
+    for (size_t i = 0; i < rows; ++i)
     {
         /// This row improves hash a little bit according to integration tests.
         /// It is the same as to use previous hash value as the first element of array.
-        hash_data[i] = intHashCRC32(hash_data[i]);
+        *hash_data = intHashCRC32(*hash_data);
 
-        for (size_t row = prev_offset; row < offsets_data[i]; ++row)
+        size_t row = i;
+        if constexpr (selective_block)
+            row = selective[i];
+
+        Offset prev_offset = 0;
+        if likely (row > 0)
+            prev_offset = offsets_data[row - 1];
+
+        for (size_t sub_row = prev_offset; sub_row < offsets_data[row]; ++sub_row)
+        {
             /// It is probably not the best way to combine hashes.
             /// But much better then xor which lead to similar hash for arrays like [1], [1, 1, 1], [1, 1, 1, 1, 1], ...
             /// Much better implementation - to add offsets as an optional argument to updateWeakHash32.
-            hash_data[i] = intHashCRC32(internal_hash_data[row], hash_data[i]);
+            *hash_data = intHashCRC32(internal_hash_data[sub_row], *hash_data);
+        }
 
-        prev_offset = offsets_data[i];
+        ++hash_data;
     }
 }
 
@@ -292,6 +563,14 @@ void ColumnArray::insertDefault()
     getOffsets().push_back(getOffsets().empty() ? 0 : getOffsets().back());
 }
 
+void ColumnArray::insertManyDefaults(size_t length)
+{
+    auto & offsets = getOffsets();
+    size_t v = 0;
+    if (!offsets.empty())
+        v = offsets.back();
+    offsets.resize_fill(offsets.size() + length, v);
+}
 
 void ColumnArray::popBack(size_t n)
 {
@@ -315,11 +594,7 @@ int ColumnArray::compareAt(size_t n, size_t m, const IColumn & rhs_, int nan_dir
         if (int res = getData().compareAt(offsetAt(n) + i, rhs.offsetAt(m) + i, *rhs.data.get(), nan_direction_hint))
             return res;
 
-    return lhs_size < rhs_size
-        ? -1
-        : (lhs_size == rhs_size
-               ? 0
-               : 1);
+    return lhs_size < rhs_size ? -1 : (lhs_size == rhs_size ? 0 : 1);
 }
 
 
@@ -350,9 +625,16 @@ struct Less
 void ColumnArray::reserve(size_t n)
 {
     getOffsets().reserve(n);
-    getData().reserve(n); /// The average size of arrays is not taken into account here. Or it is considered to be no more than 1.
+    /// The average size of arrays is not taken into account here. Or it is considered to be no more than 1.
+    getData().reserve(n);
 }
 
+void ColumnArray::reserveAlign(size_t n, size_t alignment)
+{
+    getOffsets().reserve(n, alignment);
+    /// The average size of arrays is not taken into account here. Or it is considered to be no more than 1.
+    getData().reserveAlign(n, alignment);
+}
 
 size_t ColumnArray::byteSize() const
 {
@@ -377,7 +659,8 @@ bool ColumnArray::hasEqualOffsets(const ColumnArray & other) const
 
     const Offsets & offsets1 = getOffsets();
     const Offsets & offsets2 = other.getOffsets();
-    return offsets1.size() == offsets2.size() && 0 == memcmp(&offsets1[0], &offsets2[0], sizeof(offsets1[0]) * offsets1.size());
+    return offsets1.size() == offsets2.size()
+        && 0 == memcmp(&offsets1[0], &offsets2[0], sizeof(offsets1[0]) * offsets1.size());
 }
 
 
@@ -430,7 +713,8 @@ void ColumnArray::insertRangeFrom(const IColumn & src, size_t start, size_t leng
     if (start + length > src_concrete.getOffsets().size())
         throw Exception(
             fmt::format(
-                "Parameters are out of bound in ColumnArray::insertRangeFrom method, start={}, length={}, src.size()={}",
+                "Parameters are out of bound in ColumnArray::insertRangeFrom method, start={}, length={}, "
+                "src.size()={}",
                 start,
                 length,
                 src_concrete.getOffsets().size()),
@@ -502,7 +786,13 @@ ColumnPtr ColumnArray::filterNumber(const Filter & filt, ssize_t result_size_hin
     auto & res_elems = static_cast<ColumnVector<T> &>(res->getData()).getData();
     Offsets & res_offsets = res->getOffsets();
 
-    filterArraysImpl<T>(static_cast<const ColumnVector<T> &>(*data).getData(), getOffsets(), res_elems, res_offsets, filt, result_size_hint);
+    filterArraysImpl<T>(
+        static_cast<const ColumnVector<T> &>(*data).getData(),
+        getOffsets(),
+        res_elems,
+        res_offsets,
+        filt,
+        result_size_hint);
     return res;
 }
 
@@ -555,7 +845,8 @@ ColumnPtr ColumnArray::filterString(const Filter & filt, ssize_t result_size_hin
                 memcpy(&res_chars[res_chars_prev_size], &src_chars[prev_src_string_offset], chars_to_copy);
 
                 for (size_t j = 0; j < array_size; ++j)
-                    res_string_offsets.push_back(src_string_offsets[j + prev_src_offset] + prev_res_string_offset - prev_src_string_offset);
+                    res_string_offsets.push_back(
+                        src_string_offsets[j + prev_src_offset] + prev_res_string_offset - prev_src_string_offset);
 
                 prev_res_string_offset = res_string_offsets.back();
             }
@@ -633,12 +924,15 @@ ColumnPtr ColumnArray::filterNullable(const Filter & filt, ssize_t result_size_h
 
     auto res_null_map = ColumnUInt8::create();
 
-    filterArraysImplOnlyData(nullable_elems.getNullMapData(), getOffsets(), res_null_map->getData(), filt, result_size_hint);
+    filterArraysImplOnlyData(
+        nullable_elems.getNullMapData(),
+        getOffsets(),
+        res_null_map->getData(),
+        filt,
+        result_size_hint);
 
     return ColumnArray::create(
-        ColumnNullable::create(
-            filtered_array_of_nested.getDataPtr(),
-            std::move(res_null_map)),
+        ColumnNullable::create(filtered_array_of_nested.getDataPtr(), std::move(res_null_map)),
         filtered_offsets);
 }
 
@@ -734,9 +1028,17 @@ void ColumnArray::getPermutation(bool reverse, size_t limit, int nan_direction_h
     }
 }
 
-
-ColumnPtr ColumnArray::replicate(const Offsets & replicate_offsets) const
+ColumnPtr ColumnArray::replicateRange(size_t start_row, size_t end_row, const IColumn::Offsets & replicate_offsets)
+    const
 {
+    size_t col_size = size();
+    if (col_size != replicate_offsets.size())
+        throw Exception("Size of offsets doesn't match size of column.", ErrorCodes::SIZES_OF_COLUMNS_DOESNT_MATCH);
+
+    // We only support replicate to full column.
+    RUNTIME_CHECK(start_row == 0, start_row);
+    RUNTIME_CHECK(end_row == replicate_offsets.size(), end_row, replicate_offsets.size());
+
     if (typeid_cast<const ColumnUInt8 *>(data.get()))
         return replicateNumber<UInt8>(replicate_offsets);
     if (typeid_cast<const ColumnUInt16 *>(data.get()))
@@ -745,6 +1047,8 @@ ColumnPtr ColumnArray::replicate(const Offsets & replicate_offsets) const
         return replicateNumber<UInt32>(replicate_offsets);
     if (typeid_cast<const ColumnUInt64 *>(data.get()))
         return replicateNumber<UInt64>(replicate_offsets);
+    if (typeid_cast<const ColumnUInt128 *>(data.get()))
+        return replicateNumber<UInt128>(replicate_offsets);
     if (typeid_cast<const ColumnInt8 *>(data.get()))
         return replicateNumber<Int8>(replicate_offsets);
     if (typeid_cast<const ColumnInt16 *>(data.get()))
@@ -757,14 +1061,10 @@ ColumnPtr ColumnArray::replicate(const Offsets & replicate_offsets) const
         return replicateNumber<Float32>(replicate_offsets);
     if (typeid_cast<const ColumnFloat64 *>(data.get()))
         return replicateNumber<Float64>(replicate_offsets);
-    if (typeid_cast<const ColumnString *>(data.get()))
-        return replicateString(replicate_offsets);
     if (typeid_cast<const ColumnConst *>(data.get()))
         return replicateConst(replicate_offsets);
     if (typeid_cast<const ColumnNullable *>(data.get()))
         return replicateNullable(replicate_offsets);
-    if (typeid_cast<const ColumnTuple *>(data.get()))
-        return replicateTuple(replicate_offsets);
     return replicateGeneric(replicate_offsets);
 }
 
@@ -859,7 +1159,8 @@ ColumnPtr ColumnArray::replicateString(const Offsets & replicate_offsets) const
         /// The number of rows in the array.
         size_t value_size = src_offsets[i] - prev_src_offset;
         /// Number of characters in rows of the array, including zero/null bytes.
-        size_t sum_chars_size = value_size == 0 ? 0 : (src_string_offsets[prev_src_offset + value_size - 1] - prev_src_string_offset);
+        size_t sum_chars_size
+            = value_size == 0 ? 0 : (src_string_offsets[prev_src_offset + value_size - 1] - prev_src_string_offset);
 
         for (size_t j = 0; j < size_to_replicate; ++j)
         {
@@ -968,8 +1269,9 @@ ColumnPtr ColumnArray::replicateNullable(const Offsets & replicate_offsets) cons
 
     auto array_of_nested = ColumnArray(nullable.getNestedColumnPtr()->assumeMutable(), getOffsetsPtr()->assumeMutable())
                                .replicate(replicate_offsets);
-    auto array_of_null_map = ColumnArray(nullable.getNullMapColumnPtr()->assumeMutable(), getOffsetsPtr()->assumeMutable())
-                                 .replicate(replicate_offsets);
+    auto array_of_null_map
+        = ColumnArray(nullable.getNullMapColumnPtr()->assumeMutable(), getOffsetsPtr()->assumeMutable())
+              .replicate(replicate_offsets);
 
     return ColumnArray::create(
         ColumnNullable::create(
@@ -1008,6 +1310,34 @@ ColumnPtr ColumnArray::replicateTuple(const Offsets & replicate_offsets) const
 void ColumnArray::gather(ColumnGathererStream & gatherer)
 {
     gatherer.gather(*this);
+}
+
+bool ColumnArray::decodeTiDBRowV2Datum(size_t cursor, const String & raw_value, size_t length, bool /* force_decode */)
+{
+    RUNTIME_CHECK(raw_value.size() >= cursor + length);
+    insertFromDatumData(raw_value.c_str() + cursor, length);
+    return true;
+}
+
+void ColumnArray::insertFromDatumData(const char * data, size_t length)
+{
+    RUNTIME_CHECK(boost::endian::order::native == boost::endian::order::little);
+
+    RUNTIME_CHECK(checkAndGetColumn<ColumnVector<Float32>>(&getData()));
+    RUNTIME_CHECK(getData().isFixedAndContiguous());
+
+    RUNTIME_CHECK(length >= sizeof(UInt32), length);
+    auto n = readLittleEndian<UInt32>(data);
+    data += sizeof(UInt32);
+
+    auto precise_data_size = n * sizeof(Float32);
+    RUNTIME_CHECK(length >= sizeof(UInt32) + precise_data_size, n, length);
+    insertData(data, precise_data_size);
+}
+
+std::pair<UInt32, StringRef> ColumnArray::getElementRef(size_t element_idx) const
+{
+    return {static_cast<UInt32>(sizeAt(element_idx)), getDataAt(element_idx)};
 }
 
 } // namespace DB

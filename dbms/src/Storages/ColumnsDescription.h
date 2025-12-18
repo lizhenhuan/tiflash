@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Storages/ColumnsDescription.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,10 +16,10 @@
 
 #pragma once
 
-#include <Core/NamesAndTypes.h>
-#include <Core/Names.h>
-#include <Storages/ColumnDefault.h>
 #include <Core/Block.h>
+#include <Core/Names.h>
+#include <Core/NamesAndTypes.h>
+#include <Storages/ColumnDefault.h>
 
 
 namespace DB
@@ -43,13 +45,13 @@ struct ColumnsDescription
         , defaults(std::move(defaults_))
     {}
 
-    explicit ColumnsDescription(NamesAndTypesList ordinary_) : ordinary(std::move(ordinary_)) {}
+    explicit ColumnsDescription(NamesAndTypesList ordinary_)
+        : ordinary(std::move(ordinary_))
+    {}
 
     bool operator==(const ColumnsDescription & other) const
     {
-        return ordinary == other.ordinary
-            && materialized == other.materialized
-            && aliases == other.aliases
+        return ordinary == other.ordinary && materialized == other.materialized && aliases == other.aliases
             && defaults == other.defaults;
     }
 
@@ -73,4 +75,4 @@ struct ColumnsDescription
     static ColumnsDescription parse(const String & str);
 };
 
-}
+} // namespace DB

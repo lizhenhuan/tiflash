@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Columns/ColumnConst.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,7 +15,8 @@
 // limitations under the License.
 
 #include <Columns/ColumnConst.h>
-#include <Columns/ColumnsCommon.h>
+#include <Columns/countBytesInFilter.h>
+#include <Columns/filterColumn.h>
 #include <Common/HashTable/Hash.h>
 #include <Common/typeid_cast.h>
 #include <IO/WriteHelpers.h>
@@ -55,16 +58,18 @@ ColumnPtr ColumnConst::filter(const Filter & filt, ssize_t /*result_size_hint*/)
     return ColumnConst::create(data, countBytesInFilter(filt));
 }
 
-ColumnPtr ColumnConst::replicate(const Offsets & offsets) const
+ColumnPtr ColumnConst::replicateRange(size_t /*start_row*/, size_t end_row, const IColumn::Offsets & offsets) const
 {
     if (s != offsets.size())
         throw Exception(
             fmt::format("Size of offsets ({}) doesn't match size of column ({})", offsets.size(), s),
             ErrorCodes::SIZES_OF_COLUMNS_DOESNT_MATCH);
 
-    size_t replicated_size = 0 == s ? 0 : offsets.back();
+    assert(end_row <= s);
+    size_t replicated_size = 0 == s ? 0 : (offsets[end_row - 1]);
     return ColumnConst::create(data, replicated_size);
 }
+
 
 ColumnPtr ColumnConst::permute(const Permutation & perm, size_t limit) const
 {
@@ -83,11 +88,32 @@ ColumnPtr ColumnConst::permute(const Permutation & perm, size_t limit) const
 
 MutableColumns ColumnConst::scatter(ColumnIndex num_columns, const Selector & selector) const
 {
-    if (s != selector.size())
-        throw Exception(
-            fmt::format("Size of selector ({}) doesn't match size of column ({})", selector.size(), s),
-            ErrorCodes::SIZES_OF_COLUMNS_DOESNT_MATCH);
+    RUNTIME_CHECK_MSG(
+        s == selector.size(),
+        "Size of selector ({}) doesn't match size of column ({})",
+        selector.size(),
+        s);
 
+    return scatterImplForColumnConst(num_columns, selector);
+}
+
+MutableColumns ColumnConst::scatter(
+    ColumnIndex num_columns,
+    const Selector & selector,
+    const BlockSelective & selective) const
+{
+    const auto selective_rows = selective.size();
+    RUNTIME_CHECK_MSG(
+        selective_rows == selector.size(),
+        "Size of selector ({}) doesn't match size of selective column ({})",
+        selector.size(),
+        selective_rows);
+
+    return scatterImplForColumnConst(num_columns, selector);
+}
+
+MutableColumns ColumnConst::scatterImplForColumnConst(ColumnIndex num_columns, const Selector & selector) const
+{
     std::vector<size_t> counts = countColumnsSizeInSelector(num_columns, selector);
 
     MutableColumns res(num_columns);
@@ -97,20 +123,78 @@ MutableColumns ColumnConst::scatter(ColumnIndex num_columns, const Selector & se
     return res;
 }
 
-void ColumnConst::getPermutation(bool /*reverse*/, size_t /*limit*/, int /*nan_direction_hint*/, Permutation & res) const
+void ColumnConst::scatterTo(ScatterColumns & columns, const Selector & selector) const
+{
+    RUNTIME_CHECK_MSG(
+        s == selector.size(),
+        "Size of selector ({}) doesn't match size of column ({})",
+        selector.size(),
+        s);
+    scatterToImplForColumnConst(columns, selector);
+}
+
+void ColumnConst::scatterTo(ScatterColumns & columns, const Selector & selector, const BlockSelective & selective) const
+{
+    const auto selective_rows = selective.size();
+    RUNTIME_CHECK_MSG(
+        selective_rows == selector.size(),
+        "Size of selector ({}) doesn't match size of column ({})",
+        selector.size(),
+        selective_rows);
+    scatterToImplForColumnConst(columns, selector);
+}
+
+void ColumnConst::scatterToImplForColumnConst(ScatterColumns & columns, const Selector & selector) const
+{
+    ColumnIndex num_columns = columns.size();
+    std::vector<size_t> counts = countColumnsSizeInSelector(num_columns, selector);
+
+    for (size_t i = 0; i < num_columns; ++i)
+        columns[i]->insertRangeFrom(*this, 0, counts[i]);
+}
+
+void ColumnConst::getPermutation(bool /*reverse*/, size_t /*limit*/, int /*nan_direction_hint*/, Permutation & res)
+    const
 {
     res.resize(s);
     for (size_t i = 0; i < s; ++i)
         res[i] = i;
 }
 
-void ColumnConst::updateWeakHash32(WeakHash32 & hash, const TiDB::TiDBCollatorPtr & collator, String & sort_key_container) const
+void ColumnConst::updateWeakHash32(
+    WeakHash32 & hash,
+    const TiDB::TiDBCollatorPtr & collator,
+    String & sort_key_container) const
 {
-    if (hash.getData().size() != s)
-        throw Exception(
-            fmt::format("Size of WeakHash32 does not match size of column: column size is {}, hash size is {}", s, hash.getData().size()),
-            ErrorCodes::LOGICAL_ERROR);
+    RUNTIME_CHECK_MSG(
+        hash.getData().size() == s,
+        "size of WeakHash32({}) doesn't match size of column({})",
+        hash.getData().size(),
+        s);
+    updateWeakHash32Impl(hash, collator, sort_key_container);
+}
 
+void ColumnConst::updateWeakHash32(
+    WeakHash32 & hash,
+    const TiDB::TiDBCollatorPtr & collator,
+    String & sort_key_container,
+    const BlockSelective & selective) const
+{
+    const size_t rows = selective.size();
+    RUNTIME_CHECK_MSG(
+        hash.getData().size() == rows,
+        "size of WeakHash32({}) doesn't match size of column({})",
+        hash.getData().size(),
+        rows);
+
+    updateWeakHash32Impl(hash, collator, sort_key_container);
+}
+
+void ColumnConst::updateWeakHash32Impl(
+    WeakHash32 & hash,
+    const TiDB::TiDBCollatorPtr & collator,
+    String & sort_key_container) const
+{
     WeakHash32 element_hash(1);
     data->updateWeakHash32(element_hash, collator, sort_key_container);
     size_t data_hash = element_hash.getData()[0];
@@ -118,5 +202,4 @@ void ColumnConst::updateWeakHash32(WeakHash32 & hash, const TiDB::TiDBCollatorPt
     for (auto & value : hash.getData())
         value = intHashCRC32(data_hash, value);
 }
-
 } // namespace DB

@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Storages/System/StorageSystemNumbers.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -93,10 +95,17 @@ BlockInputStreams StorageSystemNumbers::read(
     BlockInputStreams res(num_streams);
     for (size_t i = 0; i < num_streams; ++i)
     {
-        res[i] = std::make_shared<NumbersBlockInputStream>(max_block_size, i * max_block_size, num_streams * max_block_size);
+        res[i] = std::make_shared<NumbersBlockInputStream>(
+            max_block_size,
+            i * max_block_size,
+            num_streams * max_block_size);
 
         if (limit) /// This formula is how to split 'limit' elements to 'num_streams' chunks almost uniformly.
-            res[i] = std::make_shared<LimitBlockInputStream>(res[i], limit * (i + 1) / num_streams - limit * i / num_streams, 0, /*req_id=*/"");
+            res[i] = std::make_shared<LimitBlockInputStream>(
+                res[i],
+                limit * (i + 1) / num_streams - limit * i / num_streams,
+                /*offset*/ 0,
+                /*req_id=*/"");
     }
 
     return res;

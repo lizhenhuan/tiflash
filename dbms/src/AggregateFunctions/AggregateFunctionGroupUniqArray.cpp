@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/AggregateFunctions/AggregateFunctionGroupUniqArray.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -27,16 +29,21 @@ namespace
 /// Substitute return type for Date and DateTime
 class AggregateFunctionGroupUniqArrayDate : public AggregateFunctionGroupUniqArray<DataTypeDate::FieldType>
 {
-    DataTypePtr getReturnType() const override { return std::make_shared<DataTypeArray>(std::make_shared<DataTypeDate>()); }
+    DataTypePtr getReturnType() const override
+    {
+        return std::make_shared<DataTypeArray>(std::make_shared<DataTypeDate>());
+    }
 };
 
 class AggregateFunctionGroupUniqArrayDateTime : public AggregateFunctionGroupUniqArray<DataTypeDateTime::FieldType>
 {
-    DataTypePtr getReturnType() const override { return std::make_shared<DataTypeArray>(std::make_shared<DataTypeDateTime>()); }
+    DataTypePtr getReturnType() const override
+    {
+        return std::make_shared<DataTypeArray>(std::make_shared<DataTypeDateTime>());
+    }
 };
 
-
-static IAggregateFunction * createWithExtraTypes(const DataTypePtr & argument_type)
+IAggregateFunction * createWithExtraTypes(const DataTypePtr & argument_type)
 {
     if (typeid_cast<const DataTypeDate *>(argument_type.get()))
         return new AggregateFunctionGroupUniqArrayDate;
@@ -52,7 +59,11 @@ static IAggregateFunction * createWithExtraTypes(const DataTypePtr & argument_ty
     }
 }
 
-AggregateFunctionPtr createAggregateFunctionGroupUniqArray(const std::string & name, const DataTypes & argument_types, const Array & parameters)
+AggregateFunctionPtr createAggregateFunctionGroupUniqArray(
+    const Context & /* context not used */,
+    const std::string & name,
+    const DataTypes & argument_types,
+    const Array & parameters)
 {
     assertNoParameters(name, parameters);
     assertUnary(name, argument_types);
@@ -63,7 +74,9 @@ AggregateFunctionPtr createAggregateFunctionGroupUniqArray(const std::string & n
         res = AggregateFunctionPtr(createWithExtraTypes(argument_types[0]));
 
     if (!res)
-        throw Exception("Illegal type " + argument_types[0]->getName() + " of argument for aggregate function " + name, ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT);
+        throw Exception(
+            "Illegal type " + argument_types[0]->getName() + " of argument for aggregate function " + name,
+            ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT);
 
     return res;
 }

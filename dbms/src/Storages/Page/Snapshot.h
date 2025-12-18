@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,13 +20,26 @@
 
 namespace DB
 {
+
+enum class SnapshotType : UInt32
+{
+    // Protect all data
+    General,
+    // Protect only data in DeltaTree engine.
+    // Only used under UniversalPageStorage now.
+    DeltaTreeOnly,
+};
+
+// The statistics of all living snapshots and the oldest living snapshot.
 struct SnapshotsStatistics
 {
     size_t num_snapshots = 0;
     double longest_living_seconds = 0.0;
-    unsigned longest_living_from_thread_id = 0;
+    SnapshotType longest_living_type = SnapshotType::General;
+    UInt32 longest_living_from_thread_id = 0;
     String longest_living_from_tracing_id;
 };
+
 class PageStorageSnapshot
 {
 public:
@@ -43,17 +56,11 @@ public:
         , snapshot_v3(snapshot_v3_)
     {}
 
-    ~PageStorageSnapshotMixed() = default;
+    ~PageStorageSnapshotMixed() override = default;
 
-    PageStorageSnapshotPtr getV2Snapshot()
-    {
-        return snapshot_v2;
-    }
+    PageStorageSnapshotPtr getV2Snapshot() { return snapshot_v2; }
 
-    PageStorageSnapshotPtr getV3Snapshot()
-    {
-        return snapshot_v3;
-    }
+    PageStorageSnapshotPtr getV3Snapshot() { return snapshot_v3; }
 
 private:
     PageStorageSnapshotPtr snapshot_v2;
@@ -61,8 +68,7 @@ private:
 };
 using PageStorageSnapshotMixedPtr = std::shared_ptr<PageStorageSnapshotMixed>;
 
-inline PageStorageSnapshotMixedPtr
-toConcreteMixedSnapshot(const PageStorageSnapshotPtr & ptr)
+inline PageStorageSnapshotMixedPtr toConcreteMixedSnapshot(const PageStorageSnapshotPtr & ptr)
 {
     return std::static_pointer_cast<PageStorageSnapshotMixed>(ptr);
 }

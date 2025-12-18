@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -25,47 +25,42 @@ public:
         : StressWorkload(options_)
     {}
 
-    static String name()
-    {
-        return "HighValidBigPageFileGCWorkload";
-    }
+    static String name() { return "HighValidBigPageFileGCWorkload"; }
 
-    static UInt64 mask()
-    {
-        return 1 << 0;
-    }
+    static UInt64 mask() { return 1 << 0; }
 
     String desc() override
     {
-        return fmt::format("Some of options will be ignored"
-                           "`paths` will only used first one. which is {}. Data will store in {}"
-                           "Please cleanup folder after this test."
-                           "The current workload will generate 9G data, and GC will be performed at the end.",
-                           options.paths[0],
-                           options.paths[0] + "/" + name());
+        return fmt::format(
+            "Some of options will be ignored"
+            "`paths` will only used first one. which is {}. Data will store in {}"
+            "Please cleanup folder after this test."
+            "The current workload will generate 9G data, and GC will be performed at the end.",
+            options.paths[0],
+            options.paths[0] + "/" + name());
     }
 
     void run() override
     {
-        metrics_dumper = std::make_shared<PSMetricsDumper>(1);
+        metrics_dumper = std::make_shared<PSMetricsDumper>(1, options.logger);
         metrics_dumper->start();
 
         // For safe , setup timeout.
-        stress_time = std::make_shared<StressTimeout>(100);
+        stress_time = std::make_shared<StressTimeout>(100, options.logger);
         stress_time->start();
 
         // Generate 8G data in the same Pagefile
         {
             stop_watch.start();
 
-            DB::PageStorage::Config config;
+            DB::PageStorageConfig config;
             config.file_max_size = 8ULL * DB::GB;
             config.file_roll_size = 8ULL * DB::GB;
             initPageStorage(config, name());
 
             startWriter<PSCommonWriter>(1, [](std::shared_ptr<PSCommonWriter> writer) -> void {
                 writer->setBatchBufferNums(1);
-                writer->setBatchBufferSize(100ULL * DB::MB);
+                writer->setBufferSizeRange(100ULL * DB::MB, 100ULL * DB::MB);
                 writer->setBatchBufferLimit(8ULL * DB::GB);
                 writer->setBatchBufferPageRange(1000000);
             });
@@ -75,18 +70,18 @@ public:
             onDumpResult();
         }
 
-        LOG_INFO(StressEnv::logger, "Already generator an 8G page file");
+        LOG_INFO(options.logger, "Already generator an 8G page file");
 
         // Generate normal data in the same Pagefile
         {
-            DB::PageStorage::Config config;
+            DB::PageStorageConfig config;
             config.file_max_size = DB::PAGE_FILE_MAX_SIZE;
             config.file_roll_size = DB::PAGE_FILE_ROLL_SIZE;
             initPageStorage(config, name());
             stop_watch.start();
             startWriter<PSCommonWriter>(1, [](std::shared_ptr<PSCommonWriter> writer) -> void {
                 writer->setBatchBufferNums(4);
-                writer->setBatchBufferSize(2ULL * DB::MB);
+                writer->setBufferSizeRange(2ULL * DB::MB, 2ULL * DB::MB);
                 writer->setBatchBufferLimit(1ULL * DB::GB);
                 writer->setBatchBufferPageRange(1000000);
             });
@@ -96,14 +91,14 @@ public:
             onDumpResult();
         }
 
-        gc = std::make_shared<PSGc>(ps);
+        gc = std::make_shared<PSGc>(ps, options.gc_interval_s);
         gc->doGcOnce();
         gc_time_ms = gc->getElapsedMilliseconds();
         {
             stop_watch.start();
             startWriter<PSCommonWriter>(1, [](std::shared_ptr<PSCommonWriter> writer) -> void {
                 writer->setBatchBufferNums(4);
-                writer->setBatchBufferSize(2ULL * DB::MB);
+                writer->setBufferSizeRange(2ULL * DB::MB, 2ULL * DB::MB);
                 writer->setBatchBufferLimit(1ULL * DB::GB);
                 writer->setBatchBufferPageRange(1000000);
             });
@@ -116,14 +111,11 @@ public:
         gc->doGcOnce();
     }
 
-    bool verify() override
-    {
-        return (gc_time_ms < 1 * 1000);
-    }
+    bool verify() override { return (gc_time_ms < 1 * 1000); }
 
     void onFailed() override
     {
-        LOG_WARNING(StressEnv::logger, fmt::format("GC time is {} , it should not bigger than {} ", gc_time_ms, 1 * 1000));
+        LOG_WARNING(options.logger, "GC time is {} , it should not bigger than {} ", gc_time_ms, 1 * 1000);
     }
 
 private:

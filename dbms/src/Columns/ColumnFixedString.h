@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Columns/ColumnFixedString.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,6 +18,7 @@
 
 #include <Columns/IColumn.h>
 #include <Common/PODArray.h>
+#include <common/memcpy.h>
 #include <string.h> // memcpy
 
 
@@ -59,25 +62,13 @@ public:
 
     MutableColumnPtr cloneResized(size_t size) const override;
 
-    size_t size() const override
-    {
-        return chars.size() / n;
-    }
+    size_t size() const override { return chars.size() / n; }
 
-    size_t byteSize() const override
-    {
-        return chars.size() + sizeof(n);
-    }
+    size_t byteSize() const override { return chars.size() + sizeof(n); }
 
-    size_t byteSize(size_t /*offset*/, size_t limit) const override
-    {
-        return limit * n;
-    }
+    size_t byteSize(size_t /*offset*/, size_t limit) const override { return limit * n; }
 
-    size_t allocatedBytes() const override
-    {
-        return chars.allocated_bytes() + sizeof(n);
-    }
+    size_t allocatedBytes() const override { return chars.allocated_bytes() + sizeof(n); }
 
     Field operator[](size_t index) const override
     {
@@ -89,40 +80,116 @@ public:
         res.assignString(reinterpret_cast<const char *>(&chars[n * index]), n);
     }
 
-    StringRef getDataAt(size_t index) const override
-    {
-        return StringRef(&chars[n * index], n);
-    }
+    StringRef getDataAt(size_t index) const override { return StringRef(&chars[n * index], n); }
 
     void insert(const Field & x) override;
 
     void insertFrom(const IColumn & src_, size_t index) override;
 
+    void insertManyFrom(const IColumn & src_, size_t position, size_t length) override;
+
+    void insertSelectiveRangeFrom(const IColumn & src_, const Offsets & selective_offsets, size_t start, size_t length)
+        override;
+
     void insertData(const char * pos, size_t length) override;
 
-    void insertDefault() override
-    {
-        chars.resize_fill(chars.size() + n);
-    }
+    void insertDefault() override { chars.resize_fill_zero(chars.size() + n); }
+    void insertManyDefaults(size_t length) override { chars.resize_fill_zero(chars.size() + n * length); }
 
-    void popBack(size_t elems) override
-    {
-        chars.resize_assume_reserved(chars.size() - n * elems);
-    }
+    void popBack(size_t elems) override { chars.resize_assume_reserved(chars.size() - n * elems); }
 
-    StringRef serializeValueIntoArena(size_t index, Arena & arena, char const *& begin, const TiDB::TiDBCollatorPtr &, String &) const override;
+    StringRef serializeValueIntoArena(
+        size_t index,
+        Arena & arena,
+        char const *& begin,
+        const TiDB::TiDBCollatorPtr &,
+        String &) const override;
 
     const char * deserializeAndInsertFromArena(const char * pos, const TiDB::TiDBCollatorPtr &) override;
 
+    size_t serializeByteSize() const override { return chars.size(); }
+
+    void countSerializeByteSize(PaddedPODArray<size_t> & byte_size) const override;
+    void countSerializeByteSizeForCmp(
+        PaddedPODArray<size_t> & byte_size,
+        const NullMap * nullmap,
+        const TiDB::TiDBCollatorPtr & collator) const override;
+
+    void countSerializeByteSizeForColumnArray(
+        PaddedPODArray<size_t> & byte_size,
+        const IColumn::Offsets & array_offsets) const override;
+    void countSerializeByteSizeForCmpColumnArray(
+        PaddedPODArray<size_t> & byte_size,
+        const IColumn::Offsets & array_offsets,
+        const NullMap * nullmap,
+        const TiDB::TiDBCollatorPtr & collator) const override;
+    template <bool has_nullmap>
+    void countSerializeByteSizeForColumnArrayImpl(
+        PaddedPODArray<size_t> & byte_size,
+        const IColumn::Offsets & array_offsets,
+        const NullMap * nullmap) const;
+
+    void serializeToPos(PaddedPODArray<char *> & pos, size_t start, size_t length, bool has_null) const override;
+    void serializeToPosForCmp(
+        PaddedPODArray<char *> & pos,
+        size_t start,
+        size_t length,
+        bool has_null,
+        const NullMap * nullmap,
+        const TiDB::TiDBCollatorPtr & collator,
+        String *) const override;
+    template <bool has_null, bool has_nullmap>
+    void serializeToPosImpl(PaddedPODArray<char *> & pos, size_t start, size_t length, const NullMap * nullmap) const;
+
+    void serializeToPosForColumnArray(
+        PaddedPODArray<char *> & pos,
+        size_t start,
+        size_t length,
+        bool has_null,
+        const IColumn::Offsets & array_offsets) const override;
+    void serializeToPosForCmpColumnArray(
+        PaddedPODArray<char *> & pos,
+        size_t start,
+        size_t length,
+        bool has_null,
+        const NullMap * nullmap,
+        const IColumn::Offsets & array_offsets,
+        const TiDB::TiDBCollatorPtr & collator,
+        String *) const override;
+    template <bool has_null, bool has_nullmap>
+    void serializeToPosForColumnArrayImpl(
+        PaddedPODArray<char *> & pos,
+        size_t start,
+        size_t length,
+        const IColumn::Offsets & array_offsets,
+        const NullMap * nullmap) const;
+
+    void deserializeAndInsertFromPos(PaddedPODArray<char *> & pos, bool use_nt_align_buffer) override;
+
+    void deserializeAndInsertFromPosForColumnArray(
+        PaddedPODArray<char *> & pos,
+        const IColumn::Offsets & array_offsets,
+        bool use_nt_align_buffer) override;
+
+    void flushNTAlignBuffer() override {}
+
+    void deserializeAndAdvancePos(PaddedPODArray<char *> & pos) const override { IColumn::advancePosByOffset(pos, n); }
+
+    void deserializeAndAdvancePosForColumnArray(PaddedPODArray<char *> & pos, const IColumn::Offsets & array_offsets)
+        const override;
+
     void updateHashWithValue(size_t index, SipHash & hash, const TiDB::TiDBCollatorPtr &, String &) const override;
 
-    void updateHashWithValues(IColumn::HashValues & hash_values, const TiDB::TiDBCollatorPtr &, String &) const override;
+    void updateHashWithValues(IColumn::HashValues & hash_values, const TiDB::TiDBCollatorPtr &, String &)
+        const override;
 
     void updateWeakHash32(WeakHash32 & hash, const TiDB::TiDBCollatorPtr &, String &) const override;
+    void updateWeakHash32(WeakHash32 & hash, const TiDB::TiDBCollatorPtr &, String &, const BlockSelective & selective)
+        const override;
 
     int compareAt(size_t p1, size_t p2, const IColumn & rhs_, int /*nan_direction_hint*/) const override
     {
-        const ColumnFixedString & rhs = static_cast<const ColumnFixedString &>(rhs_);
+        const auto & rhs = static_cast<const ColumnFixedString &>(rhs_);
         return memcmp(&chars[p1 * n], &rhs.chars[p2 * n], n);
     }
 
@@ -134,19 +201,32 @@ public:
 
     ColumnPtr permute(const Permutation & perm, size_t limit) const override;
 
-    ColumnPtr replicate(const Offsets & offsets) const override;
+    ColumnPtr replicateRange(size_t start_row, size_t end_row, const IColumn::Offsets & offsets) const override;
 
     MutableColumns scatter(ColumnIndex num_columns, const Selector & selector) const override
     {
         return scatterImpl<ColumnFixedString>(num_columns, selector);
     }
 
+    MutableColumns scatter(ColumnIndex num_columns, const Selector & selector, const BlockSelective & selective)
+        const override
+    {
+        return scatterImpl<ColumnFixedString>(num_columns, selector, selective);
+    }
+
+    void scatterTo(ScatterColumns & columns, const Selector & selector) const override
+    {
+        scatterToImpl<ColumnFixedString>(columns, selector);
+    }
+    void scatterTo(ScatterColumns & columns, const Selector & selector, const BlockSelective & selective) const override
+    {
+        scatterToImpl<ColumnFixedString>(columns, selector, selective);
+    }
+
     void gather(ColumnGathererStream & gatherer_stream) override;
 
-    void reserve(size_t size) override
-    {
-        chars.reserve(n * size);
-    };
+    void reserve(size_t size) override { chars.reserve(n * size); }
+    void reserveAlign(size_t size, size_t alignment) override { chars.reserve(n * size, alignment); }
 
     void getExtremes(Field & min, Field & max) const override;
 
@@ -163,6 +243,9 @@ public:
     const Chars_t & getChars() const { return chars; }
 
     size_t getN() const { return n; }
+
+    template <bool selective_block>
+    void updateWeakHash32Impl(WeakHash32 & hash, const BlockSelective & selective) const;
 };
 
 

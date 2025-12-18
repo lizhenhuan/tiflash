@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -40,13 +40,14 @@ int StressWorkload::mainEntry(int argc, char ** argv)
     }
     try
     {
-        StressEnv::initGlobalLogger();
         auto env = StressEnv::parse(argc, argv);
         env.setup();
 
-        auto & mamager = StressWorkloadManger::getInstance();
-        mamager.setEnv(env);
-        mamager.runWorkload();
+        auto & factory = PageWorkloadFactory::getInstance();
+        factory.setEnv(env);
+        factory.runWorkload();
+
+        SCOPE_EXIT({ factory.stopWorkload(); });
 
         return StressEnvStatus::getInstance().isSuccess();
     }

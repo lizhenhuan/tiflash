@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Parsers/IParser.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,13 +16,13 @@
 
 #pragma once
 
-#include <set>
-#include <memory>
-
 #include <Core/Defines.h>
 #include <Core/Types.h>
 #include <Parsers/IAST.h>
 #include <Parsers/TokenIterator.h>
+
+#include <memory>
+#include <set>
 
 
 namespace DB
@@ -46,10 +48,7 @@ struct Expected
             variants.insert(description);
     }
 
-    void add(TokenIterator it, const char * description)
-    {
-        add(it->begin, description);
-    }
+    void add(TokenIterator it, const char * description) { add(it->begin, description); }
 };
 
 
@@ -105,4 +104,4 @@ public:
 
 using ParserPtr = std::unique_ptr<IParser>;
 
-}
+} // namespace DB

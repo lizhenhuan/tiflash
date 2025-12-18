@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/DataStreams/BinaryRowOutputStream.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,10 +14,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <IO/WriteBuffer.h>
 #include <Columns/IColumn.h>
-#include <DataTypes/IDataType.h>
 #include <DataStreams/BinaryRowOutputStream.h>
+#include <DataTypes/IDataType.h>
+#include <IO/Buffer/WriteBuffer.h>
 
 
 namespace DB
@@ -23,8 +25,7 @@ namespace DB
 
 BinaryRowOutputStream::BinaryRowOutputStream(WriteBuffer & ostr_)
     : ostr(ostr_)
-{
-}
+{}
 
 void BinaryRowOutputStream::flush()
 {
@@ -36,4 +37,4 @@ void BinaryRowOutputStream::writeField(const IColumn & column, const IDataType &
     type.serializeBinary(column, row_num, ostr);
 }
 
-}
+} // namespace DB

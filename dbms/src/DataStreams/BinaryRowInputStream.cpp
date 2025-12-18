@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/DataStreams/BinaryRowInputStream.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,17 +15,17 @@
 // limitations under the License.
 
 #include <Core/Block.h>
-#include <IO/ReadBuffer.h>
 #include <DataStreams/BinaryRowInputStream.h>
+#include <IO/Buffer/ReadBuffer.h>
 
 
 namespace DB
 {
 
 BinaryRowInputStream::BinaryRowInputStream(ReadBuffer & istr_, const Block & header_)
-    : istr(istr_), header(header_)
-{
-}
+    : istr(istr_)
+    , header(header_)
+{}
 
 
 bool BinaryRowInputStream::read(MutableColumns & columns)
@@ -38,4 +40,4 @@ bool BinaryRowInputStream::read(MutableColumns & columns)
     return true;
 }
 
-}
+} // namespace DB

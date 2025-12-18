@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Parsers/TokenIterator.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,8 +16,9 @@
 
 #pragma once
 
-#include <vector>
 #include <Parsers/Lexer.h>
+
+#include <vector>
 
 
 namespace DB
@@ -35,9 +38,11 @@ private:
     Lexer lexer;
 
 public:
-    Tokens(const char * begin, const char * end, size_t max_query_size = 0) : lexer(begin, end, max_query_size) {}
+    Tokens(const char * begin, const char * end, size_t max_query_size = 0)
+        : lexer(begin, end, max_query_size)
+    {}
 
-    const Token & operator[] (size_t index)
+    const Token & operator[](size_t index)
     {
         while (true)
         {
@@ -71,19 +76,29 @@ private:
     size_t index = 0;
 
 public:
-    explicit TokenIterator(Tokens & tokens) : tokens(&tokens) {}
+    explicit TokenIterator(Tokens & tokens)
+        : tokens(&tokens)
+    {}
 
     const Token & get() { return (*tokens)[index]; }
     const Token & operator*() { return get(); }
     const Token * operator->() { return &get(); }
 
-    TokenIterator & operator++() { ++index; return *this; }
-    TokenIterator & operator--() { --index; return *this; }
+    TokenIterator & operator++()
+    {
+        ++index;
+        return *this;
+    }
+    TokenIterator & operator--()
+    {
+        --index;
+        return *this;
+    }
 
-    bool operator< (const TokenIterator & rhs) const { return index < rhs.index; }
-    bool operator<= (const TokenIterator & rhs) const { return index <= rhs.index; }
-    bool operator== (const TokenIterator & rhs) const { return index == rhs.index; }
-    bool operator!= (const TokenIterator & rhs) const { return index != rhs.index; }
+    bool operator<(const TokenIterator & rhs) const { return index < rhs.index; }
+    bool operator<=(const TokenIterator & rhs) const { return index <= rhs.index; }
+    bool operator==(const TokenIterator & rhs) const { return index == rhs.index; }
+    bool operator!=(const TokenIterator & rhs) const { return index != rhs.index; }
 
     bool isValid() { return get().type < TokenType::EndOfStream; }
 
@@ -96,4 +111,4 @@ public:
 using UnmatchedParentheses = std::vector<Token>;
 UnmatchedParentheses checkUnmatchedParentheses(TokenIterator begin, Token * last);
 
-}
+} // namespace DB

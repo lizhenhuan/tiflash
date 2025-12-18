@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,8 +13,9 @@
 // limitations under the License.
 
 #include <Common/CurrentMetrics.h>
-#include <Encryption/FileProvider.h>
-#include <IO/ReadBufferFromMemory.h>
+#include <IO/Buffer/ReadBufferFromMemory.h>
+#include <IO/FileProvider/FileProvider.h>
+#include <Interpreters/Context.h>
 #include <Poco/AutoPtr.h>
 #include <Poco/File.h>
 #include <Poco/Logger.h>
@@ -22,12 +23,12 @@
 #include <Poco/ThreadPool.h>
 #include <Poco/Timer.h>
 #include <Storages/Page/Page.h>
-#include <Storages/Page/PageDefines.h>
+#include <Storages/Page/V2/PageDefines.h>
 #include <Storages/Page/V2/PageFile.h>
 #include <Storages/Page/V2/PageStorage.h>
-#include <Storages/Page/WriteBatch.h>
+#include <Storages/Page/WriteBatchImpl.h>
 #include <Storages/PathPool.h>
-#include <Storages/tests/TiFlashStorageTestBasic.h>
+#include <TestUtils/TiFlashStorageTestBasic.h>
 #include <TestUtils/TiFlashTestBasic.h>
 #include <common/logger_useful.h>
 
@@ -41,12 +42,11 @@ namespace DB::PS::V2::tests
 {
 using PSPtr = std::shared_ptr<PageStorage>;
 
-class PageStorageMultiWriters_test : public DB::base::TiFlashStorageTestBasic
+class PageStorageMultiWritersTest : public DB::base::TiFlashStorageTestBasic
 {
 public:
-    PageStorageMultiWriters_test()
-        : storage()
-        , file_provider{DB::tests::TiFlashTestEnv::getContext().getFileProvider()}
+    PageStorageMultiWritersTest()
+        : file_provider{DB::tests::TiFlashTestEnv::getDefaultFileProvider()}
     {}
 
 protected:
@@ -55,6 +55,10 @@ protected:
     void SetUp() override
     {
         TiFlashStorageTestBasic::SetUp();
+        bkg_pool = std::make_shared<DB::BackgroundProcessingPool>(
+            4,
+            "bg-page-",
+            std::make_shared<JointThreadInfoJeallocMap>());
         // default test config
         config.file_roll_size = 4 * MB;
         config.gc_max_valid_rate = 0.5;
@@ -63,24 +67,25 @@ protected:
         storage = reopenWithConfig(config);
     }
 
-    std::shared_ptr<PageStorage> reopenWithConfig(const PageStorage::Config & config_)
+    std::shared_ptr<PageStorage> reopenWithConfig(const PageStorageConfig & config_)
     {
         auto spool = db_context->getPathPool().withTable("test", "t", false);
         auto delegator = spool.getPSDiskDelegatorSingle("log");
-        auto storage = std::make_shared<PageStorage>("test.t", delegator, config_, file_provider);
+        auto storage = std::make_shared<PageStorage>("test.t", delegator, config_, file_provider, *bkg_pool);
         storage->restore();
         return storage;
     }
 
 protected:
-    PageStorage::Config config;
+    PageStorageConfig config;
+    std::shared_ptr<BackgroundProcessingPool> bkg_pool;
     std::shared_ptr<PageStorage> storage;
     const FileProviderPtr file_provider;
 };
 
 struct TestContext
 {
-    const PageId MAX_PAGE_ID = 2000;
+    static constexpr PageId MAX_PAGE_ID = 2000;
 
     std::atomic<bool> running_without_exception = true;
     std::atomic<bool> running_without_timeout = true;
@@ -113,12 +118,10 @@ public:
     PSWriter(const PSPtr & storage_, DB::UInt32 idx, TestContext & ctx_)
         : index(idx)
         , storage(storage_)
-        , gen()
         , bytes_written(0)
         , pages_written(0)
         , ctx(ctx_)
-    {
-    }
+    {}
 
     static void setApproxPageSize(size_t size_kb)
     {
@@ -130,7 +133,7 @@ public:
     {
         // fill page with random bytes
         const size_t buff_sz = approx_page_kb * 1024 + random() % 300;
-        char * buff = (char *)malloc(buff_sz);
+        char * buff = static_cast<char *>(malloc(buff_sz));
         const char buff_ch = pageId % 0xFF;
         memset(buff, buff_ch, buff_sz);
 
@@ -141,16 +144,16 @@ public:
 
     static void fillAllPages(const PSPtr & storage, TestContext & ctx)
     {
-        for (PageId pageId = 0; pageId < ctx.MAX_PAGE_ID; ++pageId)
+        for (PageId page_id = 0; page_id < ctx.MAX_PAGE_ID; ++page_id)
         {
             MemHolder holder;
-            DB::ReadBufferPtr buff = genRandomData(pageId, holder);
+            DB::ReadBufferPtr buff = genRandomData(page_id, holder);
 
             WriteBatch wb;
-            wb.putPage(pageId, 0, buff, buff->buffer().size());
+            wb.putPage(page_id, 0, buff, buff->buffer().size());
             storage->write(std::move(wb));
-            if (pageId % 100 == 0)
-                LOG_INFO(&Poco::Logger::get("root"), "writer wrote page" + DB::toString(pageId));
+            if (page_id % 100 == 0)
+                LOG_INFO(&Poco::Logger::get("root"), "writer wrote page" + DB::toString(page_id));
         }
     }
 
@@ -160,13 +163,13 @@ public:
         {
             assert(storage != nullptr);
             std::normal_distribution<> d{ctx.MAX_PAGE_ID / 2.0, 150};
-            const PageId pageId = static_cast<PageId>(std::round(d(gen))) % ctx.MAX_PAGE_ID;
+            const PageId page_id = static_cast<PageId>(std::round(d(gen))) % ctx.MAX_PAGE_ID;
 
             MemHolder holder;
-            DB::ReadBufferPtr buff = genRandomData(pageId, holder);
+            DB::ReadBufferPtr buff = genRandomData(page_id, holder);
 
             WriteBatch wb;
-            wb.putPage(pageId, 0, buff, buff->buffer().size());
+            wb.putPage(page_id, 0, buff, buff->buffer().size());
             storage->write(std::move(wb));
             ++pages_written;
             bytes_written += buff->buffer().size();
@@ -198,8 +201,7 @@ public:
         , pages_read(0)
         , bytes_read(0)
         , ctx(ctx_)
-    {
-    }
+    {}
 
     void run() override
     {
@@ -224,16 +226,16 @@ public:
                 LOG_TRACE(&Poco::Logger::get("root"), e.displayText());
             }
 #else
-            PageIds pageIds;
+            PageIds page_ids;
             for (size_t i = 0; i < 5; ++i)
             {
-                pageIds.emplace_back(random() % ctx.MAX_PAGE_ID);
+                page_ids.emplace_back(random() % ctx.MAX_PAGE_ID);
             }
             try
             {
-                // std::function<void(PageId page_id, const Page &)>;
-                PageHandler handler = [&](PageId page_id, const Page & page) {
-                    (void)page_id;
+                auto page_map = storage->read(page_ids);
+                for (const auto & page : page_map)
+                {
                     // use `sleep` to mock heavy read
                     if (heavy_read_delay_ms > 0)
                     {
@@ -241,9 +243,8 @@ public:
                         usleep(heavy_read_delay_ms * 1000);
                     }
                     ++pages_read;
-                    bytes_read += page.data.size();
-                };
-                storage->read(pageIds, handler);
+                    bytes_read += page.second.data.size();
+                }
             }
             catch (DB::Exception & e)
             {
@@ -284,7 +285,7 @@ public:
 struct StressTimeout
 {
     TestContext & ctx;
-    StressTimeout(TestContext & ctx_)
+    explicit StressTimeout(TestContext & ctx_)
         : ctx(ctx_)
     {}
     void onTime(Poco::Timer & /* t */)
@@ -297,7 +298,13 @@ struct StressTimeout
 // A full set of writers, readers, gc.
 struct Suit
 {
-    Suit(TestContext & ctx_, PSPtr storage_, size_t num_writers_, size_t num_readers_, UInt64 gc_interval_sec, UInt64 cancel_sec_)
+    Suit(
+        TestContext & ctx_,
+        PSPtr storage_,
+        size_t num_writers_,
+        size_t num_readers_,
+        UInt64 gc_interval_sec,
+        UInt64 cancel_sec_)
         : ctx(ctx_)
         , storage(storage_)
         , num_writers(num_writers_)
@@ -311,9 +318,10 @@ struct Suit
         , cancel_timer(cancel_sec * 1000)
         , cancel_runner(ctx)
     {
-        LOG_INFO(&Poco::Logger::get("root"),
-                 "start running with these threads: W:" + DB::toString(num_writers) + ",R:" + DB::toString(num_readers)
-                     + ",Gc:1, config.num_writer_slots:" + DB::toString(storage->config.num_write_slots.get()));
+        LOG_INFO(
+            &Poco::Logger::get("root"),
+            "start running with these threads: W:" + DB::toString(num_writers) + ",R:" + DB::toString(num_readers)
+                + ",Gc:1, config.num_writer_slots:" + DB::toString(storage->config.num_write_slots.get()));
     }
 
     void run()
@@ -360,7 +368,7 @@ struct Suit
     StressTimeout cancel_runner;
 };
 
-TEST_F(PageStorageMultiWriters_test, DISABLED_MultiWriteReadRestore)
+TEST_F(PageStorageMultiWritersTest, DISABLED_MultiWriteReadRestore)
 try
 {
     size_t num_writers = 4;
@@ -371,7 +379,7 @@ try
     size_t timeout_s = 5 * 60;
 
     srand(0x123987);
-    PageStorage::Config curr_config = config;
+    PageStorageConfig curr_config = config;
     curr_config.num_write_slots = num_write_slots;
 
     storage = reopenWithConfig(curr_config);
@@ -407,7 +415,7 @@ try
         ASSERT_EQ(old_entry.checksum, entry.checksum) << "of Page[" << page_id << "]";
 
         auto old_page = old_storage->read(page_id, nullptr, old_snapshot);
-        char * buf = old_page.data.begin();
+        const char * buf = old_page.data.begin();
         for (size_t i = 0; i < old_page.data.size(); ++i)
             ASSERT_EQ(((size_t) * (buf + i)) % 0xFF, page_id % 0xFF);
 

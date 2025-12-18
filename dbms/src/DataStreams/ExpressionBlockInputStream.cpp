@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/DataStreams/ExpressionBlockInputStream.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -22,20 +24,9 @@ ExpressionBlockInputStream::ExpressionBlockInputStream(
     const ExpressionActionsPtr & expression_,
     const String & req_id)
     : expression(expression_)
-    , log(Logger::get(NAME, req_id))
+    , log(Logger::get(req_id))
 {
     children.push_back(input);
-}
-
-Block ExpressionBlockInputStream::getTotals()
-{
-    if (IProfilingBlockInputStream * child = dynamic_cast<IProfilingBlockInputStream *>(&*children.back()))
-    {
-        totals = child->getTotals();
-        expression->executeOnTotals(totals);
-    }
-
-    return totals;
 }
 
 Block ExpressionBlockInputStream::getHeader() const
@@ -50,7 +41,21 @@ Block ExpressionBlockInputStream::readImpl()
     Block res = children.back()->read();
     if (!res)
         return res;
-    expression->execute(res);
+
+    if (res.info.selective)
+    {
+        const auto ori_rows = res.rows();
+        auto ori_info = res.info;
+        expression->execute(res);
+        res.info = ori_info;
+        // When block.info.selective is not null, the expression action should be cast/project.
+        // So the rows should not change.
+        RUNTIME_CHECK(ori_rows == res.rows());
+    }
+    else
+    {
+        expression->execute(res);
+    }
     return res;
 }
 

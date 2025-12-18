@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Parsers/ASTInsertQuery.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -26,9 +28,13 @@ namespace DB
 class ASTInsertQuery : public IAST
 {
 public:
-    explicit ASTInsertQuery(bool is_import_ = false) : is_import(is_import_) {}
+    explicit ASTInsertQuery(bool is_import_ = false)
+        : is_import(is_import_)
+    {}
     explicit ASTInsertQuery(String database_, String table_, bool is_import_)
-        : database(std::move(database_)), table(std::move(table_)), is_import(is_import_)
+        : database(std::move(database_))
+        , table(std::move(table_))
+        , is_import(is_import_)
     {}
 
 public:
@@ -40,9 +46,6 @@ public:
     ASTPtr table_function;
     ASTPtr partition_expression_list;
 
-    // Set to true if the data should only be inserted into attached views
-    bool no_destination = false;
-
     /// Data to insert
     const char * data = nullptr;
     const char * end = nullptr;
@@ -53,7 +56,7 @@ public:
     bool is_delete = false;
 
     /** Get the text that identifies this element. */
-    String getID() const override { return "InsertQuery_" + database + "_" + table; };
+    String getID() const override { return "InsertQuery_" + database + "_" + table; }
 
     ASTPtr clone() const override
     {

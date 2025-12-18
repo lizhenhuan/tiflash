@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,40 +14,49 @@
 
 #pragma once
 
+#include <Interpreters/TimezoneInfo.h>
 #include <Storages/DeltaMerge/DeltaMergeDefines.h>
-#include <Storages/Transaction/Types.h>
+#include <Storages/DeltaMerge/Filter/RSOperator_fwd.h>
+#include <Storages/DeltaMerge/Index/RSResult.h>
+#include <Storages/KVStore/Types.h>
+#include <tipb/executor.pb.h>
 #include <tipb/expression.pb.h>
 
-#include <functional>
-#include <memory>
 #include <unordered_map>
 
-namespace Poco
-{
-class Logger;
-}
 
 namespace DB
 {
-class ASTSelectQuery;
-
 struct DAGQueryInfo;
 
 namespace DM
 {
-class RSOperator;
-using RSOperatorPtr = std::shared_ptr<RSOperator>;
 
 class FilterParser
 {
 public:
     /// From dag.
-    using AttrCreatorByColumnID = std::function<Attr(const ColumnID)>;
+    using ColumnIDToAttrMap = std::unordered_map<ColumnID, Attr>;
     static RSOperatorPtr parseDAGQuery(
         const DAGQueryInfo & dag_info,
-        const ColumnDefines & columns_to_read,
-        AttrCreatorByColumnID && creator,
+        const TiDB::ColumnInfos & scan_column_infos,
+        const ColumnIDToAttrMap & id_to_attr,
         const LoggerPtr & log);
+
+    // only for runtime filter in predicate
+    static RSOperatorPtr parseRFInExpr(
+        tipb::RuntimeFilterType rf_type,
+        const tipb::Expr & target_expr,
+        const std::optional<Attr> & target_attr,
+        const std::set<Field> & setElements,
+        const TimezoneInfo & timezone_info);
+
+    static std::optional<Attr> createAttr(
+        const tipb::Expr & expr,
+        const TiDB::ColumnInfos & scan_column_infos,
+        const ColumnDefines & table_column_defines);
+
+    static bool isRSFilterSupportType(Int32 field_type);
 
     /// Some helper structure
 
@@ -68,10 +77,12 @@ public:
         LessEqual,
 
         In,
-        NotIn,
+        // NotIn, TiDB will convert it to Not(In）
 
         Like,
-        NotLike,
+        // NotLike, TiDB will convert it to Not(Like)
+
+        IsNull,
     };
 
     static std::unordered_map<tipb::ScalarFuncSig, RSFilterType> scalar_func_rs_filter_map;

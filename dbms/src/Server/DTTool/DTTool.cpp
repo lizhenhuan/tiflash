@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,8 +13,8 @@
 // limitations under the License.
 
 #include <Server/DTTool/DTTool.h>
+#include <boost_wrapper/program_options.h>
 
-#include <boost/program_options.hpp>
 #include <iostream>
 
 namespace bpo = boost::program_options;

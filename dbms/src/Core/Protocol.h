@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Core/Protocol.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -91,12 +93,18 @@ enum Enum
 /// See https://www.securecoding.cert.org/confluence/display/cplusplus/INT36-CPP.+Do+not+use+out-of-range+enumeration+values
 inline const char * toString(UInt64 packet)
 {
-    static const char * data[] = {"Hello", "Data", "Exception", "Progress", "Pong", "EndOfStream", "ProfileInfo", "Totals", "Extremes", "TablesStatusResponse"};
-    return packet < 10
-        ? data[packet]
-        : packet == LockInfos
-        ? "LockInfos"
-        : "Unknown packet";
+    static const char * data[]
+        = {"Hello",
+           "Data",
+           "Exception",
+           "Progress",
+           "Pong",
+           "EndOfStream",
+           "ProfileInfo",
+           "Totals",
+           "Extremes",
+           "TablesStatusResponse"};
+    return packet < 10 ? data[packet] : packet == LockInfos ? "LockInfos" : "Unknown packet";
 }
 } // namespace Server
 
@@ -118,9 +126,7 @@ enum Enum
 inline const char * toString(UInt64 packet)
 {
     static const char * data[] = {"Hello", "Query", "Data", "Cancel", "Ping", "TablesStatusRequest"};
-    return packet < 6
-        ? data[packet]
-        : "Unknown packet";
+    return packet < 6 ? data[packet] : "Unknown packet";
 }
 } // namespace Client
 

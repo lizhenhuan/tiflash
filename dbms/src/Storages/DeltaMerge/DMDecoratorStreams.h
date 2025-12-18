@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,41 +14,42 @@
 
 #pragma once
 
-#include <Columns/ColumnsCommon.h>
+#include <Columns/countBytesInFilter.h>
 #include <DataStreams/IBlockInputStream.h>
-#include <Storages/DeltaMerge/DMContext.h>
 #include <Storages/DeltaMerge/DeltaMergeHelpers.h>
 #include <common/logger_useful.h>
 
-#include <unordered_set>
 
-namespace DB
+namespace DB::DM
 {
-namespace DM
-{
+
 /// DMDeleteFilterBlockInputStream is used to filter the column and filter out the rows whose del_mark is true
 class DMDeleteFilterBlockInputStream : public IBlockInputStream
 {
     static constexpr size_t UNROLL_BATCH = 64;
 
 public:
-    DMDeleteFilterBlockInputStream(const BlockInputStreamPtr & input, const ColumnDefines & columns_to_read_, const String & tracing_id = "")
+    DMDeleteFilterBlockInputStream(
+        const BlockInputStreamPtr & input,
+        const ColumnDefines & columns_to_read_,
+        const String & tracing_id = "")
         : columns_to_read(columns_to_read_)
         , header(toEmptyBlock(columns_to_read))
-        , log(Logger::get("DMDeleteFilterBlockInputStream", tracing_id))
+        , log(Logger::get(tracing_id))
     {
         children.emplace_back(input);
-        delete_col_pos = input->getHeader().getPositionByName(TAG_COLUMN_NAME);
+        delete_col_pos = input->getHeader().getPositionByName(MutSup::delmark_column_name);
     }
-    ~DMDeleteFilterBlockInputStream()
+    ~DMDeleteFilterBlockInputStream() override
     {
-        LOG_TRACE(log,
-                  "Total rows: {}, pass: {:.2f}%"
-                  ", complete pass: {:.2f}%, complete not pass: {:.2f}%",
-                  total_rows,
-                  passed_rows * 100.0 / total_rows,
-                  complete_passed * 100.0 / total_blocks,
-                  complete_not_passed * 100.0 / total_blocks);
+        LOG_TRACE(
+            log,
+            "Total rows: {}, pass: {:.2f}%"
+            ", complete pass: {:.2f}%, complete not pass: {:.2f}%",
+            total_rows,
+            passed_rows * 100.0 / total_rows,
+            complete_passed * 100.0 / total_blocks,
+            complete_not_passed * 100.0 / total_blocks);
     }
 
     String getName() const override { return "DMDeleteFilter"; }
@@ -129,6 +130,10 @@ public:
                 column.column = column.column->filter(delete_filter, passed_count);
                 res.insert(std::move(column));
             }
+            if (block.segmentRowIdCol())
+            {
+                res.setSegmentRowIdCol(block.segmentRowIdCol()->filter(delete_filter, passed_count));
+            }
             return res;
         }
     }
@@ -189,10 +194,11 @@ class DMHandleConvertBlockInputStream : public IBlockInputStream
 public:
     using ColumnNames = std::vector<std::string>;
 
-    DMHandleConvertBlockInputStream(const BlockInputStreamPtr & input,
-                                    const String & handle_name_,
-                                    const DataTypePtr & handle_original_type_,
-                                    const Context & context_)
+    DMHandleConvertBlockInputStream(
+        const BlockInputStreamPtr & input,
+        const String & handle_name_,
+        const DataTypePtr & handle_original_type_,
+        const Context & context_)
         : handle_name(handle_name_)
         , handle_original_type(handle_original_type_)
         , context(context_)
@@ -225,5 +231,4 @@ private:
     const Context & context;
 };
 
-} // namespace DM
-} // namespace DB
+} // namespace DB::DM

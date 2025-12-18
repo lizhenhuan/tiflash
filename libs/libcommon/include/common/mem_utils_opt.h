@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -22,13 +22,19 @@
 
 #if defined(__AVX2__)
 
-#define TIFLASH_USE_AVX2_COMPILE_FLAG 1
+constexpr bool tiflash_use_avx2_compile_flag = true;
 
 // if cpp source file is compiled with flag `-mavx2`, it's recommended to use inline function for better performance.
+#include <common/avx2_byte_count.h>
 #include <common/avx2_mem_utils.h>
 #include <common/avx2_strstr.h>
 
+#else
+constexpr bool tiflash_use_avx2_compile_flag = false;
 #endif
+
+#define ASSERT_USE_AVX2_COMPILE_FLAG \
+    static_assert(tiflash_use_avx2_compile_flag, __FILE__ " need compile flag `-mavx2`");
 
 #endif
 
@@ -55,6 +61,9 @@ bool avx2_mem_equal(const char * p1, const char * p2, size_t n);
 // same function like `std::memcmp`
 int avx2_mem_cmp(const char * p1, const char * p2, size_t n);
 
+// return count of target byte
+uint64_t avx2_byte_count(const char * src, size_t size, char target);
+
 } // namespace mem_utils
 
 #endif
@@ -62,21 +71,26 @@ int avx2_mem_cmp(const char * p1, const char * p2, size_t n);
 namespace mem_utils
 {
 
+FLATTEN_INLINE_PURE static inline bool IsStrEqualWithSameSize(const char * lhs, const char * rhs, size_t size)
+{
+#ifdef TIFLASH_ENABLE_AVX_SUPPORT
+#ifdef __AVX2__
+    return mem_utils::details::avx2_mem_equal(lhs, rhs, size);
+#else
+    return mem_utils::avx2_mem_equal(lhs, rhs, size);
+#endif
+#else
+    return 0 == std::memcmp(lhs, rhs, size);
+#endif
+}
+
 // same function like `std::string_view == std::string_view`
 FLATTEN_INLINE_PURE static inline bool IsStrViewEqual(const std::string_view & lhs, const std::string_view & rhs)
 {
     if (lhs.size() != rhs.size())
         return false;
 
-#ifdef TIFLASH_ENABLE_AVX_SUPPORT
-#ifdef TIFLASH_USE_AVX2_COMPILE_FLAG
-    return mem_utils::details::avx2_mem_equal(lhs.data(), rhs.data(), lhs.size());
-#else
-    return mem_utils::avx2_mem_equal(lhs.data(), rhs.data(), lhs.size());
-#endif
-#else
-    return 0 == std::memcmp(lhs.data(), rhs.data(), lhs.size());
-#endif
+    return IsStrEqualWithSameSize(lhs.data(), rhs.data(), lhs.size());
 }
 
 // same function like `std::string_view.compare(std::string_view)`
@@ -85,7 +99,7 @@ FLATTEN_INLINE_PURE static inline int CompareStrView(const std::string_view & lh
 #ifdef TIFLASH_ENABLE_AVX_SUPPORT
     const size_t size = std::min(lhs.size(), rhs.size());
 
-#ifdef TIFLASH_USE_AVX2_COMPILE_FLAG
+#ifdef __AVX2__
     int ret = mem_utils::details::avx2_mem_cmp(lhs.data(), rhs.data(), size);
 #else
     int ret = mem_utils::avx2_mem_cmp(lhs.data(), rhs.data(), size);
@@ -105,7 +119,7 @@ FLATTEN_INLINE_PURE static inline int CompareStrView(const std::string_view & lh
 FLATTEN_INLINE_PURE static inline size_t StrFind(std::string_view src, std::string_view needle)
 {
 #ifdef TIFLASH_ENABLE_AVX_SUPPORT
-#ifdef TIFLASH_USE_AVX2_COMPILE_FLAG
+#ifdef __AVX2__
     return mem_utils::details::avx2_strstr(src, needle);
 #else
     return mem_utils::avx2_strstr(src, needle);

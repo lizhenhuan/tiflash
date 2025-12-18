@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Parsers/ASTSelectQuery.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,8 +16,8 @@
 
 #pragma once
 
-#include <Parsers/IAST.h>
 #include <Core/Names.h>
+#include <Parsers/IAST.h>
 
 
 namespace DB
@@ -30,7 +32,7 @@ class ASTSelectQuery : public IAST
 {
 public:
     /** Get the text that identifies this element. */
-    String getID() const override { return "SelectQuery"; };
+    String getID() const override { return "SelectQuery"; }
 
     ASTPtr clone() const override;
 
@@ -42,10 +44,8 @@ public:
     ASTPtr tables;
     ASTPtr partition_expression_list;
     ASTPtr segment_expression_list;
-    ASTPtr prewhere_expression;
     ASTPtr where_expression;
     ASTPtr group_expression_list;
-    bool group_by_with_totals = false;
     ASTPtr having_expression;
     ASTPtr order_expression_list;
     ASTPtr limit_by_value;
@@ -59,9 +59,7 @@ public:
     ASTPtr table() const;
     ASTPtr sample_size() const;
     ASTPtr sample_offset() const;
-    ASTPtr array_join_expression_list() const;
     const ASTTablesInSelectQueryElement * join() const;
-    bool array_join_is_left() const;
     bool final() const;
     void setDatabaseIfNeeded(const String & database_name);
     void replaceDatabaseAndTable(const String & database_name, const String & table_name);
@@ -70,4 +68,4 @@ protected:
     void formatImpl(const FormatSettings & settings, FormatState & state, FormatStateStacked frame) const override;
 };
 
-}
+} // namespace DB

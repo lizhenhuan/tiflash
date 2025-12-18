@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/DataStreams/JSONCompactRowOutputStream.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,9 +17,9 @@
 #pragma once
 
 #include <Core/Block.h>
-#include <IO/WriteBuffer.h>
-#include <IO/WriteBufferValidUTF8.h>
 #include <DataStreams/JSONRowOutputStream.h>
+#include <IO/Buffer/WriteBuffer.h>
+#include <IO/Buffer/WriteBufferValidUTF8.h>
 
 namespace DB
 {
@@ -29,7 +31,11 @@ struct FormatSettingsJSON;
 class JSONCompactRowOutputStream : public JSONRowOutputStream
 {
 public:
-    JSONCompactRowOutputStream(WriteBuffer & ostr_, const Block & sample_, bool write_statistics_, const FormatSettingsJSON & settings);
+    JSONCompactRowOutputStream(
+        WriteBuffer & ostr_,
+        const Block & sample_,
+        bool write_statistics_,
+        const FormatSettingsJSON & settings);
 
     void writeField(const IColumn & column, const IDataType & type, size_t row_num) override;
     void writeFieldDelimiter() override;
@@ -37,8 +43,7 @@ public:
     void writeRowEndDelimiter() override;
 
 protected:
-    void writeTotals() override;
     void writeExtremes() override;
 };
 
-}
+} // namespace DB

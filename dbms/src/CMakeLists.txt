@@ -1,4 +1,6 @@
-# Copyright 2022 PingCAP, Ltd.
+# Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/CMakeLists.txt
+#
+# Copyright 2023 PingCAP, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,19 +18,17 @@ add_subdirectory (Columns)
 add_subdirectory (Common)
 add_subdirectory (Core)
 add_subdirectory (DataStreams)
+add_subdirectory (Operators)
 add_subdirectory (DataTypes)
 add_subdirectory (Dictionaries)
 add_subdirectory (Storages)
 add_subdirectory (Parsers)
 add_subdirectory (IO)
 add_subdirectory (Functions)
-add_subdirectory (Interpreters)
 add_subdirectory (AggregateFunctions)
 add_subdirectory (Server)
 add_subdirectory (Client)
-add_subdirectory (TableFunctions)
 add_subdirectory (Flash)
-add_subdirectory (Encryption)
 if (ENABLE_TESTS)
-  add_subdirectory (TestUtils)
+  add_subdirectory (TestUtils EXCLUDE_FROM_ALL)
 endif ()

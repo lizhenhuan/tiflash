@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/DataTypes/DataTypeDateTime.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -44,7 +46,7 @@ namespace DB
 class DataTypeDateTime final : public DataTypeNumberBase<UInt32>
 {
 public:
-    DataTypeDateTime(const std::string & time_zone_name = "");
+    explicit DataTypeDateTime(const std::string & time_zone_name = "");
 
     const char * getFamilyName() const override { return "DateTime"; }
     std::string getName() const override;
@@ -55,10 +57,9 @@ public:
     void deserializeTextEscaped(IColumn & column, ReadBuffer & istr) const override;
     void serializeTextQuoted(const IColumn & column, size_t row_num, WriteBuffer & ostr) const override;
     void deserializeTextQuoted(IColumn & column, ReadBuffer & istr) const override;
-    void serializeTextJSON(const IColumn & column, size_t row_num, WriteBuffer & ostr, const FormatSettingsJSON &) const override;
+    void serializeTextJSON(const IColumn & column, size_t row_num, WriteBuffer & ostr, const FormatSettingsJSON &)
+        const override;
     void deserializeTextJSON(IColumn & column, ReadBuffer & istr) const override;
-    void serializeTextCSV(const IColumn & column, size_t row_num, WriteBuffer & ostr) const override;
-    void deserializeTextCSV(IColumn & column, ReadBuffer & istr, const char delimiter) const override;
 
     bool canBeUsedAsVersion() const override { return true; }
     bool isDateOrDateTime() const override { return true; }

@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Parsers/queryToString.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,21 +14,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <Parsers/queryToString.h>
 #include <Parsers/formatAST.h>
+#include <Parsers/queryToString.h>
+
 #include <sstream>
 
 namespace DB
 {
-    String queryToString(const ASTPtr & query)
-    {
-        return queryToString(*query);
-    }
-
-    String queryToString(const IAST & query)
-    {
-        std::ostringstream out;
-        formatAST(query, out, false, true);
-        return out.str();
-    }
+String queryToString(const ASTPtr & query)
+{
+    return queryToString(*query);
 }
+
+String queryToString(const IAST & query)
+{
+    std::ostringstream out;
+    formatAST(query, out, false, true);
+    return out.str();
+}
+} // namespace DB

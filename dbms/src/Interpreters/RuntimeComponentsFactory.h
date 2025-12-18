@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Interpreters/RuntimeComponentsFactory.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -26,10 +28,7 @@ namespace DB
 class RuntimeComponentsFactory : public IRuntimeComponentsFactory
 {
 public:
-    std::unique_ptr<ISecurityManager> createSecurityManager() override
-    {
-        return std::make_unique<SecurityManager>();
-    }
+    std::unique_ptr<ISecurityManager> createSecurityManager() override { return std::make_unique<SecurityManager>(); }
 
     std::unique_ptr<IExternalLoaderConfigRepository> createExternalDictionariesConfigRepository() override
     {

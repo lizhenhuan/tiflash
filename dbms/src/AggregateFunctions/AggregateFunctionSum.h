@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/AggregateFunctions/AggregateFunctionSum.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -29,10 +31,7 @@ namespace DB
 template <typename T>
 struct AggregateFunctionSumAddImpl
 {
-    static void NO_SANITIZE_UNDEFINED ALWAYS_INLINE add(T & lhs, const T & rhs)
-    {
-        lhs += rhs;
-    }
+    static void NO_SANITIZE_UNDEFINED ALWAYS_INLINE add(T & lhs, const T & rhs) { lhs += rhs; }
 };
 
 template <typename T>
@@ -46,9 +45,26 @@ struct AggregateFunctionSumAddImpl<Decimal<T>>
 };
 
 template <typename T>
+struct AggregateFunctionSumMinusImpl
+{
+    static void NO_SANITIZE_UNDEFINED ALWAYS_INLINE decrease(T & lhs, const T & rhs) { lhs -= rhs; }
+};
+
+template <typename T>
+struct AggregateFunctionSumMinusImpl<Decimal<T>>
+{
+    template <typename U>
+    static void NO_SANITIZE_UNDEFINED ALWAYS_INLINE decrease(Decimal<T> & lhs, const Decimal<U> & rhs)
+    {
+        lhs.value -= static_cast<T>(rhs.value);
+    }
+};
+
+template <typename T>
 struct AggregateFunctionSumData
 {
     using Impl = AggregateFunctionSumAddImpl<T>;
+    using DescreaseImpl = AggregateFunctionSumMinusImpl<T>;
     T sum{};
 
     AggregateFunctionSumData() = default;
@@ -58,6 +74,14 @@ struct AggregateFunctionSumData
     {
         Impl::add(sum, value);
     }
+
+    template <typename U>
+    void NO_SANITIZE_UNDEFINED ALWAYS_INLINE decrease(U value)
+    {
+        DescreaseImpl::decrease(sum, value);
+    }
+
+    void NO_SANITIZE_UNDEFINED ALWAYS_INLINE reset() { sum = T(0); }
 
     /// Vectorized version
     template <typename Value>
@@ -98,7 +122,8 @@ struct AggregateFunctionSumData
     }
 
     template <typename Value>
-    void NO_SANITIZE_UNDEFINED NO_INLINE addManyNotNull(const Value * __restrict ptr, const UInt8 * __restrict null_map, size_t count)
+    void NO_SANITIZE_UNDEFINED NO_INLINE
+    addManyNotNull(const Value * __restrict ptr, const UInt8 * __restrict null_map, size_t count)
     {
         const auto * end = ptr + count;
 
@@ -137,25 +162,13 @@ struct AggregateFunctionSumData
         Impl::add(sum, local_sum);
     }
 
-    void merge(const AggregateFunctionSumData & rhs)
-    {
-        Impl::add(sum, rhs.sum);
-    }
+    void merge(const AggregateFunctionSumData & rhs) { Impl::add(sum, rhs.sum); }
 
-    void write(WriteBuffer & buf) const
-    {
-        writeBinary(sum, buf);
-    }
+    void write(WriteBuffer & buf) const { writeBinary(sum, buf); }
 
-    void read(ReadBuffer & buf)
-    {
-        readBinary(sum, buf);
-    }
+    void read(ReadBuffer & buf) { readBinary(sum, buf); }
 
-    T get() const
-    {
-        return sum;
-    }
+    T get() const { return sum; }
 };
 
 template <typename T>
@@ -177,10 +190,11 @@ struct AggregateFunctionSumKahanData
         out_sum = new_sum;
     }
 
-    void ALWAYS_INLINE add(T value)
-    {
-        addImpl(value, sum, compensation);
-    }
+    void ALWAYS_INLINE add(T value) { addImpl(value, sum, compensation); }
+
+    void ALWAYS_INLINE decrease(T) { throw Exception("Not implemented yet"); }
+
+    void ALWAYS_INLINE reset() { throw Exception("Not implemented yet"); }
 
     /// Vectorized version
     template <typename Value>
@@ -249,15 +263,13 @@ struct AggregateFunctionSumKahanData
         auto rhs_compensated = raw_sum - to_sum;
         /// Kahan summation is tricky because it depends on non-associativity of float arithmetic.
         /// Do not simplify this expression if you are not sure.
-        auto compensations = ((from_sum - rhs_compensated) + (to_sum - (raw_sum - rhs_compensated))) + compensation + from_compensation;
+        auto compensations = ((from_sum - rhs_compensated) + (to_sum - (raw_sum - rhs_compensated))) + compensation
+            + from_compensation;
         to_sum = raw_sum + compensations;
         to_compensation = compensations - (to_sum - raw_sum);
     }
 
-    void merge(const AggregateFunctionSumKahanData & rhs)
-    {
-        mergeImpl(sum, compensation, rhs.sum, rhs.compensation);
-    }
+    void merge(const AggregateFunctionSumKahanData & rhs) { mergeImpl(sum, compensation, rhs.sum, rhs.compensation); }
 
     void write(WriteBuffer & buf) const
     {
@@ -271,10 +283,7 @@ struct AggregateFunctionSumKahanData
         readBinary(compensation, buf);
     }
 
-    T get() const
-    {
-        return sum;
-    }
+    T get() const { return sum; }
 };
 
 
@@ -294,10 +303,7 @@ struct NameSum
 struct NameSumWithOverFlow
 {
     static constexpr auto name = "sumWithOverflow";
-    static std::tuple<PrecType, ScaleType> decimalInfer(PrecType prec, ScaleType scale)
-    {
-        return {prec, scale};
-    }
+    static std::tuple<PrecType, ScaleType> decimalInfer(PrecType prec, ScaleType scale) { return {prec, scale}; }
 };
 
 using NameSumOnPartialResult = NameSumWithOverFlow;
@@ -316,7 +322,8 @@ struct NameSumKahan
 
 /// Counts the sum of the numbers.
 template <typename T, typename TResult, typename Data, typename Name = NameSum>
-class AggregateFunctionSum final : public IAggregateFunctionDataHelper<Data, AggregateFunctionSum<T, TResult, Data, Name>>
+class AggregateFunctionSum final
+    : public IAggregateFunctionDataHelper<Data, AggregateFunctionSum<T, TResult, Data, Name>>
 {
     static_assert(IsDecimal<T> == IsDecimal<TResult>);
 
@@ -335,7 +342,7 @@ public:
     AggregateFunctionSum(PrecType prec, ScaleType scale)
     {
         std::tie(result_prec, result_scale) = Name::decimalInfer(prec, scale);
-    };
+    }
 
     DataTypePtr getReturnType() const override
     {
@@ -360,8 +367,17 @@ public:
         this->data(place).add(column.getData()[row_num]);
     }
 
+    void decrease(AggregateDataPtr __restrict place, const IColumn ** columns, size_t row_num, Arena *) const override
+    {
+        const auto & column = assert_cast<const ColVecType &>(*columns[0]);
+        this->data(place).decrease(column.getData()[row_num]);
+    }
+
+    void reset(AggregateDataPtr __restrict place) const override { this->data(place).reset(); }
+
     /// Vectorized version when there is no GROUP BY keys.
     void addBatchSinglePlace(
+        size_t start_offset,
         size_t batch_size,
         AggregateDataPtr place,
         const IColumn ** columns,
@@ -371,7 +387,7 @@ public:
         if (if_argument_pos >= 0)
         {
             const auto & flags = assert_cast<const ColumnUInt8 &>(*columns[if_argument_pos]).getData();
-            for (size_t i = 0; i < batch_size; ++i)
+            for (size_t i = start_offset; i < start_offset + batch_size; ++i)
             {
                 if (flags[i])
                     add(place, columns, i, arena);
@@ -380,30 +396,33 @@ public:
         else
         {
             const auto & column = assert_cast<const ColVecType &>(*columns[0]);
-            this->data(place).addMany(column.getData().data(), batch_size);
+            this->data(place).addMany(column.getData().data() + start_offset, batch_size);
         }
     }
 
     void addBatchSinglePlaceNotNull(
+        size_t start_offset,
         size_t batch_size,
         AggregateDataPtr place,
         const IColumn ** columns,
         const UInt8 * null_map,
         Arena * arena,
-        ssize_t if_argument_pos)
-        const override
+        ssize_t if_argument_pos) const override
     {
         if (if_argument_pos >= 0)
         {
             const auto & flags = assert_cast<const ColumnUInt8 &>(*columns[if_argument_pos]).getData();
-            for (size_t i = 0; i < batch_size; ++i)
+            for (size_t i = start_offset; i < start_offset + batch_size; ++i)
                 if (!null_map[i] && flags[i])
                     add(place, columns, i, arena);
         }
         else
         {
             const auto & column = assert_cast<const ColVecType &>(*columns[0]);
-            this->data(place).addManyNotNull(column.getData().data(), null_map, batch_size);
+            this->data(place).addManyNotNull(
+                column.getData().data() + start_offset,
+                null_map + start_offset,
+                batch_size);
         }
     }
 
@@ -426,10 +445,27 @@ public:
     {
         if constexpr (IsDecimal<TResult>)
         {
-            static_cast<ColumnDecimal<TResult> &>(to).getData().push_back(this->data(place).get(), result_scale);
+            auto & container = static_cast<ColumnDecimal<TResult> &>(to).getData();
+            assert(container.getScale() == result_scale);
+            container.push_back(this->data(place).get());
         }
         else
             static_cast<ColumnVector<TResult> &>(to).getData().push_back(this->data(place).get());
+    }
+
+    void batchInsertSameResultInto(ConstAggregateDataPtr __restrict place, IColumn & to, size_t num) const override
+    {
+        if constexpr (IsDecimal<TResult>)
+        {
+            auto & container = static_cast<ColumnDecimal<TResult> &>(to).getData();
+            assert(container.getScale() == result_scale);
+            container.resize_fill(container.size() + num, this->data(place).get());
+        }
+        else
+        {
+            auto & container = static_cast<ColumnVector<TResult> &>(to).getData();
+            container.resize_fill(container.size() + num, this->data(place).get());
+        }
     }
 
     const char * getHeaderFilePath() const override { return __FILE__; }

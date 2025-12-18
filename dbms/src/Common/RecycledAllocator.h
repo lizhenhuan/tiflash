@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -32,7 +32,7 @@ public:
 
     std::shared_ptr<char> createMemoryReference(char * addr, size_t size)
     {
-        return std::shared_ptr<char>(addr, [=](char * a) { arena.free(a, size); });
+        return std::shared_ptr<char>(addr, [=, this](char * a) { arena.free(a, size); });
     }
 
 private:

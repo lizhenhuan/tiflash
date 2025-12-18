@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Client/Connection.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,26 +16,25 @@
 
 #include <Client/Connection.h>
 #include <Client/TimeoutSetter.h>
-#include <Common/ClickHouseRevision.h>
 #include <Common/CurrentMetrics.h>
 #include <Common/Exception.h>
 #include <Common/FmtUtils.h>
 #include <Common/NetException.h>
+#include <Common/TiFlashBuildInfo.h>
 #include <Common/config.h>
 #include <Core/Defines.h>
 #include <DataStreams/NativeBlockInputStream.h>
 #include <DataStreams/NativeBlockOutputStream.h>
-#include <IO/CompressedReadBuffer.h>
-#include <IO/CompressedWriteBuffer.h>
-#include <IO/ReadBufferFromPocoSocket.h>
+#include <IO/Buffer/ReadBufferFromPocoSocket.h>
+#include <IO/Buffer/WriteBufferFromPocoSocket.h>
+#include <IO/Compression/CompressedReadBuffer.h>
+#include <IO/Compression/CompressedWriteBuffer.h>
 #include <IO/ReadHelpers.h>
-#include <IO/WriteBufferFromPocoSocket.h>
 #include <IO/WriteHelpers.h>
 #include <IO/copyData.h>
 #include <Interpreters/ClientInfo.h>
 #include <Poco/Net/NetException.h>
 
-#include <iomanip>
 #if Poco_NetSSL_FOUND
 #include <Poco/Net/SecureStreamSocket.h>
 #endif
@@ -44,7 +45,6 @@ namespace ErrorCodes
 {
 extern const int NETWORK_ERROR;
 extern const int SOCKET_TIMEOUT;
-extern const int SERVER_REVISION_IS_TOO_OLD;
 extern const int UNEXPECTED_PACKET_FROM_SERVER;
 extern const int UNKNOWN_PACKET_FROM_SERVER;
 extern const int SUPPORT_IS_DISABLED;
@@ -58,13 +58,21 @@ void Connection::connect()
         if (connected)
             disconnect();
 
-        LOG_TRACE(log_wrapper.get(), "Connecting. Database: {}. User: {}. {}, {}", (default_database.empty() ? "(not specified)" : default_database), user, (static_cast<bool>(secure) ? ". Secure" : ""), (static_cast<bool>(compression) ? "" : ". Uncompressed"));
+        LOG_TRACE(
+            log_wrapper.get(),
+            "Connecting. Database: {}. User: {}. {}, {}",
+            (default_database.empty() ? "(not specified)" : default_database),
+            user,
+            (static_cast<bool>(secure) ? ". Secure" : ""),
+            (static_cast<bool>(compression) ? "" : ". Uncompressed"));
         if (static_cast<bool>(secure))
         {
 #if Poco_NetSSL_FOUND
             socket = std::make_unique<Poco::Net::SecureStreamSocket>();
 #else
-            throw Exception{"tcp_secure protocol is disabled because poco library was built without NetSSL support.", ErrorCodes::SUPPORT_IS_DISABLED};
+            throw Exception{
+                "tcp_secure protocol is disabled because poco library was built without NetSSL support.",
+                ErrorCodes::SUPPORT_IS_DISABLED};
 #endif
         }
         else
@@ -84,7 +92,13 @@ void Connection::connect()
         sendHello();
         receiveHello();
 
-        LOG_TRACE(log_wrapper.get(), "Connected to {} server version {}.{}.{}.", server_name, server_version_major, server_version_minor, server_revision);
+        LOG_TRACE(
+            log_wrapper.get(),
+            "Connected to {} server version {}.{}.{}.",
+            server_name,
+            server_version_major,
+            server_version_minor,
+            server_version_patch);
     }
     catch (Poco::Net::NetException & e)
     {
@@ -117,10 +131,10 @@ void Connection::disconnect()
 void Connection::sendHello()
 {
     writeVarUInt(Protocol::Client::Hello, *out);
-    writeStringBinary((DBMS_NAME " ") + client_name, *out);
-    writeVarUInt(DBMS_VERSION_MAJOR, *out);
-    writeVarUInt(DBMS_VERSION_MINOR, *out);
-    writeVarUInt(ClickHouseRevision::get(), *out);
+    writeStringBinary(fmt::format("{} {}", TiFlashBuildInfo::getName(), client_name), *out);
+    writeVarUInt(TiFlashBuildInfo::getMajorVersion(), *out);
+    writeVarUInt(TiFlashBuildInfo::getMinorVersion(), *out);
+    writeVarUInt(TiFlashBuildInfo::getPatchVersion(), *out);
     writeStringBinary(default_database, *out);
     writeStringBinary(user, *out);
     writeStringBinary(password, *out);
@@ -140,15 +154,9 @@ void Connection::receiveHello()
         readStringBinary(server_name, *in);
         readVarUInt(server_version_major, *in);
         readVarUInt(server_version_minor, *in);
-        readVarUInt(server_revision, *in);
-        if (server_revision >= DBMS_MIN_REVISION_WITH_SERVER_TIMEZONE)
-        {
-            readStringBinary(server_timezone, *in);
-        }
-        if (server_revision >= DBMS_MIN_REVISION_WITH_SERVER_DISPLAY_NAME)
-        {
-            readStringBinary(server_display_name, *in);
-        }
+        readVarUInt(server_version_patch, *in);
+        readStringBinary(server_timezone, *in);
+        readStringBinary(server_display_name, *in);
     }
     else if (packet_type == Protocol::Server::Exception)
         receiveException()->rethrow();
@@ -185,7 +193,7 @@ UInt16 Connection::getPort() const
     return port;
 }
 
-void Connection::getServerVersion(String & name, UInt64 & version_major, UInt64 & version_minor, UInt64 & revision)
+void Connection::getServerVersion(String & name, UInt64 & version_major, UInt64 & version_minor, UInt64 & version_patch)
 {
     if (!connected)
         connect();
@@ -193,7 +201,7 @@ void Connection::getServerVersion(String & name, UInt64 & version_major, UInt64 
     name = server_name;
     version_major = server_version_major;
     version_minor = server_version_minor;
-    revision = server_revision;
+    version_patch = server_version_patch;
 }
 
 const String & Connection::getServerTimezone()
@@ -270,7 +278,7 @@ TablesStatusResponse Connection::getTablesStatus(const TablesStatusRequest & req
     TimeoutSetter timeout_setter(*socket, sync_request_timeout, true);
 
     writeVarUInt(Protocol::Client::TablesStatusRequest, *out);
-    request.write(*out, server_revision);
+    request.write(*out);
     out->next();
 
     UInt64 response_type = 0;
@@ -282,7 +290,7 @@ TablesStatusResponse Connection::getTablesStatus(const TablesStatusRequest & req
         throwUnexpectedPacket(response_type, "TablesStatusResponse");
 
     TablesStatusResponse response;
-    response.read(*in, server_revision);
+    response.read(*in);
     return response;
 }
 
@@ -292,8 +300,7 @@ void Connection::sendQuery(
     const String & query_id_,
     UInt64 stage,
     const Settings * settings,
-    const ClientInfo * client_info,
-    bool with_pending_data)
+    const ClientInfo * client_info)
 {
     if (!connected)
         connect();
@@ -306,7 +313,6 @@ void Connection::sendQuery(
     writeStringBinary(query_id, *out);
 
     /// Client info.
-    if (server_revision >= DBMS_MIN_REVISION_WITH_CLIENT_INFO)
     {
         ClientInfo client_info_to_send;
 
@@ -315,7 +321,7 @@ void Connection::sendQuery(
             /// No client info passed - means this query initiated by me.
             client_info_to_send.query_kind = ClientInfo::QueryKind::INITIAL_QUERY;
             client_info_to_send.fillOSUserHostNameAndVersionInfo();
-            client_info_to_send.client_name = (DBMS_NAME " ") + client_name;
+            client_info_to_send.client_name = fmt::format("{} {}", TiFlashBuildInfo::getName(), client_name);
         }
         else
         {
@@ -324,7 +330,7 @@ void Connection::sendQuery(
             client_info_to_send.query_kind = ClientInfo::QueryKind::SECONDARY_QUERY;
         }
 
-        client_info_to_send.write(*out, server_revision);
+        client_info_to_send.write(*out);
     }
 
     /// Per query settings.
@@ -344,11 +350,8 @@ void Connection::sendQuery(
     block_out.reset();
 
     /// Send empty block which means end of data.
-    if (!with_pending_data)
-    {
-        sendData(Block());
-        out->next();
-    }
+    sendData(Block());
+    out->next();
 }
 
 
@@ -368,7 +371,7 @@ void Connection::sendData(const Block & block, const String & name)
         else
             maybe_compressed_out = out;
 
-        block_out = std::make_shared<NativeBlockOutputStream>(*maybe_compressed_out, server_revision, block.cloneEmpty());
+        block_out = std::make_shared<NativeBlockOutputStream>(*maybe_compressed_out, 1, block.cloneEmpty());
     }
 
     writeVarUInt(Protocol::Client::Data, *out);
@@ -398,63 +401,6 @@ void Connection::sendPreparedData(ReadBuffer & input, size_t size, const String 
         copyData(input, *out, size);
     out->next();
 }
-
-
-void Connection::sendExternalTablesData(ExternalTablesData & data)
-{
-    if (data.empty())
-    {
-        /// Send empty block, which means end of data transfer.
-        sendData(Block());
-        return;
-    }
-
-    Stopwatch watch;
-    size_t out_bytes = out ? out->count() : 0;
-    size_t maybe_compressed_out_bytes = maybe_compressed_out ? maybe_compressed_out->count() : 0;
-    size_t rows = 0;
-
-    for (auto & elem : data)
-    {
-        elem.first->readPrefix();
-        while (Block block = elem.first->read())
-        {
-            rows += block.rows();
-            sendData(block, elem.second);
-        }
-        elem.first->readSuffix();
-    }
-
-    /// Send empty block, which means end of data transfer.
-    sendData(Block());
-
-    out_bytes = out->count() - out_bytes;
-    maybe_compressed_out_bytes = maybe_compressed_out->count() - maybe_compressed_out_bytes;
-
-    auto get_logging_msg = [&]() -> String {
-        const double elapsed_seconds = watch.elapsedSeconds();
-
-        FmtBuffer fmt_buf;
-        fmt_buf.fmtAppend(
-            "Sent data for {} external tables, total {} rows in {:.3f} sec., {:.3f} rows/sec., "
-            "{:.3f} MiB ({:.3f} MiB/sec.)",
-            data.size(),
-            rows,
-            elapsed_seconds,
-            1.0 * rows / elapsed_seconds,
-            maybe_compressed_out_bytes / 1048576.0,
-            maybe_compressed_out_bytes / 1048576.0 / elapsed_seconds);
-
-        if (compression == Protocol::Compression::Enable)
-            fmt_buf.fmtAppend(", compressed {:.3f} times to {:.3f} MiB ({:.3f} MiB/sec.)", 1.0 * maybe_compressed_out_bytes / out_bytes, out_bytes / 1048576.0, out_bytes / 1048576.0 / elapsed_seconds);
-        else
-            fmt_buf.append(", no compression.");
-        return fmt_buf.toString();
-    };
-
-    LOG_DEBUG(log_wrapper.get(), get_logging_msg());
-}
-
 
 bool Connection::poll(size_t timeout_microseconds)
 {
@@ -493,11 +439,6 @@ Connection::Packet Connection::receivePacket()
             res.profile_info = receiveProfileInfo();
             return res;
 
-        case Protocol::Server::Totals:
-            /// Block with total values is passed in same form as ordinary block. The only difference is packed id.
-            res.block = receiveData();
-            return res;
-
         case Protocol::Server::Extremes:
             /// Same as above.
             res.block = receiveData();
@@ -509,10 +450,9 @@ Connection::Packet Connection::receivePacket()
         default:
             /// In unknown state, disconnect - to not leave unsynchronised connection.
             disconnect();
-            throw Exception("Unknown packet "
-                                + toString(res.type)
-                                + " from server " + getDescription(),
-                            ErrorCodes::UNKNOWN_PACKET_FROM_SERVER);
+            throw Exception(
+                "Unknown packet " + toString(res.type) + " from server " + getDescription(),
+                ErrorCodes::UNKNOWN_PACKET_FROM_SERVER);
         }
     }
     catch (Exception & e)
@@ -554,7 +494,7 @@ void Connection::initBlockInput()
         else
             maybe_compressed_in = in;
 
-        block_in = std::make_shared<NativeBlockInputStream>(*maybe_compressed_in, server_revision);
+        block_in = std::make_shared<NativeBlockInputStream>(*maybe_compressed_in, 1);
     }
 }
 
@@ -580,7 +520,7 @@ std::unique_ptr<Exception> Connection::receiveException()
 Progress Connection::receiveProgress()
 {
     Progress progress;
-    progress.read(*in, server_revision);
+    progress.read(*in);
     return progress;
 }
 
@@ -604,8 +544,8 @@ void Connection::fillBlockExtraInfo(BlockExtraInfo & info) const
 void Connection::throwUnexpectedPacket(UInt64 packet_type, const char * expected) const
 {
     throw NetException(
-        "Unexpected packet from server " + getDescription() + " (expected " + expected
-            + ", got " + String(Protocol::Server::toString(packet_type)) + ")",
+        "Unexpected packet from server " + getDescription() + " (expected " + expected + ", got "
+            + String(Protocol::Server::toString(packet_type)) + ")",
         ErrorCodes::UNEXPECTED_PACKET_FROM_SERVER);
 }
 

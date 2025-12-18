@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/DataStreams/PrettyBlockOutputStream.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -31,7 +33,12 @@ class PrettyBlockOutputStream : public IBlockOutputStream
 {
 public:
     /// no_escapes - do not use ANSI escape sequences - to display in the browser, not in the console.
-    PrettyBlockOutputStream(WriteBuffer & ostr_, const Block & header_, bool no_escapes_, size_t max_rows_, const Context & context_);
+    PrettyBlockOutputStream(
+        WriteBuffer & ostr_,
+        const Block & header_,
+        bool no_escapes_,
+        size_t max_rows_,
+        const Context & context_);
 
     Block getHeader() const override { return header; }
     void write(const Block & block) override;
@@ -39,11 +46,9 @@ public:
 
     void flush() override;
 
-    void setTotals(const Block & totals_) override { totals = totals_; }
     void setExtremes(const Block & extremes_) override { extremes = extremes_; }
 
 protected:
-    void writeTotals();
     void writeExtremes();
 
     WriteBuffer & ostr;
@@ -54,7 +59,6 @@ protected:
 
     bool no_escapes;
 
-    Block totals;
     Block extremes;
 
     const Context & context;
@@ -62,8 +66,16 @@ protected:
     using Widths = PODArray<size_t>;
     using WidthsPerColumn = std::vector<Widths>;
 
-    static void calculateWidths(const Block & block, WidthsPerColumn & widths, Widths & max_widths, Widths & name_widths);
-    void writeValueWithPadding(const ColumnWithTypeAndName & elem, size_t row_num, size_t value_width, size_t pad_to_width);
+    static void calculateWidths(
+        const Block & block,
+        WidthsPerColumn & widths,
+        Widths & max_widths,
+        Widths & name_widths);
+    void writeValueWithPadding(
+        const ColumnWithTypeAndName & elem,
+        size_t row_num,
+        size_t value_width,
+        size_t pad_to_width);
 };
 
-}
+} // namespace DB

@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -32,7 +32,8 @@ TEST(PKSquashTest, WithExtraSort)
     size_t num_rows_write = 0;
     {
         // pk asc, ts desc
-        blocks.push_back(DMTestEnv::prepareBlockWithTso(4, 10000 + rows_per_block * 2, 10000 + rows_per_block * 3, true));
+        blocks.push_back(
+            DMTestEnv::prepareBlockWithTso(4, 10000 + rows_per_block * 2, 10000 + rows_per_block * 3, true));
         num_rows_write += blocks.back().rows();
         blocks.push_back(DMTestEnv::prepareBlockWithTso(4, 10000 + rows_per_block, 10000 + rows_per_block * 2, true));
         num_rows_write += blocks.back().rows();
@@ -60,13 +61,13 @@ TEST(PKSquashTest, WithExtraSort)
     // Sorted by pk, tso asc
     SortDescription sort //
         = SortDescription{//
-                          SortColumnDescription{EXTRA_HANDLE_COLUMN_NAME, 1, 0},
-                          SortColumnDescription{VERSION_COLUMN_NAME, 1, 0}};
+                          SortColumnDescription{MutSup::extra_handle_column_name, 1, 0},
+                          SortColumnDescription{MutSup::version_column_name, 1, 0}};
 
     {
         auto in = std::make_shared<PKSquashingBlockInputStream</*need_extra_sort*/ true>>(
             std::make_shared<BlocksListBlockInputStream>(blocks.begin(), blocks.end()),
-            TiDBPkColumnID,
+            MutSup::extra_handle_id,
             false);
         size_t num_blocks_read = 0;
         size_t num_rows_read = 0;

@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/DataTypes/NumberTraits.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -177,10 +179,7 @@ struct ResultOfFloatingPointDivision
 template <typename A, typename B>
 struct ResultOfIntegerDivision
 {
-    using Type = typename Construct<
-        std::is_signed_v<A> || std::is_signed_v<B>,
-        false,
-        sizeof(A)>::Type;
+    using Type = typename Construct<std::is_signed_v<A> || std::is_signed_v<B>, false, sizeof(A)>::Type;
 };
 
 template <size_t size>
@@ -249,10 +248,9 @@ struct ResultOfModulo
 template <typename A>
 struct ResultOfNegate
 {
-    using Type = typename Construct<
-        true,
-        std::is_floating_point_v<A>,
-        std::is_signed_v<A> ? sizeof(A) : nextSize(sizeof(A))>::Type;
+    using Type =
+        typename Construct<true, std::is_floating_point_v<A>, std::is_signed_v<A> ? sizeof(A) : nextSize(sizeof(A))>::
+            Type;
 };
 
 template <typename T>
@@ -264,10 +262,7 @@ struct ResultOfNegate<Decimal<T>>
 template <typename A>
 struct ResultOfAbs
 {
-    using Type = typename Construct<
-        false,
-        std::is_floating_point_v<A>,
-        sizeof(A)>::Type;
+    using Type = typename Construct<false, std::is_floating_point_v<A>, sizeof(A)>::Type;
 };
 
 template <typename T>
@@ -291,10 +286,7 @@ struct ResultOfBit
 template <typename A>
 struct ResultOfBitNot
 {
-    using Type = typename Construct<
-        std::is_signed_v<A>,
-        false,
-        sizeof(A)>::Type;
+    using Type = typename Construct<std::is_signed_v<A>, false, sizeof(A)>::Type;
 };
 
 template <typename T>
@@ -320,25 +312,29 @@ struct ResultOfIf
     static constexpr bool has_signed = std::is_signed_v<A> || std::is_signed_v<B>;
     static constexpr bool has_unsigned = !std::is_signed_v<A> || !std::is_signed_v<B>;
 
-    static constexpr size_t max_size_of_unsigned_integer = max(std::is_signed_v<A> ? 0 : sizeof(A), std::is_signed_v<B> ? 0 : sizeof(B));
-    static constexpr size_t max_size_of_signed_integer = max(std::is_signed_v<A> ? sizeof(A) : 0, std::is_signed_v<B> ? sizeof(B) : 0);
-    static constexpr size_t max_size_of_integer = max(std::is_integral_v<A> ? sizeof(A) : 0, std::is_integral_v<B> ? sizeof(B) : 0);
-    static constexpr size_t max_size_of_float = max(std::is_floating_point_v<A> ? sizeof(A) : 0, std::is_floating_point_v<B> ? sizeof(B) : 0);
+    static constexpr size_t max_size_of_unsigned_integer
+        = max(std::is_signed_v<A> ? 0 : sizeof(A), std::is_signed_v<B> ? 0 : sizeof(B));
+    static constexpr size_t max_size_of_signed_integer
+        = max(std::is_signed_v<A> ? sizeof(A) : 0, std::is_signed_v<B> ? sizeof(B) : 0);
+    static constexpr size_t max_size_of_integer
+        = max(std::is_integral_v<A> ? sizeof(A) : 0, std::is_integral_v<B> ? sizeof(B) : 0);
+    static constexpr size_t max_size_of_float
+        = max(std::is_floating_point_v<A> ? sizeof(A) : 0, std::is_floating_point_v<B> ? sizeof(B) : 0);
 
     using Type = typename Construct<
         has_signed,
         has_float,
-        ((has_float && has_integer && max_size_of_integer >= max_size_of_float) || (has_signed && has_unsigned && max_size_of_unsigned_integer >= max_size_of_signed_integer)) ? max(sizeof(A), sizeof(B)) * 2 : max(sizeof(A), sizeof(B))>::Type;
+        ((has_float && has_integer && max_size_of_integer >= max_size_of_float)
+         || (has_signed && has_unsigned && max_size_of_unsigned_integer >= max_size_of_signed_integer))
+            ? max(sizeof(A), sizeof(B)) * 2
+            : max(sizeof(A), sizeof(B))>::Type;
 };
 
 /** Before applying bitwise operations, operands are casted to whole numbers. */
 template <typename A>
 struct ToInteger
 {
-    using Type = typename Construct<
-        std::is_signed_v<A>,
-        false,
-        std::is_floating_point_v<A> ? 8 : sizeof(A)>::Type;
+    using Type = typename Construct<std::is_signed_v<A>, false, std::is_floating_point_v<A> ? 8 : sizeof(A)>::Type;
 };
 
 template <>
@@ -363,10 +359,7 @@ struct ResultOfBinaryLeastGreatest
     using Type = std::conditional_t<
         std::is_floating_point_v<A> || std::is_floating_point_v<B>,
         Float64,
-        std::conditional_t<
-            std::is_unsigned_v<A> && std::is_unsigned_v<B>,
-            UInt64,
-            Int64>>;
+        std::conditional_t<std::is_unsigned_v<A> && std::is_unsigned_v<B>, UInt64, Int64>>;
 };
 
 } // namespace NumberTraits

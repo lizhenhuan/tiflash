@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/DataStreams/BlockStreamProfileInfo.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,17 +14,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <Core/Block.h>
 #include <DataStreams/BlockStreamProfileInfo.h>
 #include <DataStreams/IProfilingBlockInputStream.h>
-
 #include <IO/ReadHelpers.h>
 #include <IO/WriteHelpers.h>
 
-#include <Core/Block.h>
-
 namespace DB
 {
-
 void BlockStreamProfileInfo::read(ReadBuffer & in)
 {
     readVarUInt(rows, in);
@@ -52,6 +51,7 @@ void BlockStreamProfileInfo::setFrom(const BlockStreamProfileInfo & rhs, bool sk
         rows = rhs.rows;
         blocks = rhs.blocks;
         bytes = rhs.bytes;
+        allocated_bytes = rhs.allocated_bytes;
     }
     applied_limit = rhs.applied_limit;
     rows_before_limit = rhs.rows_before_limit;
@@ -80,6 +80,7 @@ void BlockStreamProfileInfo::update(Block & block)
     ++blocks;
     rows += block.rows();
     bytes += block.bytes();
+    allocated_bytes += block.allocatedBytes();
 }
 
 
@@ -91,8 +92,7 @@ void BlockStreamProfileInfo::collectInfosForStreamsWithName(const char * name, B
         return;
     }
 
-    parent->forEachProfilingChild([&] (IProfilingBlockInputStream & child)
-    {
+    parent->forEachProfilingChild([&](IProfilingBlockInputStream & child) {
         child.getProfileInfo().collectInfosForStreamsWithName(name, res);
         return false;
     });
@@ -121,8 +121,7 @@ void BlockStreamProfileInfo::calculateRowsBeforeLimit() const
 
         for (const BlockStreamProfileInfo * info_limit_or_sort : limits_or_sortings)
         {
-            info_limit_or_sort->parent->forEachProfilingChild([&] (IProfilingBlockInputStream & child)
-            {
+            info_limit_or_sort->parent->forEachProfilingChild([&](IProfilingBlockInputStream & child) {
                 rows_before_limit += child.getProfileInfo().rows;
                 return false;
             });
@@ -148,4 +147,4 @@ void BlockStreamProfileInfo::calculateRowsBeforeLimit() const
     }
 }
 
-}
+} // namespace DB

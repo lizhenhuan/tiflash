@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Columns/ColumnArray.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -55,10 +57,7 @@ public:
         return ColumnArray::create(nested_column->assumeMutable(), offsets_column->assumeMutable());
     }
 
-    static Ptr create(const ColumnPtr & nested_column)
-    {
-        return ColumnArray::create(nested_column->assumeMutable());
-    }
+    static Ptr create(const ColumnPtr & nested_column) { return ColumnArray::create(nested_column->assumeMutable()); }
 
     template <typename... Args, typename = typename std::enable_if<IsMutableColumns<Args...>::value>::type>
     static MutablePtr create(Args &&... args)
@@ -77,25 +76,153 @@ public:
     void get(size_t n, Field & res) const override;
     StringRef getDataAt(size_t n) const override;
     void insertData(const char * pos, size_t length) override;
-    StringRef serializeValueIntoArena(size_t n, Arena & arena, char const *& begin, const TiDB::TiDBCollatorPtr &, String &) const override;
+    StringRef serializeValueIntoArena(
+        size_t n,
+        Arena & arena,
+        char const *& begin,
+        const TiDB::TiDBCollatorPtr &,
+        String &) const override;
     const char * deserializeAndInsertFromArena(const char * pos, const TiDB::TiDBCollatorPtr &) override;
+
+    size_t serializeByteSize() const override;
+
+    void countSerializeByteSize(PaddedPODArray<size_t> & byte_size) const override;
+    void countSerializeByteSizeForCmp(
+        PaddedPODArray<size_t> & byte_size,
+        const NullMap * nullmap,
+        const TiDB::TiDBCollatorPtr & collator) const override;
+    template <bool compare_semantics>
+    void countSerializeByteSizeImpl(
+        PaddedPODArray<size_t> & byte_size,
+        const NullMap * nullmap,
+        const TiDB::TiDBCollatorPtr & collator) const;
+
+    void countSerializeByteSizeForColumnArray(
+        PaddedPODArray<size_t> & /* byte_size */,
+        const IColumn::Offsets & /* array_offsets */) const override
+    {
+        throw Exception(
+            "Method countSerializeByteSizeForColumnArray is not supported for " + getName(),
+            ErrorCodes::NOT_IMPLEMENTED);
+    }
+    void countSerializeByteSizeForCmpColumnArray(
+        PaddedPODArray<size_t> & /* byte_size */,
+        const IColumn::Offsets & /* array_offsets */,
+        const NullMap * /*nullmap*/,
+        const TiDB::TiDBCollatorPtr & /* collator */) const override
+    {
+        throw Exception(
+            "Method countSerializeByteSizeForCmpColumnArray is not supported for " + getName(),
+            ErrorCodes::NOT_IMPLEMENTED);
+    }
+
+    void serializeToPos(PaddedPODArray<char *> & pos, size_t start, size_t length, bool has_null) const override;
+    void serializeToPosForCmp(
+        PaddedPODArray<char *> & pos,
+        size_t start,
+        size_t length,
+        bool has_null,
+        const NullMap * nullmap,
+        const TiDB::TiDBCollatorPtr & collator,
+        String * sort_key_container) const override;
+    template <bool has_null, bool compare_semantics, bool has_nullmap>
+    void serializeToPosImpl(
+        PaddedPODArray<char *> & pos,
+        size_t start,
+        size_t length,
+        const TiDB::TiDBCollatorPtr & collator,
+        String * sort_key_container,
+        const NullMap * nullmap) const;
+
+    void serializeToPosForColumnArray(
+        PaddedPODArray<char *> & /* pos */,
+        size_t /* start */,
+        size_t /* length */,
+        bool /* has_null */,
+        const IColumn::Offsets & /* array_offsets */) const override
+    {
+        throw Exception(
+            "Method serializeToPosForColumnArray is not supported for " + getName(),
+            ErrorCodes::NOT_IMPLEMENTED);
+    }
+    void serializeToPosForCmpColumnArray(
+        PaddedPODArray<char *> & /* pos */,
+        size_t /* start */,
+        size_t /* length */,
+        bool /* has_null */,
+        const NullMap * /* nullmap */,
+        const IColumn::Offsets & /* array_offsets */,
+        const TiDB::TiDBCollatorPtr & /* collator */,
+        String * /* sort_key_container */) const override
+    {
+        throw Exception(
+            "Method serializeToPosForCmpColumnArray is not supported for " + getName(),
+            ErrorCodes::NOT_IMPLEMENTED);
+    }
+
+    void deserializeAndInsertFromPos(PaddedPODArray<char *> & pos, bool use_nt_align_buffer) override;
+
+    void deserializeAndInsertFromPosForColumnArray(
+        PaddedPODArray<char *> & /* pos */,
+        const IColumn::Offsets & /* array_offsets */,
+        bool /* use_nt_align_buffer */) override
+    {
+        throw Exception(
+            "Method deserializeAndInsertFromPosForColumnArray is not supported for " + getName(),
+            ErrorCodes::NOT_IMPLEMENTED);
+    }
+
+    void flushNTAlignBuffer() override;
+
+    void deserializeAndAdvancePos(PaddedPODArray<char *> & pos) const override;
+
+    void deserializeAndAdvancePosForColumnArray(
+        PaddedPODArray<char *> & /* pos */,
+        const IColumn::Offsets & /* array_offsets */) const override
+    {
+        throw Exception(
+            "Method deserializeAndAdvancePosForColumnArray is not supported for " + getName(),
+            ErrorCodes::NOT_IMPLEMENTED);
+    }
+
     void updateHashWithValue(size_t n, SipHash & hash, const TiDB::TiDBCollatorPtr &, String &) const override;
-    void updateHashWithValues(IColumn::HashValues & hash_values, const TiDB::TiDBCollatorPtr &, String &) const override;
+    void updateHashWithValues(IColumn::HashValues & hash_values, const TiDB::TiDBCollatorPtr &, String &)
+        const override;
     void updateWeakHash32(WeakHash32 & hash, const TiDB::TiDBCollatorPtr &, String &) const override;
+    void updateWeakHash32(WeakHash32 & hash, const TiDB::TiDBCollatorPtr &, String &, const BlockSelective & selective)
+        const override;
     void insertRangeFrom(const IColumn & src, size_t start, size_t length) override;
     void insert(const Field & x) override;
     void insertFrom(const IColumn & src_, size_t n) override;
+    void insertManyFrom(const IColumn & src_, size_t n, size_t length) override
+    {
+        for (size_t i = 0; i < length; ++i)
+            insertFrom(src_, n);
+    }
+
+    void insertSelectiveRangeFrom(const IColumn & src_, const Offsets & selective_offsets, size_t start, size_t length)
+        override
+    {
+        RUNTIME_CHECK(selective_offsets.size() >= start + length);
+        for (size_t i = start; i < start + length; ++i)
+            insertFrom(src_, selective_offsets[i]);
+    }
+
     void insertDefault() override;
+    void insertManyDefaults(size_t length) override;
     void popBack(size_t n) override;
+    /// TODO: If result_size_hint < 0, makes reserve() using size of filtered column, not source column to avoid some OOM issues.
     ColumnPtr filter(const Filter & filt, ssize_t result_size_hint) const override;
     ColumnPtr permute(const Permutation & perm, size_t limit) const override;
     int compareAt(size_t n, size_t m, const IColumn & rhs_, int nan_direction_hint) const override;
     void getPermutation(bool reverse, size_t limit, int nan_direction_hint, Permutation & res) const override;
     void reserve(size_t n) override;
+    void reserveAlign(size_t n, size_t alignment) override;
     size_t byteSize() const override;
     size_t byteSize(size_t offset, size_t limit) const override;
     size_t allocatedBytes() const override;
-    ColumnPtr replicate(const Offsets & replicate_offsets) const override;
+    ColumnPtr replicateRange(size_t start_row, size_t end_row, const IColumn::Offsets & replicate_offsets)
+        const override;
     ColumnPtr convertToFullColumnIfConst() const override;
     void getExtremes(Field & min, Field & max) const override;
 
@@ -105,18 +232,12 @@ public:
     IColumn & getData() { return data->assumeMutableRef(); }
     const IColumn & getData() const { return *data; }
 
-    IColumn & getOffsetsColumn() { return offsets->assumeMutableRef(); }
-    const IColumn & getOffsetsColumn() const { return *offsets; }
+    ColumnOffsets & getOffsetsColumn() { return static_cast<ColumnOffsets &>(offsets->assumeMutableRef()); }
+    const ColumnOffsets & getOffsetsColumn() const { return static_cast<const ColumnOffsets &>(*offsets); }
 
-    Offsets & ALWAYS_INLINE getOffsets()
-    {
-        return static_cast<ColumnOffsets &>(offsets->assumeMutableRef()).getData();
-    }
+    Offsets & ALWAYS_INLINE getOffsets() { return getOffsetsColumn().getData(); }
 
-    const Offsets & ALWAYS_INLINE getOffsets() const
-    {
-        return static_cast<const ColumnOffsets &>(*offsets).getData();
-    }
+    const Offsets & ALWAYS_INLINE getOffsets() const { return getOffsetsColumn().getData(); }
 
     const ColumnPtr & getDataPtr() const { return data; }
     ColumnPtr & getDataPtr() { return data; }
@@ -128,7 +249,19 @@ public:
     {
         return scatterImpl<ColumnArray>(num_columns, selector);
     }
-
+    MutableColumns scatter(ColumnIndex num_columns, const Selector & selector, const BlockSelective & selective)
+        const override
+    {
+        return scatterImpl<ColumnArray>(num_columns, selector, selective);
+    }
+    void scatterTo(ScatterColumns & columns, const Selector & selector) const override
+    {
+        scatterToImpl<ColumnArray>(columns, selector);
+    }
+    void scatterTo(ScatterColumns & columns, const Selector & selector, const BlockSelective & selective) const override
+    {
+        scatterToImpl<ColumnArray>(columns, selector, selective);
+    }
     void gather(ColumnGathererStream & gatherer_stream) override;
 
     void forEachSubcolumn(ColumnCallback callback) override
@@ -137,13 +270,22 @@ public:
         callback(data);
     }
 
+    bool canBeInsideNullable() const override { return true; }
+
+    bool decodeTiDBRowV2Datum(size_t cursor, const String & raw_value, size_t /* length */, bool /* force_decode */)
+        override;
+
+    void insertFromDatumData(const char * data, size_t length) override;
+
+    std::pair<UInt32, StringRef> getElementRef(size_t element_idx) const;
+
+    size_t ALWAYS_INLINE sizeAt(ssize_t i) const { return (getOffsets()[i] - getOffsets()[i - 1]); }
+
 private:
     ColumnPtr data;
     ColumnPtr offsets;
 
     size_t ALWAYS_INLINE offsetAt(size_t i) const { return i == 0 ? 0 : getOffsets()[i - 1]; }
-    size_t ALWAYS_INLINE sizeAt(size_t i) const { return i == 0 ? getOffsets()[0] : (getOffsets()[i] - getOffsets()[i - 1]); }
-
 
     /// Multiply values if the nested column is ColumnVector<T>.
     template <typename T>
@@ -174,6 +316,13 @@ private:
     ColumnPtr filterTuple(const Filter & filt, ssize_t result_size_hint) const;
     ColumnPtr filterNullable(const Filter & filt, ssize_t result_size_hint) const;
     ColumnPtr filterGeneric(const Filter & filt, ssize_t result_size_hint) const;
+
+    template <bool selective_block>
+    void updateWeakHash32Impl(
+        WeakHash32 & hash,
+        const TiDB::TiDBCollatorPtr & collator,
+        String & sort_key_container,
+        const BlockSelective & selective) const;
 };
 
 

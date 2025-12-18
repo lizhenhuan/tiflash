@@ -1,3 +1,5 @@
+set_property(DIRECTORY PROPERTY EXCLUDE_FROM_ALL 1)
+
 if (NOT MSVC)
     set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-old-style-cast")
 endif ()
@@ -12,6 +14,10 @@ endif ()
 
 if (USE_INTERNAL_ZSTD_LIBRARY)
     add_subdirectory (zstd-cmake)
+endif ()
+
+if (USE_QPL AND USE_INTERNAL_QPL_LIBRARY)
+    add_subdirectory (qpl-cmake)
 endif ()
 
 if (USE_INTERNAL_RE2_LIBRARY)
@@ -60,6 +66,21 @@ if (USE_INTERNAL_SSL_LIBRARY)
     add_library (OpenSSL::SSL ALIAS ssl)
 endif ()
 
+if (USE_GM_SSL)
+    set (save_CMAKE_CXX_FLAGS ${CMAKE_CXX_FLAGS})
+    set (save_CMAKE_C_FLAGS ${CMAKE_C_FLAGS})
+    set (_save ${ENABLE_TESTS})
+    set (CMAKE_CXX_FLAGS "")
+    set (CMAKE_C_FLAGS "")
+    set (ENABLE_TESTS 0)
+    add_subdirectory (GmSSL)
+    target_no_warning(gmssl unused-value)
+    target_no_warning(gmssl implicit-function-declaration)
+    set (ENABLE_TESTS ${_save})
+    set (CMAKE_CXX_FLAGS ${save_CMAKE_CXX_FLAGS})
+    set (CMAKE_C_FLAGS ${save_CMAKE_C_FLAGS})
+endif()
+
 if (USE_INTERNAL_POCO_LIBRARY)
     set (save_CMAKE_CXX_FLAGS ${CMAKE_CXX_FLAGS})
     set (save_CMAKE_C_FLAGS ${CMAKE_C_FLAGS})
@@ -73,6 +94,11 @@ if (USE_INTERNAL_POCO_LIBRARY)
         set (ENABLE_DATA_ODBC 0 CACHE INTERNAL "") # TODO (build fail)
     endif ()
     add_subdirectory (poco)
+    target_compile_options(Net PUBLIC "-Wno-error=deprecated-declarations")
+    target_compile_options(Net PUBLIC "-Wno-deprecated-declarations")
+    target_no_warning(NetSSL deprecated-declarations)
+    target_no_warning(Foundation deprecated-declarations)
+    target_no_warning(Net deprecated-enum-enum-conversion)
     unset (CMAKE_DISABLE_FIND_PACKAGE_ZLIB)
     set (ENABLE_TESTS ${_save})
     set (CMAKE_CXX_FLAGS ${save_CMAKE_CXX_FLAGS})
@@ -113,6 +139,8 @@ set (ENABLE_TESTS ${_save})
 # -------
 add_subdirectory (tipb/cpp)
 
+add_subdirectory (etcd)
+
 if (USE_INTERNAL_TIFLASH_PROXY)
     add_subdirectory (tiflash-proxy-cmake)
 endif ()
@@ -151,14 +179,31 @@ target_include_directories(cpptoml INTERFACE
 SET (BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "Disable google-benchmark testing" FORCE)
 SET (BENCHMARK_ENABLE_GTEST_TESTS OFF CACHE BOOL "Disable google-benchmark testing" FORCE)
 add_subdirectory(benchmark)
+target_compile_options(benchmark PRIVATE "-Wno-error=thread-safety-analysis")
+target_no_warning(benchmark thread-safety-analysis)
 
 set (BUILD_TESTING OFF CACHE BOOL "Disable cpu-features testing" FORCE)
-if (NOT (APPLE AND ARCH_AARCH64))
+if (NOT (OS_DARWIN AND ARCH_AARCH64))
     add_subdirectory(cpu_features)
 endif()
 
-if (ARCH_AARCH64 AND ARCH_LINUX)
+if (ARCH_AARCH64 AND OS_LINUX)
     add_subdirectory(arm-optimized-routines-cmake)
 endif ()
 
 add_subdirectory(magic_enum)
+
+add_subdirectory(aws-cmake)
+
+add_subdirectory(simdjson)
+
+add_subdirectory(fastpforlib)
+
+add_subdirectory(usearch-cmake)
+
+add_subdirectory(simsimd-cmake)
+
+if (ENABLE_TESTS AND NOT CMAKE_BUILD_TYPE_UC STREQUAL "DEBUG")
+    add_subdirectory(hdf5-cmake)
+    add_subdirectory(highfive-cmake)
+endif ()

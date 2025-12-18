@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <Encryption/RateLimiter.h>
+#include <IO/BaseFile/RateLimiter.h>
 #include <Storages/DeltaMerge/workload/Limiter.h>
 #include <Storages/DeltaMerge/workload/Options.h>
 #include <fmt/core.h>
@@ -27,10 +27,7 @@ public:
     explicit ConstantLimiter(uint64_t rate_per_sec)
         : limiter(rate_per_sec, LimiterType::UNKNOW)
     {}
-    void request() override
-    {
-        limiter.request(1);
-    }
+    void request() override { limiter.request(1); }
 
 private:
     WriteLimiter limiter;

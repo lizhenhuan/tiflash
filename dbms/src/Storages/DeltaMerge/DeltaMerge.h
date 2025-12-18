@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,32 +15,44 @@
 #pragma once
 
 #include <Common/Exception.h>
+#include <Common/Logger.h>
+#include <Common/ProfileEvents.h>
 #include <DataStreams/IBlockInputStream.h>
-#include <IO/ReadBufferFromFile.h>
+#include <IO/Buffer/ReadBufferFromFile.h>
+#include <IO/Buffer/WriteBufferFromFile.h>
 #include <IO/ReadHelpers.h>
-#include <IO/WriteBufferFromFile.h>
 #include <IO/WriteHelpers.h>
+#include <Storages/DeltaMerge/Delta/DeltaValueSpace.h>
+#include <Storages/DeltaMerge/DeltaIndex/DeltaTree.h>
 #include <Storages/DeltaMerge/DeltaMergeDefines.h>
-#include <Storages/DeltaMerge/DeltaTree.h>
 #include <Storages/DeltaMerge/RowKeyFilter.h>
 #include <Storages/DeltaMerge/SkippableBlockInputStream.h>
 
-namespace DB
+namespace ProfileEvents
 {
-namespace DM
+extern const Event DTDeltaIndexError;
+} // namespace ProfileEvents
+
+
+namespace DB::ErrorCodes
+{
+extern const int DT_DELTA_INDEX_ERROR;
+}
+
+namespace DB::DM
 {
 /// Note that the columns in stable input stream and value space must exactly the same, including name, type, and id.
 /// The first column must be PK column.
 /// This class does not guarantee that the rows in the return blocks are filltered by range.
-template <class DeltaValueReader, class IndexIterator, bool skippable_place = false>
-class DeltaMergeBlockInputStream final : public SkippableBlockInputStream
+template <bool skippable_place = false, bool need_row_id = false>
+class DeltaMergeBlockInputStream final
+    : public SkippableBlockInputStream
     , Allocator<false>
 {
     static constexpr size_t UNLIMITED = std::numeric_limits<UInt64>::max();
 
 private:
     using DeltaValueReaderPtr = std::shared_ptr<DeltaValueReader>;
-    using SharedLock = std::shared_lock<std::shared_mutex>;
 
     SkippableBlockInputStreamPtr stable_input_stream;
 
@@ -57,8 +69,8 @@ private:
     Block sk_first_block;
 
     DeltaValueReaderPtr delta_value_reader;
-    IndexIterator delta_index_it;
-    IndexIterator delta_index_end;
+    DeltaIndexIterator delta_index_it;
+    DeltaIndexIterator delta_index_end;
 
     RowKeyRange rowkey_range;
     bool is_common_handle;
@@ -77,6 +89,7 @@ private:
     Columns cur_stable_block_columns;
     size_t cur_stable_block_rows = 0;
     size_t cur_stable_block_pos = 0;
+    UInt64 cur_stable_block_start_offset = 0;
 
     bool stable_done = false;
     bool delta_done = false;
@@ -85,18 +98,30 @@ private:
     size_t num_read = 0;
 
     RowKeyValue last_value;
-    RowKeyValueRef last_value_ref;
+    RowKeyValueRef last_value_ref{};
     UInt64 last_version = 0;
     size_t last_handle_pos = 0;
     size_t last_handle_read_num = 0;
 
+    // Use for calculating MVCC-bitmap-filter when `need_row_id` is true.
+    ColumnUInt32::MutablePtr seg_row_id_col;
+    // `stable_rows` is the total rows of the underlying DMFiles, includes not valid rows.
+    UInt64 stable_rows;
+    // `delta_row_ids` is used to return the row id of delta.
+    std::vector<UInt32> delta_row_ids;
+
+    const String tracing_id;
+
 public:
-    DeltaMergeBlockInputStream(const SkippableBlockInputStreamPtr & stable_input_stream_,
-                               const DeltaValueReaderPtr & delta_value_reader_,
-                               const IndexIterator & delta_index_start_,
-                               const IndexIterator & delta_index_end_,
-                               const RowKeyRange rowkey_range_,
-                               size_t max_block_size_)
+    DeltaMergeBlockInputStream(
+        const SkippableBlockInputStreamPtr & stable_input_stream_,
+        const DeltaValueReaderPtr & delta_value_reader_,
+        const DeltaIndexIterator & delta_index_start_,
+        const DeltaIndexIterator & delta_index_end_,
+        const RowKeyRange rowkey_range_,
+        size_t max_block_size_,
+        UInt64 stable_rows_,
+        const String & tracing_id_)
         : stable_input_stream(stable_input_stream_)
         , delta_value_reader(delta_value_reader_)
         , delta_index_it(delta_index_start_)
@@ -105,6 +130,8 @@ public:
         , is_common_handle(rowkey_range.is_common_handle)
         , rowkey_column_size(rowkey_range.rowkey_column_size)
         , max_block_size(max_block_size_)
+        , stable_rows(stable_rows_)
+        , tracing_id(tracing_id_)
     {
         if constexpr (skippable_place)
         {
@@ -122,7 +149,7 @@ public:
         }
         else
         {
-            use_stable_rows = delta_index_it.getSid();
+            use_stable_rows = delta_index_it->getSid();
         }
         auto all_range = RowKeyRange::newAll(is_common_handle, rowkey_column_size);
         last_value = all_range.getStart().toRowKeyValue();
@@ -155,6 +182,12 @@ public:
         return true;
     }
 
+    size_t skipNextBlock() override { throw Exception("Not implemented", ErrorCodes::NOT_IMPLEMENTED); }
+    Block readWithFilter(const IColumn::Filter &) override
+    {
+        throw Exception("Not implemented", ErrorCodes::NOT_IMPLEMENTED);
+    }
+
     Block read() override
     {
         if constexpr (skippable_place)
@@ -184,26 +217,48 @@ private:
         {
             // In some cases like Segment::getSplitPointSlow, only handle column in block.
             if (block.columns() < 2 //
-                || block.getByPosition(0).column_id != EXTRA_HANDLE_COLUMN_ID //
-                || block.getByPosition(1).column_id != VERSION_COLUMN_ID)
+                || block.getByPosition(0).column_id != MutSup::extra_handle_id //
+                || block.getByPosition(1).column_id != MutSup::version_col_id)
                 return;
 
             ++num_read;
 
             auto rowkey_column = RowKeyColumnContainer(block.getByPosition(0).column, is_common_handle);
             const auto & version_column = toColumnVectorData<UInt64>(block.getByPosition(1).column);
-            for (size_t i = 0; i < rowkey_column.column->size(); ++i)
+            for (size_t i = 0; i < version_column.size(); ++i)
             {
                 auto rowkey_value = rowkey_column.getRowKeyValue(i);
                 auto version = version_column[i];
-                int cmp_result = compare(rowkey_value, last_value_ref);
-                if (cmp_result < 0 || (cmp_result == 0 && version < last_version))
+                auto cmp_result = rowkey_value <=> last_value_ref;
+                if (cmp_result == std::strong_ordering::less
+                    || (cmp_result == std::strong_ordering::equal && version < last_version))
                 {
-                    throw Exception("DeltaMerge return wrong result, current handle[" + rowkey_value.toDebugString() + "]version["
-                                    + DB::toString(version) + "]@read[" + DB::toString(num_read) + "]@pos[" + DB::toString(i)
-                                    + "] is expected >= last_handle[" + last_value_ref.toDebugString() + "]last_version["
-                                    + DB::toString(last_version) + "]@read[" + DB::toString(last_handle_read_num) + "]@pos["
-                                    + DB::toString(last_handle_pos) + "]");
+                    ProfileEvents::increment(ProfileEvents::DTDeltaIndexError);
+                    LOG_ERROR(
+                        Logger::get(tracing_id),
+                        "DeltaMerge return wrong result, current handle[{}]version[{}]@read[{}]@pos[{}] "
+                        "is expected >= last_handle[{}]last_version[{}]@read[{}]@pos[{}]",
+                        rowkey_value.toDebugString(),
+                        version,
+                        num_read,
+                        i,
+                        last_value_ref.toDebugString(),
+                        last_version,
+                        last_handle_read_num,
+                        last_handle_pos);
+
+                    throw Exception(
+                        ErrorCodes::DT_DELTA_INDEX_ERROR,
+                        "DeltaMerge return wrong result, current handle[{}]version[{}]@read[{}]@pos[{}] "
+                        "is expected >= last_handle[{}]last_version[{}]@read[{}]@pos[{}]",
+                        rowkey_value.toDebugString(),
+                        version,
+                        num_read,
+                        i,
+                        last_value_ref.toDebugString(),
+                        last_version,
+                        last_handle_read_num,
+                        last_handle_pos);
                 }
                 last_value_ref = rowkey_value;
                 last_version = version;
@@ -214,6 +269,15 @@ private:
             /// become invalid, so need to update last_value here
             last_value = last_value_ref.toRowKeyValue();
             last_value_ref = last_value.toRowKeyValueRef();
+
+            if constexpr (need_row_id)
+            {
+                RUNTIME_CHECK_MSG(
+                    block.rows() == block.segmentRowIdCol()->size(),
+                    "Build bitmap error: block.rows {} != segmentRowId.size() {}",
+                    block.rows(),
+                    block.segmentRowIdCol()->size());
+            }
         }
     }
 
@@ -247,7 +311,12 @@ private:
             if (limit == max_block_size)
                 continue;
 
-            return header.cloneWithColumns(std::move(columns));
+            auto block = header.cloneWithColumns(std::move(columns));
+            if constexpr (need_row_id)
+            {
+                block.setSegmentRowIdCol(std::move(seg_row_id_col));
+            }
+            return block;
         }
         return {};
     }
@@ -255,6 +324,27 @@ private:
 private:
     inline bool finished() { return stable_done && delta_done; }
 
+    inline void fillSegmentRowId(UInt64 start, UInt64 limit)
+    {
+        auto & v = seg_row_id_col->getData();
+        auto offset = v.size();
+        v.resize(v.size() + limit);
+        for (UInt64 i = 0; i < limit; ++i)
+        {
+            v[offset + i] = start + i;
+        }
+    }
+
+    inline void fillSegmentRowId(const std::vector<UInt32> & row_ids)
+    {
+        auto & v = seg_row_id_col->getData();
+        auto offset = v.size();
+        v.resize(v.size() + row_ids.size());
+        for (UInt32 i = 0; i < row_ids.size(); ++i)
+        {
+            v[offset + i] = row_ids[i] + stable_rows;
+        }
+    }
     template <bool c_stable_done, bool c_delta_done>
     inline void next(MutableColumns & output_columns, size_t & output_write_limit)
     {
@@ -275,10 +365,10 @@ private:
             }
             else
             {
-                if (delta_index_it.isDelete())
+                if (delta_index_it->isDelete())
                 {
                     // Delete.
-                    writeDeleteFromDelta(delta_index_it.getCount());
+                    writeDeleteFromDelta(delta_index_it->getCount());
                 }
                 else
                 {
@@ -286,17 +376,17 @@ private:
                     bool do_write = true;
                     if constexpr (skippable_place)
                     {
-                        if (delta_index_it.getSid() < sk_skip_stable_rows)
+                        if (delta_index_it->getSid() < sk_skip_stable_rows)
                         {
                             do_write = false;
-                            sk_skip_total_rows += delta_index_it.getCount();
+                            sk_skip_total_rows += delta_index_it->getCount();
                         }
                     }
 
                     if (do_write)
                     {
-                        use_delta_offset = delta_index_it.getValue();
-                        use_delta_rows = delta_index_it.getCount();
+                        use_delta_offset = delta_index_it->getValue();
+                        use_delta_rows = delta_index_it->getCount();
                         writeInsertFromDelta(output_columns, output_write_limit);
                     }
                 }
@@ -310,10 +400,14 @@ private:
     inline void initOutputColumns(MutableColumns & columns)
     {
         columns.resize(num_columns);
-
         for (size_t i = 0; i < num_columns; ++i)
         {
             columns[i] = header.safeGetByPosition(i).column->cloneEmpty();
+        }
+        if constexpr (need_row_id)
+        {
+            seg_row_id_col = ColumnUInt32::create();
+            seg_row_id_col->reserve(max_block_size);
         }
     }
 
@@ -335,11 +429,13 @@ private:
         cur_stable_block_columns.clear();
         cur_stable_block_rows = 0;
         cur_stable_block_pos = 0;
+        cur_stable_block_start_offset = 0;
         auto block = stable_input_stream->read();
         if (!block || !block.rows())
             return false;
 
         cur_stable_block_rows = block.rows();
+        cur_stable_block_start_offset = block.startOffset();
         for (size_t column_id = 0; column_id < num_columns; ++column_id)
             cur_stable_block_columns.push_back(block.getByPosition(column_id).column);
         return true;
@@ -374,7 +470,7 @@ private:
 
         if (stable_ignore < 0)
         {
-            size_t stable_ignore_abs = static_cast<size_t>(std::abs(stable_ignore));
+            auto stable_ignore_abs = static_cast<size_t>(std::abs(stable_ignore));
             if (use_stable_rows > stable_ignore_abs)
             {
                 use_stable_rows += stable_ignore;
@@ -444,7 +540,12 @@ private:
         auto offset = cur_stable_block_pos;
         auto limit = copy_rows;
 
-        auto [final_offset, final_limit] = RowKeyFilter::getPosRangeOfSorted(rowkey_range, cur_stable_block_columns[0], offset, limit);
+        // To get the final offset and limit of the rows within the range.
+        // Note: Actually, it is not necessary, since handle column RoughSetFilter can filter out the packs out of range,
+        // and the DMRowKeyFilterBlockInputStream can filter out the rest rows out of range.
+        // TODO: Remove this.
+        auto [final_offset, final_limit]
+            = RowKeyFilter::getPosRangeOfSorted(rowkey_range, cur_stable_block_columns[0], offset, limit);
 
         if constexpr (skippable_place)
         {
@@ -469,9 +570,17 @@ private:
                     output_columns[column_id]->reserve(max_block_size);
             }
             for (size_t column_id = 0; column_id < num_columns; ++column_id)
-                output_columns[column_id]->insertRangeFrom(*cur_stable_block_columns[column_id], final_offset, final_limit);
+                output_columns[column_id]->insertRangeFrom(
+                    *cur_stable_block_columns[column_id],
+                    final_offset,
+                    final_limit);
 
             output_write_limit -= std::min(final_limit, output_write_limit);
+        }
+
+        if constexpr (need_row_id)
+        {
+            fillSegmentRowId(final_offset + cur_stable_block_start_offset, final_limit);
         }
 
         cur_stable_block_pos += copy_rows;
@@ -491,7 +600,19 @@ private:
 
         // Note that the rows between [use_delta_offset, use_delta_offset + write_rows) are guaranteed sorted,
         // otherwise we won't read them in the same range.
-        auto actual_write = delta_value_reader->readRows(output_columns, use_delta_offset, write_rows, &rowkey_range);
+        size_t actual_write = 0;
+        if constexpr (need_row_id)
+        {
+            delta_row_ids.clear();
+            delta_row_ids.reserve(write_rows);
+            actual_write = delta_value_reader
+                               ->readRows(output_columns, use_delta_offset, write_rows, &rowkey_range, &delta_row_ids);
+            fillSegmentRowId(delta_row_ids);
+        }
+        else
+        {
+            actual_write = delta_value_reader->readRows(output_columns, use_delta_offset, write_rows, &rowkey_range);
+        }
 
         if constexpr (skippable_place)
         {
@@ -509,9 +630,9 @@ private:
     {
         UInt64 prev_sid;
         {
-            prev_sid = delta_index_it.getSid();
-            if (delta_index_it.isDelete())
-                prev_sid += delta_index_it.getCount();
+            prev_sid = delta_index_it->getSid();
+            if (delta_index_it->isDelete())
+                prev_sid += delta_index_it->getCount();
         }
 
         ++delta_index_it;
@@ -523,10 +644,9 @@ private:
         }
         else
         {
-            use_stable_rows = delta_index_it.getSid() - prev_sid;
+            use_stable_rows = delta_index_it->getSid() - prev_sid;
         }
     }
 };
 
-} // namespace DM
-} // namespace DB
+} // namespace DB::DM

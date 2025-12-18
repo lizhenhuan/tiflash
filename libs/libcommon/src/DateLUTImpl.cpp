@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/libs/libcommon/src/DateLUTImpl.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,12 +14,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <common/DateLUTImpl.h>
-
+#include <Poco/Exception.h>
 #include <cctz/civil_time.h>
 #include <cctz/time_zone.h>
 #include <cctz/zone_info_source.h>
-#include <Poco/Exception.h>
+#include <common/DateLUTImpl.h>
 
 #include <algorithm>
 #include <cassert>
@@ -35,18 +36,25 @@ UInt8 getDayOfWeek(const cctz::civil_day & date)
     cctz::weekday day_of_week = cctz::get_weekday(date);
     switch (day_of_week)
     {
-        case cctz::weekday::monday:     return 1;
-        case cctz::weekday::tuesday:    return 2;
-        case cctz::weekday::wednesday:  return 3;
-        case cctz::weekday::thursday:   return 4;
-        case cctz::weekday::friday:     return 5;
-        case cctz::weekday::saturday:   return 6;
-        case cctz::weekday::sunday:     return 7;
+    case cctz::weekday::monday:
+        return 1;
+    case cctz::weekday::tuesday:
+        return 2;
+    case cctz::weekday::wednesday:
+        return 3;
+    case cctz::weekday::thursday:
+        return 4;
+    case cctz::weekday::friday:
+        return 5;
+    case cctz::weekday::saturday:
+        return 6;
+    case cctz::weekday::sunday:
+        return 7;
     }
     __builtin_unreachable();
 }
 
-}
+} // namespace
 
 DateLUTImpl::DateLUTImpl(const std::string & time_zone_)
     : time_zone(time_zone_)
@@ -82,7 +90,8 @@ DateLUTImpl::DateLUTImpl(const std::string & time_zone_)
         /// otherwise it's better to use the second midnight.
 
         std::chrono::time_point start_of_day_time_point = lookup.trans < lookup.post
-            ? lookup.post /* Second midnight appears after transition, so there was a piece of previous day after transition */
+            ? lookup
+                  .post /* Second midnight appears after transition, so there was a piece of previous day after transition */
             : lookup.pre;
 
         start_of_day = std::chrono::system_clock::to_time_t(start_of_day_time_point);
@@ -120,11 +129,12 @@ DateLUTImpl::DateLUTImpl(const std::string & time_zone_)
             && (cctz::civil_day(transition.from) == date || cctz::civil_day(transition.to) == date)
             && transition.from != transition.to)
         {
-            values.time_at_offset_change_value = (transition.from - cctz::civil_second(date)) / Values::OffsetChangeFactor;
+            values.time_at_offset_change_value
+                = (transition.from - cctz::civil_second(date)) / Values::OffsetChangeFactor;
             values.amount_of_offset_change_value = (transition.to - transition.from) / Values::OffsetChangeFactor;
 
-//            std::cerr << time_zone << ", " << date << ": change from " << transition.from << " to " << transition.to << "\n";
-//            std::cerr << time_zone << ", " << date << ": change at " << values.time_at_offset_change() << " with " << values.amount_of_offset_change() << "\n";
+            //            std::cerr << time_zone << ", " << date << ": change from " << transition.from << " to " << transition.to << "\n";
+            //            std::cerr << time_zone << ", " << date << ": change at " << values.time_at_offset_change() << " with " << values.amount_of_offset_change() << "\n";
 
             /// We don't support too large changes.
             if (values.amount_of_offset_change_value > 24 * 4)
@@ -141,8 +151,7 @@ DateLUTImpl::DateLUTImpl(const std::string & time_zone_)
         /// Going to next day.
         ++date;
         ++i;
-    }
-    while (i < DATE_LUT_SIZE && lut[i - 1].year <= DATE_LUT_MAX_YEAR);
+    } while (i < DATE_LUT_SIZE && lut[i - 1].year <= DATE_LUT_MAX_YEAR);
 
     /// Fill excessive part of lookup table. This is needed only to simplify handling of overflow cases.
     while (i < DATE_LUT_SIZE)
@@ -176,4 +185,3 @@ DateLUTImpl::DateLUTImpl(const std::string & time_zone_)
         years_months_lut[year_months_lut_index] = first_day_of_last_month;
     }
 }
-

@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/AggregateFunctions/AggregateFunctionSequenceMatch.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -24,21 +26,31 @@ extern const int NUMBER_OF_ARGUMENTS_DOESNT_MATCH;
 
 namespace
 {
-AggregateFunctionPtr createAggregateFunctionSequenceCount(const std::string & name, const DataTypes & argument_types, const Array & params)
+AggregateFunctionPtr createAggregateFunctionSequenceCount(
+    const Context & /* context not used */,
+    const std::string & name,
+    const DataTypes & argument_types,
+    const Array & params)
 {
     if (params.size() != 1)
-        throw Exception{"Aggregate function " + name + " requires exactly one parameter.",
-                        ErrorCodes::NUMBER_OF_ARGUMENTS_DOESNT_MATCH};
+        throw Exception{
+            "Aggregate function " + name + " requires exactly one parameter.",
+            ErrorCodes::NUMBER_OF_ARGUMENTS_DOESNT_MATCH};
 
     String pattern = params.front().safeGet<std::string>();
     return std::make_shared<AggregateFunctionSequenceCount>(argument_types, pattern);
 }
 
-AggregateFunctionPtr createAggregateFunctionSequenceMatch(const std::string & name, const DataTypes & argument_types, const Array & params)
+AggregateFunctionPtr createAggregateFunctionSequenceMatch(
+    const Context & /* context not used */,
+    const std::string & name,
+    const DataTypes & argument_types,
+    const Array & params)
 {
     if (params.size() != 1)
-        throw Exception{"Aggregate function " + name + " requires exactly one parameter.",
-                        ErrorCodes::NUMBER_OF_ARGUMENTS_DOESNT_MATCH};
+        throw Exception{
+            "Aggregate function " + name + " requires exactly one parameter.",
+            ErrorCodes::NUMBER_OF_ARGUMENTS_DOESNT_MATCH};
 
     String pattern = params.front().safeGet<std::string>();
     return std::make_shared<AggregateFunctionSequenceMatch>(argument_types, pattern);

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Copyright 2022 PingCAP, Ltd.
+# Copyright 2023 PingCAP, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 source ../docker/util.sh
 
 set_branch
@@ -21,18 +20,14 @@ set_branch
 set -xe
 
 check_env
+check_docker_compose
 
-# We need to separate mock-test for dt and tmt, since this behavior
-# is different in some tests
-# * "tmt" engine ONLY support disable_bg_flush = false.
-# * "dt"  engine ONLY support disable_bg_flush = true.
-# (only tics0 up) (for engine DetlaTree)
-docker-compose -f mock-test-dt.yaml down
+${COMPOSE} -f mock-test.yaml down
 clean_data_log
 
-docker-compose -f mock-test-dt.yaml up -d
+# (only tics0 up)
+${COMPOSE} -f mock-test.yaml up -d
 wait_tiflash_env
-docker-compose -f mock-test-dt.yaml exec -T tics0 bash -c 'cd /tests ; ./run-test.sh delta-merge-test'
-
-docker-compose -f mock-test-dt.yaml down
+${COMPOSE} -f mock-test.yaml exec -T tics0 bash -c 'cd /tests ; ./run-test.sh delta-merge-test'
+${COMPOSE} -f mock-test.yaml down
 clean_data_log

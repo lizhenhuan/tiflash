@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/libs/libcommon/include/ext/collection_cast.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,21 +20,21 @@
 
 namespace ext
 {
-    /** \brief Returns collection of specified container-type.
+/** \brief Returns collection of specified container-type.
      *    Retains stored value_type, constructs resulting collection using iterator range. */
-    template <template <typename...> class ResultCollection, typename Collection>
-    auto collection_cast(const Collection & collection)
-    {
-        using value_type = typename Collection::value_type;
+template <template <typename...> class ResultCollection, typename Collection>
+auto collection_cast(const Collection & collection)
+{
+    using value_type = typename Collection::value_type;
 
-        return ResultCollection<value_type>(std::begin(collection), std::end(collection));
-    };
-
-    /** \brief Returns collection of specified type.
-     *    Performs implicit conversion of between source and result value_type, if available and required. */
-    template <typename ResultCollection, typename Collection>
-    auto collection_cast(const Collection & collection)
-    {
-        return ResultCollection(std::begin(collection), std::end(collection));
-    }
+    return ResultCollection<value_type>(std::begin(collection), std::end(collection));
 }
+
+/** \brief Returns collection of specified type.
+     *    Performs implicit conversion of between source and result value_type, if available and required. */
+template <typename ResultCollection, typename Collection>
+auto collection_cast(const Collection & collection)
+{
+    return ResultCollection(std::begin(collection), std::end(collection));
+}
+} // namespace ext

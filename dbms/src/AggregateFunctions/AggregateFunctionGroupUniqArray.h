@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/AggregateFunctions/AggregateFunctionGroupUniqArray.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -82,7 +84,7 @@ public:
 
     void insertResultInto(ConstAggregateDataPtr __restrict place, IColumn & to, Arena *) const override
     {
-        ColumnArray & arr_to = assert_cast<ColumnArray &>(to);
+        auto & arr_to = assert_cast<ColumnArray &>(to);
         ColumnArray::Offsets & offsets_to = arr_to.getOffsets();
 
         const typename State::Set & set = this->data(place).value;
@@ -118,7 +120,9 @@ struct AggregateFunctionGroupUniqArrayGenericData
  */
 template <bool is_plain_column = false>
 class AggregateFunctionGroupUniqArrayGeneric
-    : public IAggregateFunctionDataHelper<AggregateFunctionGroupUniqArrayGenericData, AggregateFunctionGroupUniqArrayGeneric<is_plain_column>>
+    : public IAggregateFunctionDataHelper<
+          AggregateFunctionGroupUniqArrayGenericData,
+          AggregateFunctionGroupUniqArrayGeneric<is_plain_column>>
 {
     DataTypePtr input_data_type;
 
@@ -131,15 +135,9 @@ public:
 
     String getName() const override { return "groupUniqArray"; }
 
-    DataTypePtr getReturnType() const override
-    {
-        return std::make_shared<DataTypeArray>(input_data_type);
-    }
+    DataTypePtr getReturnType() const override { return std::make_shared<DataTypeArray>(input_data_type); }
 
-    bool allocatesMemoryInArena() const override
-    {
-        return true;
-    }
+    bool allocatesMemoryInArena() const override { return true; }
 
     void serialize(ConstAggregateDataPtr __restrict place, WriteBuffer & buf) const override
     {
@@ -186,18 +184,18 @@ public:
         {
             // We have to copy the keys to our arena.
             assert(arena != nullptr);
-            cur_set.emplace(ArenaKeyHolder{rhs_elem.getValue(), *arena}, it, inserted);
+            cur_set.emplace(ArenaKeyHolder{rhs_elem.getValue(), arena}, it, inserted);
         }
     }
 
     void insertResultInto(ConstAggregateDataPtr __restrict place, IColumn & to, Arena *) const override
     {
-        ColumnArray & arr_to = assert_cast<ColumnArray &>(to);
+        auto & arr_to = assert_cast<ColumnArray &>(to);
         ColumnArray::Offsets & offsets_to = arr_to.getOffsets();
         IColumn & data_to = arr_to.getData();
 
         auto & set = this->data(place).value;
-        offsets_to.push_back((offsets_to.size() == 0 ? 0 : offsets_to.back()) + set.size());
+        offsets_to.push_back((offsets_to.empty() ? 0 : offsets_to.back()) + set.size());
 
         for (auto & elem : set)
             deserializeAndInsert<is_plain_column>(elem.getValue(), data_to);

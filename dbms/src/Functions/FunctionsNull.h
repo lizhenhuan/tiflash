@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Functions/FunctionsNull.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -64,7 +66,7 @@ class FunctionCoalesce : public IFunction
 public:
     static constexpr auto name = "coalesce";
     static FunctionPtr create(const Context & context);
-    FunctionCoalesce(const Context & context)
+    explicit FunctionCoalesce(const Context & context)
         : context(context)
     {}
 

@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Common/FileChecker.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,10 +16,10 @@
 
 #include <Common/FileChecker.h>
 #include <Common/escapeForFileName.h>
-#include <IO/ReadBufferFromFile.h>
+#include <IO/Buffer/ReadBufferFromFile.h>
+#include <IO/Buffer/WriteBufferFromFile.h>
+#include <IO/Buffer/WriteBufferFromString.h>
 #include <IO/ReadHelpers.h>
-#include <IO/WriteBufferFromFile.h>
-#include <IO/WriteBufferFromString.h>
 #include <IO/WriteHelpers.h>
 #include <Poco/Path.h>
 #include <common/JSON.h>
@@ -69,14 +71,19 @@ bool FileChecker::check() const
         Poco::File file(Poco::Path(files_info_path).parent().toString() + "/" + name_size.first);
         if (!file.exists())
         {
-            LOG_FMT_ERROR(log, "File {} doesn't exist", file.path());
+            LOG_ERROR(log, "File {} doesn't exist", file.path());
             return false;
         }
 
         size_t real_size = file.getSize();
         if (real_size != name_size.second)
         {
-            LOG_FMT_ERROR(log, "Size of {} is wrong. Size is {} but should be {}", file.path(), real_size, name_size.second);
+            LOG_ERROR(
+                log,
+                "Size of {} is wrong. Size is {} but should be {}",
+                file.path(),
+                real_size,
+                name_size.second);
             return false;
         }
     }

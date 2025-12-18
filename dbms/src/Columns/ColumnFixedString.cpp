@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Columns/ColumnFixedString.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,12 +15,15 @@
 // limitations under the License.
 
 #include <Columns/ColumnFixedString.h>
+#include <Columns/countBytesInFilter.h>
+#include <Columns/filterColumn.h>
 #include <Common/Arena.h>
 #include <Common/HashTable/Hash.h>
 #include <Common/SipHash.h>
 #include <Common/memcpySmall.h>
 #include <DataStreams/ColumnGathererStream.h>
 #include <IO/WriteHelpers.h>
+#include <common/memcpy.h>
 
 #if __SSE2__
 #include <emmintrin.h>
@@ -58,13 +63,7 @@ MutableColumnPtr ColumnFixedString::cloneResized(size_t size) const
 void ColumnFixedString::insert(const Field & x)
 {
     const auto & s = DB::get<const String &>(x);
-
-    if (s.size() > n)
-        throw Exception("Too large string '" + s + "' for FixedString column", ErrorCodes::TOO_LARGE_STRING_SIZE);
-
-    size_t old_size = chars.size();
-    chars.resize_fill(old_size + n);
-    memcpy(&chars[old_size], s.data(), s.size());
+    insertData(s.data(), s.size());
 }
 
 void ColumnFixedString::insertFrom(const IColumn & src_, size_t index)
@@ -79,20 +78,57 @@ void ColumnFixedString::insertFrom(const IColumn & src_, size_t index)
     memcpySmallAllowReadWriteOverflow15(&chars[old_size], &src.chars[n * index], n);
 }
 
+void ColumnFixedString::insertManyFrom(const IColumn & src_, size_t position, size_t length)
+{
+    const auto & src = static_cast<const ColumnFixedString &>(src_);
+    if (n != src.getN())
+        throw Exception("Size of FixedString doesn't match", ErrorCodes::SIZE_OF_FIXED_STRING_DOESNT_MATCH);
+    size_t old_size = chars.size();
+    size_t new_size = old_size + n * length;
+    chars.resize(new_size);
+    const auto * src_char_ptr = &src.chars[n * position];
+    for (size_t i = old_size; i < new_size; i += n)
+        memcpySmallAllowReadWriteOverflow15(&chars[i], src_char_ptr, n);
+}
+
+void ColumnFixedString::insertSelectiveRangeFrom(
+    const IColumn & src_,
+    const Offsets & selective_offsets,
+    size_t start,
+    size_t length)
+{
+    const auto & src = static_cast<const ColumnFixedString &>(src_);
+    if (n != src.getN())
+        throw Exception("Size of FixedString doesn't match", ErrorCodes::SIZE_OF_FIXED_STRING_DOESNT_MATCH);
+    size_t old_size = chars.size();
+    size_t new_size = old_size + length * n;
+    chars.resize(new_size);
+    const auto & src_chars = src.chars;
+    for (size_t i = old_size, j = start; i < new_size; i += n, ++j)
+        memcpySmallAllowReadWriteOverflow15(&chars[i], &src_chars[selective_offsets[j] * n], n);
+}
+
 void ColumnFixedString::insertData(const char * pos, size_t length)
 {
-    if (length > n)
+    if unlikely (length > n)
         throw Exception("Too large string for FixedString column", ErrorCodes::TOO_LARGE_STRING_SIZE);
 
     size_t old_size = chars.size();
-    chars.resize_fill(old_size + n);
-    memcpy(&chars[old_size], pos, length);
+    chars.resize(old_size + n);
+    inline_memcpy(chars.data() + old_size, pos, length);
+    if unlikely (n > length)
+        memset(chars.data() + old_size + length, 0, n - length);
 }
 
-StringRef ColumnFixedString::serializeValueIntoArena(size_t index, Arena & arena, char const *& begin, const TiDB::TiDBCollatorPtr &, String &) const
+StringRef ColumnFixedString::serializeValueIntoArena(
+    size_t index,
+    Arena & arena,
+    char const *& begin,
+    const TiDB::TiDBCollatorPtr &,
+    String &) const
 {
     auto * pos = arena.allocContinue(n, begin);
-    memcpy(pos, &chars[n * index], n);
+    inline_memcpy(pos, &chars[n * index], n);
     return StringRef(pos, n);
 }
 
@@ -100,8 +136,290 @@ const char * ColumnFixedString::deserializeAndInsertFromArena(const char * pos, 
 {
     size_t old_size = chars.size();
     chars.resize(old_size + n);
-    memcpy(&chars[old_size], pos, n);
+    inline_memcpy(&chars[old_size], pos, n);
     return pos + n;
+}
+
+void ColumnFixedString::countSerializeByteSize(PaddedPODArray<size_t> & byte_size) const
+{
+    RUNTIME_CHECK_MSG(byte_size.size() == size(), "size of byte_size({}) != column size({})", byte_size.size(), size());
+
+    size_t size = byte_size.size();
+    for (size_t i = 0; i < size; ++i)
+        byte_size[i] += n;
+}
+
+void ColumnFixedString::countSerializeByteSizeForCmp(
+    PaddedPODArray<size_t> & byte_size,
+    const NullMap * /*nullmap*/,
+    const TiDB::TiDBCollatorPtr & collator) const
+{
+    // collator->sortKey() will change the string length, which may exceeds n.
+    RUNTIME_CHECK_MSG(
+        !collator,
+        "{} doesn't support countSerializeByteSizeForCmp when collator is not null",
+        getName());
+    countSerializeByteSize(byte_size);
+}
+
+void ColumnFixedString::countSerializeByteSizeForColumnArray(
+    PaddedPODArray<size_t> & byte_size,
+    const IColumn::Offsets & array_offsets) const
+{
+    countSerializeByteSizeForColumnArrayImpl<false>(byte_size, array_offsets, nullptr);
+}
+
+void ColumnFixedString::countSerializeByteSizeForCmpColumnArray(
+    PaddedPODArray<size_t> & byte_size,
+    const IColumn::Offsets & array_offsets,
+    const NullMap * nullmap,
+    const TiDB::TiDBCollatorPtr & collator) const
+{
+    RUNTIME_CHECK_MSG(
+        !collator,
+        "{} doesn't support countSerializeByteSizeForCmpColumnArray when collator is not null",
+        getName());
+    if (nullmap != nullptr)
+        countSerializeByteSizeForColumnArrayImpl<true>(byte_size, array_offsets, nullmap);
+    else
+        countSerializeByteSizeForColumnArrayImpl<false>(byte_size, array_offsets, nullptr);
+}
+
+template <bool has_nullmap>
+void ColumnFixedString::countSerializeByteSizeForColumnArrayImpl(
+    PaddedPODArray<size_t> & byte_size,
+    const IColumn::Offsets & array_offsets,
+    const NullMap * nullmap) const
+{
+    RUNTIME_CHECK_MSG(
+        byte_size.size() == array_offsets.size(),
+        "size of byte_size({}) != size of array_offsets({})",
+        byte_size.size(),
+        array_offsets.size());
+
+    size_t size = array_offsets.size();
+    for (size_t i = 0; i < size; ++i)
+    {
+        if constexpr (has_nullmap)
+        {
+            if (DB::isNullAt(*nullmap, i))
+                continue;
+        }
+        byte_size[i] += n * (array_offsets[i] - array_offsets[i - 1]);
+    }
+}
+
+void ColumnFixedString::serializeToPos(PaddedPODArray<char *> & pos, size_t start, size_t length, bool has_null) const
+{
+    if (has_null)
+        serializeToPosImpl<true, false>(pos, start, length, nullptr);
+    else
+        serializeToPosImpl<false, false>(pos, start, length, nullptr);
+}
+
+void ColumnFixedString::serializeToPosForCmp(
+    PaddedPODArray<char *> & pos,
+    size_t start,
+    size_t length,
+    bool has_null,
+    const NullMap * nullmap,
+    const TiDB::TiDBCollatorPtr & collator,
+    String *) const
+{
+    RUNTIME_CHECK_MSG(!collator, "{} doesn't support serializeToPosForCmp when collator is not null", getName());
+    if (has_null)
+    {
+        if (nullmap != nullptr)
+            serializeToPosImpl<true, true>(pos, start, length, nullmap);
+        else
+            serializeToPosImpl<true, false>(pos, start, length, nullptr);
+    }
+    else
+    {
+        if (nullmap != nullptr)
+            serializeToPosImpl<false, true>(pos, start, length, nullmap);
+        else
+            serializeToPosImpl<false, false>(pos, start, length, nullptr);
+    }
+}
+
+template <bool has_null, bool has_nullmap>
+void ColumnFixedString::serializeToPosImpl(
+    PaddedPODArray<char *> & pos,
+    size_t start,
+    size_t length,
+    const NullMap * nullmap) const
+{
+    RUNTIME_CHECK_MSG(length <= pos.size(), "length({}) > size of pos({})", length, pos.size());
+    RUNTIME_CHECK_MSG(start + length <= size(), "start({}) + length({}) > size of column({})", start, length, size());
+
+    RUNTIME_CHECK(!has_nullmap || (nullmap && nullmap->size() == size()));
+
+    for (size_t i = 0; i < length; ++i)
+    {
+        if constexpr (has_null)
+        {
+            if (pos[i] == nullptr)
+                continue;
+        }
+        if constexpr (has_nullmap)
+        {
+            if (DB::isNullAt(*nullmap, start + i))
+            {
+                memset(pos[i], '\0', n);
+                pos[i] += n;
+                continue;
+            }
+        }
+        inline_memcpy(pos[i], &chars[n * (start + i)], n);
+        pos[i] += n;
+    }
+}
+
+void ColumnFixedString::serializeToPosForColumnArray(
+    PaddedPODArray<char *> & pos,
+    size_t start,
+    size_t length,
+    bool has_null,
+    const IColumn::Offsets & array_offsets) const
+{
+    if (has_null)
+        serializeToPosForColumnArrayImpl<true, false>(pos, start, length, array_offsets, nullptr);
+    else
+        serializeToPosForColumnArrayImpl<false, false>(pos, start, length, array_offsets, nullptr);
+}
+
+void ColumnFixedString::serializeToPosForCmpColumnArray(
+    PaddedPODArray<char *> & pos,
+    size_t start,
+    size_t length,
+    bool has_null,
+    const NullMap * nullmap,
+    const IColumn::Offsets & array_offsets,
+    const TiDB::TiDBCollatorPtr & collator,
+    String *) const
+{
+    RUNTIME_CHECK_MSG(
+        !collator,
+        "{} doesn't support serializeToPosForCmpColumnArray when collator is not null",
+        getName());
+    if (has_null)
+    {
+        if (nullmap != nullptr)
+            serializeToPosForColumnArrayImpl<true, true>(pos, start, length, array_offsets, nullmap);
+        else
+            serializeToPosForColumnArrayImpl<true, false>(pos, start, length, array_offsets, nullptr);
+    }
+    else
+    {
+        if (nullmap != nullptr)
+            serializeToPosForColumnArrayImpl<false, true>(pos, start, length, array_offsets, nullmap);
+        else
+            serializeToPosForColumnArrayImpl<false, false>(pos, start, length, array_offsets, nullptr);
+    }
+}
+
+template <bool has_null, bool has_nullmap>
+void ColumnFixedString::serializeToPosForColumnArrayImpl(
+    PaddedPODArray<char *> & pos,
+    size_t start,
+    size_t length,
+    const IColumn::Offsets & array_offsets,
+    const NullMap * nullmap) const
+{
+    RUNTIME_CHECK_MSG(length <= pos.size(), "length({}) > size of pos({})", length, pos.size());
+    RUNTIME_CHECK_MSG(
+        start + length <= array_offsets.size(),
+        "start({}) + length({}) > size of array_offsets({})",
+        start,
+        length,
+        array_offsets.size());
+    RUNTIME_CHECK_MSG(
+        array_offsets.empty() || array_offsets.back() == size(),
+        "The last array offset({}) doesn't match size of column({})",
+        array_offsets.back(),
+        size());
+
+    RUNTIME_CHECK(!has_nullmap || (nullmap && nullmap->size() == array_offsets.size()));
+
+    for (size_t i = 0; i < length; ++i)
+    {
+        if constexpr (has_null)
+        {
+            if (pos[i] == nullptr)
+                continue;
+        }
+        if constexpr (has_nullmap)
+        {
+            if (DB::isNullAt(*nullmap, start + i))
+                continue;
+        }
+        size_t len = array_offsets[start + i] - array_offsets[start + i - 1];
+        inline_memcpy(pos[i], &chars[n * array_offsets[start + i - 1]], n * len);
+        pos[i] += n * len;
+    }
+}
+
+/// TODO: optimize by using align_buffer
+void ColumnFixedString::deserializeAndInsertFromPos(PaddedPODArray<char *> & pos, bool /* use_nt_align_buffer */)
+{
+    size_t size = pos.size();
+    size_t old_char_size = chars.size();
+    chars.resize(old_char_size + n * size);
+    for (size_t i = 0; i < size; ++i)
+    {
+        inline_memcpy(&chars[old_char_size], pos[i], n);
+        old_char_size += n;
+        pos[i] += n;
+    }
+}
+
+void ColumnFixedString::deserializeAndInsertFromPosForColumnArray(
+    PaddedPODArray<char *> & pos,
+    const IColumn::Offsets & array_offsets,
+    bool /* use_nt_align_buffer */)
+{
+    if unlikely (pos.empty())
+        return;
+    RUNTIME_CHECK_MSG(
+        pos.size() <= array_offsets.size(),
+        "size of pos({}) > size of array_offsets({})",
+        pos.size(),
+        array_offsets.size());
+    size_t start_point = array_offsets.size() - pos.size();
+    RUNTIME_CHECK_MSG(
+        array_offsets[start_point - 1] == size(),
+        "array_offset[start_point({}) - 1]({}) doesn't match size of column({})",
+        start_point,
+        array_offsets[start_point - 1],
+        size());
+
+    chars.resize(array_offsets.back() * n);
+
+    size_t size = pos.size();
+    for (size_t i = 0; i < size; ++i)
+    {
+        size_t len = array_offsets[start_point + i] - array_offsets[start_point + i - 1];
+        inline_memcpy(&chars[n * array_offsets[start_point + i - 1]], pos[i], n * len);
+        pos[i] += n * len;
+    }
+}
+
+void ColumnFixedString::deserializeAndAdvancePosForColumnArray(
+    PaddedPODArray<char *> & pos,
+    const IColumn::Offsets & array_offsets) const
+{
+    RUNTIME_CHECK_MSG(
+        pos.size() == array_offsets.size(),
+        "size of pos({}) != size of array_offsets({})",
+        pos.size(),
+        array_offsets.size());
+    size_t size = pos.size();
+    for (size_t i = 0; i < size; ++i)
+    {
+        size_t len = array_offsets[i] - array_offsets[i - 1];
+        pos[i] += n * len;
+    }
 }
 
 void ColumnFixedString::updateHashWithValue(size_t index, SipHash & hash, const TiDB::TiDBCollatorPtr &, String &) const
@@ -109,7 +427,8 @@ void ColumnFixedString::updateHashWithValue(size_t index, SipHash & hash, const 
     hash.update(reinterpret_cast<const char *>(&chars[n * index]), n);
 }
 
-void ColumnFixedString::updateHashWithValues(IColumn::HashValues & hash_values, const TiDB::TiDBCollatorPtr &, String &) const
+void ColumnFixedString::updateHashWithValues(IColumn::HashValues & hash_values, const TiDB::TiDBCollatorPtr &, String &)
+    const
 {
     for (size_t i = 0, sz = chars.size() / n; i < sz; ++i)
     {
@@ -119,23 +438,50 @@ void ColumnFixedString::updateHashWithValues(IColumn::HashValues & hash_values, 
 
 void ColumnFixedString::updateWeakHash32(WeakHash32 & hash, const TiDB::TiDBCollatorPtr &, String &) const
 {
-    auto s = size();
+    updateWeakHash32Impl<false>(hash, {});
+}
 
-    if (hash.getData().size() != s)
-        throw Exception("Size of WeakHash32 does not match size of column: column size is " + std::to_string(s) + ", hash size is " + std::to_string(hash.getData().size()), ErrorCodes::LOGICAL_ERROR);
+void ColumnFixedString::updateWeakHash32(
+    WeakHash32 & hash,
+    const TiDB::TiDBCollatorPtr &,
+    String &,
+    const BlockSelective & selective) const
+{
+    updateWeakHash32Impl<true>(hash, selective);
+}
 
-    const UInt8 * pos = chars.data();
+template <bool selective_block>
+void ColumnFixedString::updateWeakHash32Impl(WeakHash32 & hash, const BlockSelective & selective) const
+{
+    size_t rows;
+    if constexpr (selective_block)
+    {
+        rows = selective.size();
+    }
+    else
+    {
+        rows = size();
+    }
+
+    RUNTIME_CHECK_MSG(
+        hash.getData().size() == rows,
+        "size of WeakHash32({}) doesn't match size of column({})",
+        hash.getData().size(),
+        rows);
+
+    const UInt8 * begin = chars.data();
     UInt32 * hash_data = hash.getData().data();
 
-    for (size_t row = 0; row < s; ++row)
+    for (size_t i = 0; i < rows; ++i)
     {
-        *hash_data = ::updateWeakHash32(pos, n, *hash_data);
+        size_t row = i;
+        if constexpr (selective_block)
+            row = selective[i];
 
-        pos += n;
+        *hash_data = ::updateWeakHash32(begin + n * row, n, *hash_data);
         ++hash_data;
     }
 }
-
 
 template <bool positive>
 struct ColumnFixedString::less
@@ -185,7 +531,8 @@ void ColumnFixedString::insertRangeFrom(const IColumn & src, size_t start, size_
     if (start + length > src_concrete.size())
         throw Exception(
             fmt::format(
-                "Parameters are out of bound in ColumnFixedString::insertRangeFrom method, start={}, length={}, src.size()={}",
+                "Parameters are out of bound in ColumnFixedString::insertRangeFrom method, start={}, length={}, "
+                "src.size()={}",
                 start,
                 length,
                 src_concrete.size()),
@@ -205,7 +552,11 @@ ColumnPtr ColumnFixedString::filter(const IColumn::Filter & filt, ssize_t result
     auto res = ColumnFixedString::create(n);
 
     if (result_size_hint)
-        res->chars.reserve(result_size_hint > 0 ? result_size_hint * n : chars.size());
+    {
+        if (result_size_hint < 0)
+            result_size_hint = countBytesInFilter(filt);
+        res->chars.reserve(result_size_hint * n);
+    }
 
     const UInt8 * filt_pos = &filt[0];
     const UInt8 * filt_end = filt_pos + col_size;
@@ -225,7 +576,8 @@ ColumnPtr ColumnFixedString::filter(const IColumn::Filter & filt, ssize_t result
 
     while (filt_pos < filt_end_sse)
     {
-        int mask = _mm_movemask_epi8(_mm_cmpgt_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i *>(filt_pos)), zero16));
+        int mask
+            = _mm_movemask_epi8(_mm_cmpgt_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i *>(filt_pos)), zero16));
 
         if (0 == mask)
         {
@@ -301,22 +653,25 @@ ColumnPtr ColumnFixedString::permute(const Permutation & perm, size_t limit) con
     return res;
 }
 
-ColumnPtr ColumnFixedString::replicate(const Offsets & offsets) const
+ColumnPtr ColumnFixedString::replicateRange(size_t start_row, size_t end_row, const IColumn::Offsets & offsets) const
 {
-    size_t col_size = size();
-    if (col_size != offsets.size())
+    size_t col_rows = size();
+    if (col_rows != offsets.size())
         throw Exception("Size of offsets doesn't match size of column.", ErrorCodes::SIZES_OF_COLUMNS_DOESNT_MATCH);
+
+    assert(start_row < end_row);
+    assert(end_row <= col_rows);
 
     auto res = ColumnFixedString::create(n);
 
-    if (0 == col_size)
+    if (0 == col_rows)
         return res;
 
     Chars_t & res_chars = res->chars;
-    res_chars.resize(n * offsets.back());
+    res_chars.resize(n * (offsets[end_row - 1]));
 
     Offset curr_offset = 0;
-    for (size_t i = 0; i < col_size; ++i)
+    for (size_t i = start_row; i < end_row; ++i)
         for (size_t next_offset = offsets[i]; curr_offset < next_offset; ++curr_offset)
             memcpySmallAllowReadWriteOverflow15(&res->chars[curr_offset * n], &chars[i * n], n);
 

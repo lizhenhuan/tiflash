@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Parsers/ASTQueryWithTableAndOutput.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,8 +16,8 @@
 
 #pragma once
 
-#include <Parsers/IAST.h>
 #include <Parsers/ASTQueryWithOutput.h>
+#include <Parsers/IAST.h>
 
 
 namespace DB
@@ -35,7 +37,7 @@ protected:
     void formatHelper(const FormatSettings & settings, const char * name) const
     {
         settings.ostr << (settings.hilite ? hilite_keyword : "") << name << " " << (settings.hilite ? hilite_none : "")
-            << (!database.empty() ? backQuoteIfNeed(database) + "." : "") << backQuoteIfNeed(table);
+                      << (!database.empty() ? backQuoteIfNeed(database) + "." : "") << backQuoteIfNeed(table);
     }
 };
 
@@ -44,7 +46,7 @@ template <typename AstIDAndQueryNames>
 class ASTQueryWithTableAndOutputImpl : public ASTQueryWithTableAndOutput
 {
 public:
-    String getID() const override { return AstIDAndQueryNames::ID + ("_" + database) + "_" + table; };
+    String getID() const override { return AstIDAndQueryNames::ID + ("_" + database) + "_" + table; }
 
     ASTPtr clone() const override
     {
@@ -61,4 +63,4 @@ protected:
     }
 };
 
-}
+} // namespace DB

@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Parsers/ParserQuery.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -35,12 +37,9 @@ bool ParserQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
     ParserDBGInvokeQuery dbginvoke_p;
     ParserManageQuery manage_p;
 
-    bool res = query_with_output_p.parse(pos, node, expected)
-        || insert_p.parse(pos, node, expected)
-        || use_p.parse(pos, node, expected)
-        || set_p.parse(pos, node, expected)
-        || dbginvoke_p.parse(pos, node, expected)
-        || manage_p.parse(pos, node, expected);
+    bool res = query_with_output_p.parse(pos, node, expected) || insert_p.parse(pos, node, expected)
+        || use_p.parse(pos, node, expected) || set_p.parse(pos, node, expected)
+        || dbginvoke_p.parse(pos, node, expected) || manage_p.parse(pos, node, expected);
 
     return res;
 }

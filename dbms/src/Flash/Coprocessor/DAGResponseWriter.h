@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,51 +14,52 @@
 
 #pragma once
 
-#include <Flash/Coprocessor/DAGContext.h>
+#include <Core/Block.h>
+#include <Flash/Coprocessor/WaitResult.h>
 #include <common/types.h>
 #include <tipb/select.pb.h>
 
 namespace DB
 {
-/// do not need be thread safe since it is only used in single thread env
-struct ExecutionSummary
-{
-    UInt64 time_processed_ns;
-    UInt64 num_produced_rows;
-    UInt64 num_iterations;
-    UInt64 concurrency;
-    ExecutionSummary()
-        : time_processed_ns(0)
-        , num_produced_rows(0)
-        , num_iterations(0)
-        , concurrency(0)
-    {}
+class DAGContext;
 
-    void merge(const ExecutionSummary & other, bool streaming_call);
+enum class WriteResult
+{
+    Done,
+    NeedWaitForPolling,
+    NeedWaitForNotify,
 };
 
 class DAGResponseWriter
 {
 public:
-    DAGResponseWriter(
-        Int64 records_per_chunk_,
-        DAGContext & dag_context_);
-    void fillTiExecutionSummary(
-        tipb::ExecutorExecutionSummary * execution_summary,
-        ExecutionSummary & current,
-        const String & executor_id,
-        bool delta_mode);
-    void addExecuteSummaries(tipb::SelectResponse & response, bool delta_mode);
-    virtual void write(const Block & block) = 0;
-    virtual void finishWrite() = 0;
+    DAGResponseWriter(Int64 records_per_chunk_, DAGContext & dag_context_);
+    /// prepared with sample block
+    virtual void prepare(const Block &){};
+    virtual WriteResult write(const Block & block) = 0;
+
+    virtual WaitResult waitForWritable() const { return WaitResult::Ready; }
+
+    /// flush cached blocks for batch writer
+    virtual WriteResult flush() = 0;
+
+    /// if hasPendingFlush is true, need to flush before write
+    // hasPendingFlush can be true only in pipeline mode
+    bool hasPendingFlush() const { return has_pending_flush; }
+
     virtual ~DAGResponseWriter() = default;
-    const DAGContext & dagContext() const { return dag_context; }
+
+    bool needFlush() const { return buffered_bytes >= max_buffered_bytes || buffered_rows >= max_buffered_rows; }
 
 protected:
     Int64 records_per_chunk;
     DAGContext & dag_context;
-    std::unordered_map<String, ExecutionSummary> previous_execution_stats;
-    std::unordered_set<String> local_executors;
+    bool has_pending_flush = false;
+
+    UInt64 max_buffered_bytes = 0;
+    UInt64 max_buffered_rows = 0;
+    UInt64 buffered_bytes = 0;
+    UInt64 buffered_rows = 0;
 };
 
 } // namespace DB

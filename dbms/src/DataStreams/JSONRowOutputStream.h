@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/DataStreams/JSONRowOutputStream.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,12 +16,12 @@
 
 #pragma once
 
-#include <Core/Block.h>
-#include <IO/Progress.h>
-#include <IO/WriteBuffer.h>
 #include <Common/Stopwatch.h>
+#include <Core/Block.h>
 #include <DataStreams/IRowOutputStream.h>
 #include <DataTypes/FormatSettingsJSON.h>
+#include <IO/Buffer/WriteBuffer.h>
+#include <IO/Progress.h>
 
 namespace DB
 {
@@ -29,8 +31,11 @@ namespace DB
 class JSONRowOutputStream : public IRowOutputStream
 {
 public:
-    JSONRowOutputStream(WriteBuffer & ostr_, const Block & sample_,
-                        bool write_statistics_, const FormatSettingsJSON & settings_);
+    JSONRowOutputStream(
+        WriteBuffer & ostr_,
+        const Block & sample_,
+        bool write_statistics_,
+        const FormatSettingsJSON & settings_);
 
     void writeField(const IColumn & column, const IDataType & type, size_t row_num) override;
     void writeFieldDelimiter() override;
@@ -53,7 +58,6 @@ public:
         rows_before_limit = rows_before_limit_;
     }
 
-    void setTotals(const Block & totals_) override { totals = totals_; }
     void setExtremes(const Block & extremes_) override { extremes = extremes_; }
 
     void onProgress(const Progress & value) override;
@@ -61,14 +65,13 @@ public:
     String getContentType() const override { return "application/json; charset=UTF-8"; }
 
 protected:
-
     void writeRowsBeforeLimitAtLeast();
-    virtual void writeTotals();
     virtual void writeExtremes();
     void writeStatistics();
 
     WriteBuffer & dst_ostr;
-    std::unique_ptr<WriteBuffer> validating_ostr;    /// Validates UTF-8 sequences, replaces bad sequences with replacement character.
+    std::unique_ptr<WriteBuffer>
+        validating_ostr; /// Validates UTF-8 sequences, replaces bad sequences with replacement character.
     WriteBuffer * ostr;
 
     size_t field_number = 0;
@@ -76,7 +79,6 @@ protected:
     bool applied_limit = false;
     size_t rows_before_limit = 0;
     NamesAndTypes fields;
-    Block totals;
     Block extremes;
 
     Progress progress;
@@ -85,5 +87,4 @@ protected:
     FormatSettingsJSON settings;
 };
 
-}
-
+} // namespace DB

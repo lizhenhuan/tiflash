@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/libs/libcommon/include/common/apple_rt.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -38,7 +40,7 @@
 #define CLOCK_THREAD_CPUTIME_ID 3
 
 typedef int clockid_t;
-int clock_gettime(int clk_id, struct timespec* t);
+int clock_gettime(int clk_id, struct timespec * t);
 #else
 #define CLOCK_MONOTONIC_COARSE CLOCK_MONOTONIC
 #endif

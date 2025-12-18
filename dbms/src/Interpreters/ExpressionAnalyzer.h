@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Interpreters/ExpressionAnalyzer.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -82,7 +84,6 @@ public:
       */
 
     /// Before aggregation:
-    bool appendArrayJoin(ExpressionActionsChain & chain, bool only_types);
     bool appendJoin(ExpressionActionsChain & chain, bool only_types);
     bool appendWhere(ExpressionActionsChain & chain, bool only_types);
     bool appendGroupBy(ExpressionActionsChain & chain, bool only_types);
@@ -114,13 +115,6 @@ public:
 
     PreparedSets getPreparedSets() { return prepared_sets; }
 
-    /** Tables that will need to be sent to remote servers for distributed query processing.
-      */
-    const Tables & getExternalTables() const { return external_tables; }
-
-    /// Create Set-s that we can from IN section to use the index on them.
-    void makeSetsForIndex();
-
 private:
     ASTPtr ast;
     ASTSelectQuery * select_query;
@@ -137,10 +131,8 @@ private:
       */
     NameSet required_result_columns;
 
-    /// Columns after ARRAY JOIN, JOIN, and/or aggregation.
+    /// Columns after JOIN, and/or aggregation.
     NamesAndTypesList aggregated_columns;
-
-    NamesAndTypesList array_join_columns;
 
     /// The main table in FROM clause, if exists.
     StoragePtr storage;
@@ -148,9 +140,6 @@ private:
     bool has_aggregation = false;
     NamesAndTypesList aggregation_keys;
     AggregateDescriptions aggregate_descriptions;
-
-    /// Do I need to prepare for execution global subqueries when analyzing the query.
-    bool do_global;
 
     SubqueriesForSets subqueries_for_sets;
 
@@ -176,22 +165,6 @@ private:
     using SetOfASTs = std::set<const IAST *>;
     using MapOfASTs = std::map<ASTPtr, ASTPtr>;
 
-    /// Which column is needed to be ARRAY-JOIN'ed to get the specified.
-    /// For example, for `SELECT s.v ... ARRAY JOIN a AS s` will get "s.v" -> "a.v".
-    NameToNameMap array_join_result_to_source;
-
-    /// For the ARRAY JOIN section, mapping from the alias to the full column name.
-    /// For example, for `ARRAY JOIN [1,2] AS b` "b" -> "array(1,2)" will enter here.
-    NameToNameMap array_join_alias_to_name;
-
-    /// The backward mapping for array_join_alias_to_name.
-    NameToNameMap array_join_name_to_alias;
-
-
-    /// All new temporary tables obtained by performing the GLOBAL IN/JOIN subqueries.
-    Tables external_tables;
-    size_t external_table_id = 1;
-
     /** Remove all unnecessary columns from the list of all available columns of the table (`columns`).
       * At the same time, form a set of unknown columns (`unknown_required_source_columns`),
       * as well as the columns added by JOIN (`columns_added_by_join`).
@@ -210,7 +183,12 @@ private:
       * For literal nodes, substitute aliases.
       */
     void normalizeTree();
-    void normalizeTreeImpl(ASTPtr & ast, MapOfASTs & finished_asts, SetOfASTs & current_asts, std::string current_alias, size_t level);
+    void normalizeTreeImpl(
+        ASTPtr & ast,
+        MapOfASTs & finished_asts,
+        SetOfASTs & current_asts,
+        std::string current_alias,
+        size_t level);
 
     ///    Eliminates injective function calls and constant expressions from group by statement
     void optimizeGroupBy();
@@ -233,22 +211,6 @@ private:
     /// Replacing scalar subqueries with constant values.
     void executeScalarSubqueries();
     void executeScalarSubqueriesImpl(ASTPtr & ast);
-
-    /// Find global subqueries in the GLOBAL IN/JOIN sections. Fills in external_tables.
-    void initGlobalSubqueriesAndExternalTables();
-    void initGlobalSubqueries(ASTPtr & ast);
-
-    /// Finds in the query the usage of external tables (as table identifiers). Fills in external_tables.
-    void findExternalTables(ASTPtr & ast);
-
-    /** Initialize InterpreterSelectQuery for a subquery in the GLOBAL IN/JOIN section,
-      * create a temporary table of type Memory and store it in the external_tables dictionary.
-      */
-    void addExternalStorage(ASTPtr & subquery_or_table_name);
-
-    void getArrayJoinedColumns();
-    void getArrayJoinedColumnsImpl(const ASTPtr & ast);
-    void addMultipleArrayJoinAction(ExpressionActionsPtr & actions) const;
 
     void addJoinAction(ExpressionActionsPtr & actions, bool only_types) const;
 
@@ -273,15 +235,16 @@ private:
       * The set of columns available_joined_columns are the columns available from JOIN, they are not needed for reading from the main table.
       * Put in required_joined_columns the set of columns available from JOIN and needed.
       */
-    void getRequiredSourceColumnsImpl(const ASTPtr & ast,
-                                      const NameSet & available_columns,
-                                      NameSet & required_source_columns,
-                                      NameSet & ignored_names,
-                                      const NameSet & available_joined_columns,
-                                      NameSet & required_joined_columns);
+    void getRequiredSourceColumnsImpl(
+        const ASTPtr & ast,
+        const NameSet & available_columns,
+        NameSet & required_source_columns,
+        NameSet & ignored_names,
+        const NameSet & available_joined_columns,
+        NameSet & required_joined_columns);
 
     /// columns - the columns that are present before the transformations begin.
-    void initChain(ExpressionActionsChain & chain, const NamesAndTypesList & columns) const;
+    static void initChain(ExpressionActionsChain & chain, const NamesAndTypesList & columns);
 
     void assertSelect() const;
     void assertAggregation() const;
@@ -292,22 +255,24 @@ private:
     void makeExplicitSet(const ASTFunction * node, const Block & sample_block, bool create_ordered_set);
 
     /**
-      * Create Set from a subuqery or a table expression in the query. The created set is suitable for using the index.
+      * Create Set from a subquery or a table expression in the query. The created set is suitable for using the index.
       * The set will not be created if its size hits the limit.
       */
     void tryMakeSetFromSubquery(const ASTPtr & subquery_or_table_name);
-
-    void makeSetsForIndexImpl(const ASTPtr & node, const Block & sample_block);
 
     /** Translate qualified names such as db.table.column, table.column, table_alias.column
       *  to unqualified names. This is done in a poor transitional way:
       *  only one ("main") table is supported. Ambiguity is not detected or resolved.
       */
     void translateQualifiedNames();
-    void translateQualifiedNamesImpl(ASTPtr & ast, const String & database_name, const String & table_name, const String & alias);
+    void translateQualifiedNamesImpl(
+        ASTPtr & ast,
+        const String & database_name,
+        const String & table_name,
+        const String & alias);
 
     /** Sometimes we have to calculate more columns in SELECT clause than will be returned from query.
-      * This is the case when we have DISTINCT or arrayJoin: we require more columns in SELECT even if we need less columns in result.
+      * This is the case when we have DISTINCT : we require more columns in SELECT even if we need less columns in result.
       */
     void removeUnneededColumnsFromSelectClause();
 };

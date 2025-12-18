@@ -1,4 +1,6 @@
-# Copyright 2022 PingCAP, Ltd.
+# Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/cmake/sanitize.cmake
+#
+# Copyright 2023 PingCAP, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,9 +21,11 @@ else ()
     set (SAN_FLAGS "${SAN_FLAGS} -O3")
 endif ()
 
-set (CMAKE_CXX_FLAGS_ASAN                "${CMAKE_CXX_FLAGS_ASAN}  ${SAN_FLAGS} -fsanitize=address")
-set (CMAKE_C_FLAGS_ASAN                  "${CMAKE_C_FLAGS_ASAN}    ${SAN_FLAGS} -fsanitize=address")
-set (CMAKE_EXE_LINKER_FLAGS_ASAN         "${CMAKE_EXE_LINKER_FLAGS_ASAN}        -fsanitize=address")
+set (SANITIZE_BLACKLIST_FILE             "${TiFlash_SOURCE_DIR}/tests/sanitize/asan_ignores.txt")
+set (CMAKE_SANITIZE_BLACKLIST_FILE_FLAG  "-fsanitize-blacklist=${SANITIZE_BLACKLIST_FILE}")
+set (CMAKE_CXX_FLAGS_ASAN                "${CMAKE_CXX_FLAGS_ASAN}  ${SAN_FLAGS} -fsanitize=address ${CMAKE_SANITIZE_BLACKLIST_FILE_FLAG}")
+set (CMAKE_C_FLAGS_ASAN                  "${CMAKE_C_FLAGS_ASAN}    ${SAN_FLAGS} -fsanitize=address ${CMAKE_SANITIZE_BLACKLIST_FILE_FLAG}")
+set (CMAKE_EXE_LINKER_FLAGS_ASAN         "${CMAKE_EXE_LINKER_FLAGS_ASAN}        -fsanitize=address ${CMAKE_SANITIZE_BLACKLIST_FILE_FLAG}")
 set (CMAKE_CXX_FLAGS_UBSAN               "${CMAKE_CXX_FLAGS_UBSAN} ${SAN_FLAGS} -fsanitize=undefined")
 set (CMAKE_C_FLAGS_UBSAN                 "${CMAKE_C_FLAGS_UBSAN}   ${SAN_FLAGS} -fsanitize=undefined")
 set (CMAKE_EXE_LINKER_FLAGS_UBSAN        "${CMAKE_EXE_LINKER_FLAGS_UBSAN}       -fsanitize=undefined")

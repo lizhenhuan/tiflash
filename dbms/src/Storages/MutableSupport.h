@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,116 +14,53 @@
 
 #pragma once
 
-#include <Common/typeid_cast.h>
-#include <Core/Block.h>
 #include <Core/Names.h>
-#include <DataTypes/DataTypeNullable.h>
-#include <DataTypes/DataTypesNumber.h>
-#include <IO/WriteHelpers.h>
+#include <DataTypes/IDataType.h>
+#include <Storages/KVStore/Types.h>
 
 #include <ext/singleton.h>
 
 namespace DB
 {
-class MutableSupport : public ext::Singleton<MutableSupport>
+class MutSup : public ext::Singleton<MutSup>
 {
 public:
-    MutableSupport()
+    MutSup()
     {
         mutable_hidden.push_back(version_column_name);
         mutable_hidden.push_back(delmark_column_name);
-        //mutable_hidden.push_back(tidb_pk_column_name);
-
-        all_hidden.insert(all_hidden.end(), mutable_hidden.begin(), mutable_hidden.end());
+        //mutable_hidden.push_back(extra_handle_column_name);
     }
 
     const OrderedNameSet & hiddenColumns(const String & table_type_name)
     {
-        if (mmt_storage_name == table_type_name || txn_storage_name == table_type_name || delta_tree_storage_name == table_type_name)
+        if (delta_tree_storage_name == table_type_name)
             return mutable_hidden;
         return empty;
     }
 
-    void eraseHiddenColumns(Block & block, const String & table_type_name)
-    {
-        const OrderedNameSet & names = hiddenColumns(table_type_name);
-        for (auto & it : names)
-            if (block.has(it))
-                block.erase(it);
-    }
+    inline static const String delta_tree_storage_name = "DeltaMerge";
 
-    bool shouldWiden(const NameAndTypePair & column)
-    {
-        DataTypePtr t
-            = column.type->isNullable() ? dynamic_cast<const DataTypeNullable *>(column.type.get())->getNestedType() : column.type;
-        return (column.name != MutableSupport::version_column_name && column.name != MutableSupport::delmark_column_name
-                && column.name != MutableSupport::tidb_pk_column_name)
-            && t->isInteger() && !(typeid_cast<const DataTypeInt64 *>(t.get()) || typeid_cast<const DataTypeUInt64 *>(t.get()));
-    }
+    inline static constexpr ColumnID extra_handle_id = -1;
+    inline static constexpr ColumnID extra_table_id_col_id = -3;
+    inline static constexpr ColumnID version_col_id = -1024;
+    inline static constexpr ColumnID delmark_col_id = -1025;
+    inline static constexpr ColumnID invalid_col_id = -10000;
 
-    static const String mmt_storage_name;
-    static const String txn_storage_name;
-    static const String delta_tree_storage_name;
+    inline static const String extra_handle_column_name = "_tidb_rowid";
+    inline static const String version_column_name = "_INTERNAL_VERSION";
+    inline static const String delmark_column_name = "_INTERNAL_DELMARK";
+    inline static const String extra_table_id_column_name = "_tidb_tid";
 
-    static const String tidb_pk_column_name;
-    static const String version_column_name;
-    static const String delmark_column_name;
-    static const String extra_table_id_column_name;
-
-    static const DataTypePtr tidb_pk_column_int_type;
-    static const DataTypePtr tidb_pk_column_string_type;
-    static const DataTypePtr version_column_type;
-    static const DataTypePtr delmark_column_type;
-    static const DataTypePtr extra_table_id_column_type;
-
-    /// mark that ColumnId of those columns are defined in dbms/src/Storages/Transaction/Types.h
-
-    enum DeduperType
-    {
-        DeduperOriginStreams = 0,
-        DeduperOriginUnity = 1,
-        DeduperReplacingUnity = 2,
-        DeduperReplacingPartitioning = 3,
-        DeduperDedupPartitioning = 4,
-        DeduperReplacingPartitioningOpt = 5,
-    };
-
-    static DeduperType toDeduperType(UInt64 type)
-    {
-        if (type > 5)
-        {
-            throw Exception("illegal DeduperType: " + toString(type));
-        }
-        return (DeduperType)type;
-    }
-
-    // TODO: detail doc about these delete marks
-    struct DelMark
-    {
-        static const UInt8 NONE = 0x00;
-        static const UInt8 INTERNAL_DEL = 0x01;
-        static const UInt8 DEFINITE_DEL = (INTERNAL_DEL << 1);
-        static const UInt8 DEL_MASK = (INTERNAL_DEL | DEFINITE_DEL);
-        static const UInt8 DATA_MASK = ~DEL_MASK;
-
-        static UInt8 getData(UInt8 raw_data) { return raw_data & DATA_MASK; }
-
-        static bool isDel(UInt8 raw_data) { return raw_data & DEL_MASK; }
-
-        static bool isDefiniteDel(UInt8 raw_data) { return raw_data & DEFINITE_DEL; }
-
-        static UInt8 genDelMark(bool internal_del, bool definite_del, UInt8 src_data)
-        {
-            return (internal_del ? INTERNAL_DEL : NONE) | (definite_del ? DEFINITE_DEL : NONE) | getData(src_data);
-        }
-
-        static UInt8 genDelMark(bool internal_del, bool definite_del = false) { return genDelMark(internal_del, definite_del, 0); }
-    };
+    ALWAYS_INLINE static const DataTypePtr & getExtraHandleColumnIntType();
+    ALWAYS_INLINE static const DataTypePtr & getExtraHandleColumnStringType();
+    ALWAYS_INLINE static const DataTypePtr & getVersionColumnType();
+    ALWAYS_INLINE static const DataTypePtr & getDelmarkColumnType();
+    ALWAYS_INLINE static const DataTypePtr & getExtraTableIdColumnType();
 
 private:
     OrderedNameSet empty;
     OrderedNameSet mutable_hidden;
-    OrderedNameSet all_hidden;
 };
 
 } // namespace DB

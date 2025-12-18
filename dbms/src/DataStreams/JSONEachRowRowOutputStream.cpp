@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/DataStreams/JSONEachRowRowOutputStream.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,17 +14,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <IO/WriteHelpers.h>
-#include <IO/WriteBufferValidUTF8.h>
 #include <DataStreams/JSONEachRowRowOutputStream.h>
+#include <IO/Buffer/WriteBufferValidUTF8.h>
+#include <IO/WriteHelpers.h>
 
 
 namespace DB
 {
 
 
-JSONEachRowRowOutputStream::JSONEachRowRowOutputStream(WriteBuffer & ostr_, const Block & sample, const FormatSettingsJSON & settings_)
-    : ostr(ostr_), settings(settings_)
+JSONEachRowRowOutputStream::JSONEachRowRowOutputStream(
+    WriteBuffer & ostr_,
+    const Block & sample,
+    const FormatSettingsJSON & settings_)
+    : ostr(ostr_)
+    , settings(settings_)
 {
     size_t columns = sample.columns();
     fields.resize(columns);
@@ -62,4 +68,4 @@ void JSONEachRowRowOutputStream::writeRowEndDelimiter()
     field_number = 0;
 }
 
-}
+} // namespace DB

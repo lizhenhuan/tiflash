@@ -1,4 +1,6 @@
-# Copyright 2022 PingCAP, Ltd.
+# Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/CMakeLists.txt
+#
+# Copyright 2023 PingCAP, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,14 +18,11 @@ if (USE_INCLUDE_WHAT_YOU_USE)
     set (CMAKE_CXX_INCLUDE_WHAT_YOU_USE ${IWYU_PATH})
 endif ()
 
-include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/find_vectorclass.cmake)
-
 set (CONFIG_VERSION ${CMAKE_CURRENT_BINARY_DIR}/src/Common/config_version.h)
 set (CONFIG_COMMON ${CMAKE_CURRENT_BINARY_DIR}/src/Common/config.h)
 set (CONFIG_BUILD ${CMAKE_CURRENT_BINARY_DIR}/src/Common/config_build.cpp)
 
 include (cmake/version.cmake)
-message (STATUS "Will build ${VERSION_FULL} (TiFlash ${TIFLASH_RELEASE_VERSION})")
 configure_file (${CMAKE_CURRENT_SOURCE_DIR}/src/Common/config.h.in ${CONFIG_COMMON})
 configure_file (${CMAKE_CURRENT_SOURCE_DIR}/src/Common/config_version.h.in ${CONFIG_VERSION})
 
@@ -55,60 +54,76 @@ set(dbms_sources)
 
 include(${TiFlash_SOURCE_DIR}/cmake/dbms_glob_sources.cmake)
 
-add_headers_and_sources(clickhouse_common_io src/Common)
-add_headers_and_sources(clickhouse_common_io src/Common/HashTable)
-add_headers_and_sources(clickhouse_common_io src/Common/SyncPoint)
-add_headers_and_sources(clickhouse_common_io src/IO)
+add_headers_and_sources(tiflash_common_io src/Common)
+add_headers_and_sources(tiflash_common_io src/Common/HashTable)
+add_headers_and_sources(tiflash_common_io src/Common/SyncPoint)
+add_headers_and_sources(tiflash_common_io src/IO)
+add_headers_and_sources(tiflash_common_io src/IO/BaseFile)
+add_headers_and_sources(tiflash_common_io src/IO/Buffer)
+add_headers_and_sources(tiflash_common_io src/IO/Checksum)
 
 add_headers_and_sources(dbms src/Analyzers)
 add_headers_and_sources(dbms src/Core)
 add_headers_and_sources(dbms src/DataStreams)
+add_headers_and_sources(dbms src/Operators)
 add_headers_and_sources(dbms src/DataTypes)
 add_headers_and_sources(dbms src/Databases)
 add_headers_and_sources(dbms src/Debug)
 add_headers_and_sources(dbms src/Debug/MockExecutor)
+add_headers_and_sources(dbms src/Debug/MockKVStore)
+add_headers_and_sources(dbms src/Debug/dbgKVStore)
 add_headers_and_sources(dbms src/Dictionaries)
-add_headers_and_sources(dbms src/Dictionaries/Embedded)
-add_headers_and_sources(dbms src/Dictionaries/Embedded/GeodataProviders)
-add_headers_and_sources(dbms src/Encryption)
+# Encryption needs to link tiflash-proxy, but we do not want to link tiflash-proxy to tiflash_common_io.
+# So we put the encryption source files in dbms.
+add_headers_and_sources(dbms src/IO/Encryption)
+# Some source files under src/IO/Compression need to use specific cxx flags.
+# In order to enable PCH for tiflash_common_io, so we put it in dbms as well.
+add_headers_and_sources(dbms src/IO/Compression)
+# FileProvider relies on Encryption, so we put it in dbms as well.
+add_headers_and_sources(dbms src/IO/FileProvider)
 add_headers_and_sources(dbms src/Interpreters)
-add_headers_and_sources(dbms src/Interpreters/ClusterProxy)
+add_headers_and_sources(dbms src/Interpreters/SharedContexts)
+add_headers_and_sources(dbms src/Interpreters/JoinV2)
 add_headers_and_sources(dbms src/Columns)
 add_headers_and_sources(dbms src/Storages)
-add_headers_and_sources(dbms src/Storages/DeltaMerge)
-add_headers_and_sources(dbms src/Storages/DeltaMerge/Index)
-add_headers_and_sources(dbms src/Storages/DeltaMerge/Filter)
-add_headers_and_sources(dbms src/Storages/DeltaMerge/FilterParser)
-add_headers_and_sources(dbms src/Storages/DeltaMerge/File)
-add_headers_and_sources(dbms src/Storages/DeltaMerge/ColumnFile)
-add_headers_and_sources(dbms src/Storages/DeltaMerge/Delta)
-add_headers_and_sources(dbms src/Storages/DeltaMerge/ReadThread)
-add_headers_and_sources(dbms src/Storages/Distributed)
-add_headers_and_sources(dbms src/Storages/Transaction)
-add_headers_and_sources(dbms src/Storages/Page/V1)
-add_headers_and_sources(dbms src/Storages/Page/V1/mvcc)
-add_headers_and_sources(dbms src/Storages/Page/V1/VersionSet)
-add_headers_and_sources(dbms src/Storages/Page/V2)
-add_headers_and_sources(dbms src/Storages/Page/V2/mvcc)
-add_headers_and_sources(dbms src/Storages/Page/V2/VersionSet)
-add_headers_and_sources(dbms src/Storages/Page/V2/gc)
+add_headers_and_sources(dbms src/Storages/S3)
 add_headers_and_sources(dbms src/WindowFunctions)
+add_headers_and_sources(dbms src/TiDB/Decode)
+add_headers_and_sources(dbms src/TiDB/Collation)
 add_headers_and_sources(dbms src/TiDB/Schema)
-add_headers_and_sources(dbms src/Storages/Page/V3)
-add_headers_and_sources(dbms src/Storages/Page/V3/LogFile)
-add_headers_and_sources(dbms src/Storages/Page/V3/WAL)
-add_headers_and_sources(dbms src/Storages/Page/V3/spacemap)
-add_headers_and_sources(dbms src/Storages/Page/V3/PageDirectory)
-add_headers_and_sources(dbms src/Storages/Page/V3/Blob)
-add_headers_and_sources(dbms src/Storages/Page/)
+add_headers_and_sources(dbms src/TiDB/Etcd)
 add_headers_and_sources(dbms src/TiDB)
 add_headers_and_sources(dbms src/Client)
 add_headers_only(dbms src/Flash/Coprocessor)
 add_headers_only(dbms src/Server)
 
-list (APPEND clickhouse_common_io_sources ${CONFIG_BUILD})
-list (APPEND clickhouse_common_io_headers ${CONFIG_VERSION} ${CONFIG_COMMON})
-list (APPEND clickhouse_common_io_headers ${fiu_include_dirs})
+add_headers_and_sources(tiflash_vector_search src/VectorSearch)
+
+check_then_add_sources_compile_flag (
+    TIFLASH_ENABLE_ARCH_HASWELL_SUPPORT
+    "${TIFLASH_COMPILER_ARCH_HASWELL_FLAG}"
+    src/Columns/ColumnString.cpp
+    src/Columns/ColumnVector.cpp
+    src/Columns/ColumnDecimal.cpp
+    src/Columns/ColumnArray.cpp
+    src/Columns/ColumnNullable.cpp
+    src/Columns/ColumnFixedString.cpp
+    src/Columns/countBytesInFilter.cpp
+    src/Columns/ColumnUtil.cpp
+    src/DataTypes/DataTypeString.cpp
+    src/Interpreters/Join.cpp
+    src/Interpreters/JoinV2/HashJoin.cpp
+    src/Interpreters/JoinV2/HashJoinBuild.cpp
+    src/Interpreters/JoinV2/HashJoinProbe.cpp
+    src/Interpreters/JoinV2/SemiJoinProbe.cpp
+    src/IO/Compression/EncodingUtil.cpp
+    src/Storages/DeltaMerge/BitmapFilter/BitmapFilter.cpp
+    src/Storages/DeltaMerge/DMVersionFilterBlockInputStream.cpp
+)
+
+list (APPEND tiflash_common_io_sources ${CONFIG_BUILD})
+list (APPEND tiflash_common_io_headers ${CONFIG_VERSION} ${CONFIG_COMMON})
+list (APPEND tiflash_common_io_headers ${fiu_include_dirs})
 
 list (APPEND dbms_sources src/Functions/IFunction.cpp src/Functions/FunctionFactory.cpp src/Functions/FunctionHelpers.cpp)
 list (APPEND dbms_headers src/Functions/IFunction.h src/Functions/FunctionFactory.h src/Functions/FunctionHelpers.h)
@@ -129,14 +144,13 @@ list (APPEND dbms_headers
     src/AggregateFunctions/FactoryHelpers.h
     src/AggregateFunctions/parseAggregateFunctionParameters.h)
 
-list (APPEND dbms_sources src/TableFunctions/ITableFunction.cpp src/TableFunctions/TableFunctionFactory.cpp)
-list (APPEND dbms_headers src/TableFunctions/ITableFunction.h src/TableFunctions/TableFunctionFactory.h)
+add_library(tiflash_common_io ${SPLIT_SHARED} ${tiflash_common_io_headers} ${tiflash_common_io_sources})
+target_link_libraries(tiflash_common_io PUBLIC process_metrics)
+target_include_directories(tiflash_common_io BEFORE PUBLIC ${XXHASH_INCLUDE_DIR} ${TiFlash_SOURCE_DIR}/libs/libprocess_metrics/include)
+target_include_directories(tiflash_common_io PUBLIC ${TiFlash_SOURCE_DIR}/contrib/not_null/include)
 
-add_library(clickhouse_common_io ${SPLIT_SHARED} ${clickhouse_common_io_headers} ${clickhouse_common_io_sources})
-target_include_directories(clickhouse_common_io BEFORE PUBLIC ${XXHASH_INCLUDE_DIR})
-
-if (ARCH_FREEBSD)
-    target_compile_definitions (clickhouse_common_io PUBLIC CLOCK_MONOTONIC_COARSE=CLOCK_MONOTONIC_FAST)
+if (OS_FREEBSD)
+    target_compile_definitions (tiflash_common_io PUBLIC CLOCK_MONOTONIC_COARSE=CLOCK_MONOTONIC_FAST)
 endif ()
 
 add_subdirectory(src/Common/Config)
@@ -145,8 +159,8 @@ if (MAKE_STATIC_LIBRARIES)
     add_library(dbms ${dbms_headers} ${dbms_sources})
 else ()
     add_library(dbms SHARED ${dbms_headers} ${dbms_sources})
-    set_target_properties (dbms PROPERTIES SOVERSION ${VERSION_MAJOR} VERSION ${VERSION_SO} OUTPUT_NAME clickhouse)
-    install (TARGETS dbms LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT clickhouse)
+    set_target_properties (dbms PROPERTIES SOVERSION ${VERSION_MAJOR} VERSION ${VERSION_SO} OUTPUT_NAME tiflash)
+    install (TARGETS dbms LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT tiflash)
 endif ()
 
 target_include_directories(dbms PUBLIC "${TIFLASH_PROXY_INCLUDE_DIR}")
@@ -154,20 +168,11 @@ target_include_directories(dbms PUBLIC "${TIFLASH_PROXY_INCLUDE_DIR}")
 if (CMAKE_BUILD_TYPE_UC STREQUAL "RELEASE" OR CMAKE_BUILD_TYPE_UC STREQUAL "RELWITHDEBINFO" OR CMAKE_BUILD_TYPE_UC STREQUAL "MINSIZEREL")
     # Won't generate debug info for files with heavy template instantiation to achieve faster linking and lower size.
     set_source_files_properties(
-        src/Dictionaries/FlatDictionary.cpp
-        src/Dictionaries/HashedDictionary.cpp
         src/Dictionaries/CacheDictionary.cpp
         src/Dictionaries/TrieDictionary.cpp
-        src/Dictionaries/RangeHashedDictionary.cpp
-        src/Dictionaries/ComplexKeyHashedDictionary.cpp
-        src/Dictionaries/ComplexKeyCacheDictionary.cpp
-        src/Dictionaries/ComplexKeyCacheDictionary_generate1.cpp
-        src/Dictionaries/ComplexKeyCacheDictionary_generate2.cpp
-        src/Dictionaries/ComplexKeyCacheDictionary_generate3.cpp
         src/Dictionaries/HTTPDictionarySource.cpp
         src/Dictionaries/LibraryDictionarySource.cpp
         src/Dictionaries/ExecutableDictionarySource.cpp
-        src/Dictionaries/ClickHouseDictionarySource.cpp
         PROPERTIES COMPILE_FLAGS -g0)
 endif ()
 
@@ -175,7 +180,7 @@ if (NOT ARCH_ARM)
     set (LINK_LIBRARIES_ONLY_ON_X86_64 cpuid)
 endif()
 
-target_link_libraries (clickhouse_common_io
+target_link_libraries (tiflash_common_io
     PUBLIC
     common
     string_utils
@@ -195,49 +200,78 @@ target_link_libraries (clickhouse_common_io
     prometheus-cpp::pull
     cpptoml
     magic_enum
+    simdjson
     libsymbolization
+    ${RE2_LIBRARY}
+    ${RE2_ST_LIBRARY}
+    fastpforlib
 )
-target_include_directories (clickhouse_common_io BEFORE PRIVATE ${kvClient_SOURCE_DIR}/include)
-target_compile_definitions(clickhouse_common_io PUBLIC -DTIFLASH_SOURCE_PREFIX=\"${TiFlash_SOURCE_DIR}\")
+
+target_include_directories (tiflash_common_io BEFORE PRIVATE ${kvClient_SOURCE_DIR}/include)
+target_compile_definitions (tiflash_common_io PUBLIC -DTIFLASH_SOURCE_PREFIX=\"${TiFlash_SOURCE_DIR}\")
+
+add_library(tiflash_vector_search
+    ${tiflash_vector_search_headers}
+    ${tiflash_vector_search_sources}
+)
+target_link_libraries(tiflash_vector_search
+    tiflash_contrib::usearch
+    tiflash_contrib::simsimd
+
+    fmt
+)
+
 target_link_libraries (dbms
-    clickhouse_parsers
-    clickhouse_common_config
-    clickhouse_common_io
+    ${OPENSSL_CRYPTO_LIBRARY}
+    ${BTRIE_LIBRARIES}
+    absl::synchronization
+    tiflash_contrib::aws_s3
+    tiflash_vector_search
+
+    etcdpb
+    tiflash_parsers
+    tiflash_common_config
+    tiflash_common_io
     flash_service
     kvproto
     kv_client
     tipb
     dtpb
-    ${RE2_LIBRARY}
-    ${RE2_ST_LIBRARY}
-    ${OPENSSL_CRYPTO_LIBRARY}
-    ${BTRIE_LIBRARIES}
-    absl::synchronization
+    RemoteTaskProto
+    PSCheckpointProto
+    kvstore
 )
 
+if (ENABLE_CLARA)
+    target_link_libraries(dbms clara_shared)
+endif ()
+
+# always add GmSSL include dir to the include path for static analysis
+target_include_directories(dbms PRIVATE ${TiFlash_SOURCE_DIR}/contrib/GmSSL/include)
+if (USE_GM_SSL)
+    target_link_libraries(dbms gmssl)
+endif ()
+
 if (NOT USE_INTERNAL_RE2_LIBRARY)
+    target_include_directories (tiflash_common_io BEFORE PRIVATE ${RE2_INCLUDE_DIR})
     target_include_directories (dbms BEFORE PRIVATE ${RE2_INCLUDE_DIR})
 endif ()
 
-target_include_directories (clickhouse_common_io BEFORE PUBLIC ${Boost_INCLUDE_DIRS})
+target_include_directories (tiflash_common_io BEFORE PUBLIC ${Boost_INCLUDE_DIRS})
 
 if (Poco_Data_FOUND AND NOT USE_INTERNAL_POCO_LIBRARY)
-    target_include_directories (clickhouse_common_io PRIVATE ${Poco_Data_INCLUDE_DIRS})
+    target_include_directories (tiflash_common_io PRIVATE ${Poco_Data_INCLUDE_DIRS})
     target_include_directories (dbms PRIVATE ${Poco_Data_INCLUDE_DIRS})
 endif()
 
-# NetSSL headers are exposed in clickhouse_common_io's headers.
+# NetSSL headers are exposed in tiflash_common_io's headers.
 # We mark it public to make the headers available.
 if (Poco_NetSSL_FOUND)
-    target_link_libraries (clickhouse_common_io PUBLIC ${Poco_NetSSL_LIBRARY})
+    target_link_libraries (tiflash_common_io PUBLIC ${Poco_NetSSL_LIBRARY})
+    target_no_warning (tiflash_common_io deprecated-enum-enum-conversion)
 endif()
 
 target_link_libraries (dbms ${Poco_Foundation_LIBRARY})
-
-if (USE_ICU)
-    target_link_libraries (dbms ${ICU_LIBS})
-    target_include_directories (dbms PRIVATE ${ICU_INCLUDE_DIR})
-endif ()
 
 target_link_libraries (dbms
     Threads::Threads
@@ -253,15 +287,23 @@ if (NOT USE_INTERNAL_ZSTD_LIBRARY)
     target_include_directories (dbms BEFORE PRIVATE ${ZSTD_INCLUDE_DIR})
 endif ()
 
+if (USE_QPL)
+    target_link_libraries (tiflash_common_io PUBLIC ${QPL_LIBRARY})
+    target_include_directories (dbms BEFORE PRIVATE ${QPL_INCLUDE_DIR})
+    set_source_files_properties (
+        src/IO/Compression/CompressionCodecDeflateQpl.cpp
+        PROPERTIES COMPILE_FLAGS "-mwaitpkg")
+endif ()
+
 target_include_directories (dbms PUBLIC ${DBMS_INCLUDE_DIR})
-target_include_directories (clickhouse_common_io PUBLIC ${DBMS_INCLUDE_DIR})
-target_include_directories (clickhouse_common_io PUBLIC ${PCG_RANDOM_INCLUDE_DIR})
-target_include_directories (clickhouse_common_io BEFORE PUBLIC ${DOUBLE_CONVERSION_INCLUDE_DIR})
+target_include_directories (tiflash_common_io PUBLIC ${DBMS_INCLUDE_DIR})
+target_include_directories (tiflash_common_io PUBLIC ${PCG_RANDOM_INCLUDE_DIR})
+target_include_directories (tiflash_common_io BEFORE PUBLIC ${DOUBLE_CONVERSION_INCLUDE_DIR})
 
 # also for copy_headers.sh:
-target_include_directories (clickhouse_common_io BEFORE PRIVATE ${COMMON_INCLUDE_DIR})
+target_include_directories (tiflash_common_io BEFORE PRIVATE ${COMMON_INCLUDE_DIR})
 # https://cmake.org/pipermail/cmake/2016-May/063400.html
-target_link_libraries (clickhouse_common_io PUBLIC ${TIFLASH_XXHASH_LIBRARY})
+target_link_libraries (tiflash_common_io PUBLIC ${TIFLASH_XXHASH_LIBRARY})
 
 function(add_target_pch context target)
     if (ENABLE_PCH)
@@ -306,15 +348,55 @@ if (ENABLE_TESTS)
     )
     target_include_directories(gtests_dbms BEFORE PRIVATE ${SPARCEHASH_INCLUDE_DIR})
     target_compile_definitions(gtests_dbms PUBLIC DBMS_PUBLIC_GTEST)
+    target_compile_definitions(dbms PUBLIC DBMS_PUBLIC_GTEST)
     target_compile_definitions(dbms PUBLIC MULTIPLE_CONTEXT_GTEST)
 
-    target_link_libraries(gtests_dbms test_util_gtest_main clickhouse_functions tiflash-dttool-lib)
+    target_link_libraries(gtests_dbms test_util_gtest_main tiflash_functions tiflash-dttool-lib delta_merge kvstore)
+
+    install (TARGETS gtests_dbms
+            COMPONENT tiflash-gtest
+            DESTINATION "."
+            RUNTIME_DEPENDENCY_SET tiflash-gtest-dependency)
+    install (RUNTIME_DEPENDENCY_SET tiflash-gtest-dependency
+            COMPONENT tiflash-gtest
+            DESTINATION "."
+            PRE_EXCLUDE_REGEXES
+                "libdl.*"
+                "libc-.*"
+                "libc\\..*"
+                "libgcc_s.*"
+                "librt.*"
+                "libm.*"
+                "ld-linux-x86-64.*"
+                "ld-linux-aarch64.*"
+                "libpthread.*"# exclude libc dependencies
+            DIRECTORIES ${TIFLASH_GTEST_DEPENDENCY_DIRECTORIES})
+
+    if (USE_GM_SSL)
+        target_link_libraries(gtests_dbms gmssl)
+        target_include_directories(gtests_dbms PRIVATE ${TiFlash_SOURCE_DIR}/contrib/GmSSL/include)
+        install (TARGETS gmssl
+                COMPONENT tiflash-gtest
+                DESTINATION ".")
+    endif ()
+
+    if (ENABLE_CLARA AND USE_INTERNAL_LIBCLARA)
+        install (TARGETS clara_shared
+                COMPONENT tiflash-gtest
+                DESTINATION ".")
+    endif()
+
+    set_target_properties(gtests_dbms PROPERTIES BUILD_RPATH "$ORIGIN/")
+    set_target_properties(gtests_dbms PROPERTIES INSTALL_RPATH "$ORIGIN/")
+
+    if (ENABLE_CLARA)
+        install (SCRIPT ${TiFlash_SOURCE_DIR}/libs/libclara-cmake/linux_post_install.cmake COMPONENT tiflash-gtest)
+    endif ()
 
     target_compile_options(gtests_dbms PRIVATE -Wno-unknown-pragmas -Wno-deprecated-copy)
     add_check(gtests_dbms)
 
     add_target_pch("pch-dbms.h" gtests_dbms)
-
     grep_bench_sources(${TiFlash_SOURCE_DIR}/dbms dbms_bench_sources)
     add_executable(bench_dbms EXCLUDE_FROM_ALL
         ${dbms_bench_sources}
@@ -323,28 +405,36 @@ if (ENABLE_TESTS)
         ${TiFlash_SOURCE_DIR}/dbms/src/Server/RaftConfigParser.cpp
         ${TiFlash_SOURCE_DIR}/dbms/src/AggregateFunctions/AggregateFunctionSum.cpp
         )
+    set_target_properties(bench_dbms PROPERTIES BUILD_RPATH "$ORIGIN/")
     target_include_directories(bench_dbms BEFORE PRIVATE ${SPARCEHASH_INCLUDE_DIR} ${benchmark_SOURCE_DIR}/include)
     target_compile_definitions(bench_dbms PUBLIC DBMS_PUBLIC_GTEST)
+    target_link_libraries(bench_dbms
+        gtest
+        benchmark
 
-    target_link_libraries(bench_dbms gtest dbms test_util_bench_main benchmark clickhouse_functions)
-    if (ENABLE_TIFLASH_DTWORKLOAD)
-        target_link_libraries(bench_dbms dt-workload-lib)
-    endif ()
-    if (ENABLE_TIFLASH_PAGEWORKLOAD)
-        target_link_libraries(bench_dbms page-workload-lib)
-    endif ()
+        dbms
+        test_util_bench_main
+        tiflash_functions
+        grpc_server_holder
+        delta_merge
+        tiflash_aggregate_functions
+        kvstore)
+
+    if (NOT CMAKE_BUILD_TYPE_UC STREQUAL "DEBUG")
+        target_link_libraries(bench_dbms tiflash_contrib::highfive)
+    endif()
 
     add_check(bench_dbms)
 endif ()
 
 # dbms
-add_target_pch("pch-dbms.h" dbms flash_service)
-add_target_pch("pch-common.h" clickhouse_common_io clickhouse_aggregate_functions)
+add_target_pch("pch-dbms.h" flash_service)
+add_target_pch("pch-common.h" tiflash_common_io tiflash_aggregate_functions)
 
-# disable PCH for `clickhouse_functions` temporarily because some source files need to use specific cxx flags
-# add_target_pch("pch-common.h" clickhouse_functions)
+# disable PCH for `tiflash_functions`, `dbms` temporarily because some source files need to use specific cxx flags
+# add_target_pch("pch-common.h" tiflash_functions dbms)
 
-add_target_pch("pch-common.h" clickhouse_parsers clickhouse_storages_system dt-workload-lib clickhouse-server-lib)
+add_target_pch("pch-common.h" tiflash_parsers tiflash_storages_system dt-workload-lib tiflash-server-lib)
 
 # common
 add_target_pch("pch-kvpb.h" kv_client)
@@ -359,4 +449,6 @@ add_target_pch("pch-stl.h" libprotobuf kvproto tipb libprotoc)
 
 # poco
 add_target_pch("pch-stl.h" Net Crypto Util Data NetSSL)
-add_target_pch("$<$<COMPILE_LANGUAGE:CXX>:${CMAKE_CURRENT_SOURCE_DIR}/pch-stl.h>" XML Foundation JSON)
+add_target_pch("$<$<COMPILE_LANGUAGE:CXX>:${CMAKE_CURRENT_SOURCE_DIR}/pch-stl.h>" Foundation JSON)
+
+message (STATUS "Will build TiFlash ${TIFLASH_RELEASE_VERSION}")

@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Client/MultiplexedConnections.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,9 +16,10 @@
 
 #pragma once
 
-#include <Common/Throttler.h>
 #include <Client/Connection.h>
 #include <Client/ConnectionPoolWithFailover.h>
+#include <Common/Throttler.h>
+
 #include <mutex>
 
 namespace DB
@@ -39,19 +42,17 @@ public:
       * If the append_extra_info flag is set, additional information appended to each received block.
       */
     MultiplexedConnections(
-            std::vector<IConnectionPool::Entry> && connections,
-            const Settings & settings_, const ThrottlerPtr & throttler_, bool append_extra_info);
-
-    /// Send all content of external tables to replicas.
-    void sendExternalTablesData(std::vector<ExternalTablesData> & data);
+        std::vector<IConnectionPool::Entry> && connections,
+        const Settings & settings_,
+        const ThrottlerPtr & throttler_,
+        bool append_extra_info);
 
     /// Send request to replicas.
     void sendQuery(
         const String & query,
         const String & query_id = "",
         UInt64 stage = QueryProcessingStage::Complete,
-        const ClientInfo * client_info = nullptr,
-        bool with_pending_data = false);
+        const ClientInfo * client_info = nullptr);
 
     /// Get packet from any replica.
     Connection::Packet receivePacket();
@@ -125,4 +126,4 @@ private:
     mutable std::mutex cancel_mutex;
 };
 
-}
+} // namespace DB

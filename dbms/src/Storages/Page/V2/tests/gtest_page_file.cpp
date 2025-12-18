@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,12 +13,11 @@
 // limitations under the License.
 
 #include <Common/Exception.h>
-#include <Encryption/MockKeyManager.h>
+#include <IO/Encryption/MockKeyManager.h>
 #include <Poco/Logger.h>
 #include <Storages/Page/Page.h>
 #include <Storages/Page/V2/PageFile.h>
 #include <TestUtils/TiFlashTestBasic.h>
-
 
 namespace DB::PS::V2::tests
 {
@@ -28,8 +27,8 @@ TEST(PageFileTest, Compare)
     const String path = DB::tests::TiFlashTestEnv::getTemporaryPath("pageFileCompare");
     DB::tests::TiFlashTestEnv::tryRemovePath(path);
 
-    const auto file_provider = DB::tests::TiFlashTestEnv::getContext().getFileProvider();
-    Poco::Logger * log = &Poco::Logger::get("PageFile");
+    const auto file_provider = DB::tests::TiFlashTestEnv::getDefaultFileProvider();
+    auto log = Logger::get("PageFile");
 
     {
         // Create files for tests
@@ -68,7 +67,8 @@ TEST(PageFileTest, Compare)
     ASSERT_TRUE(pf_set.rbegin()->isExist());
 
     // Test `isPageFileExist`
-    ASSERT_TRUE(PageFile::isPageFileExist(checkpoint_pf.fileIdLevel(), path, file_provider, PageFile::Type::Checkpoint, log));
+    ASSERT_TRUE(
+        PageFile::isPageFileExist(checkpoint_pf.fileIdLevel(), path, file_provider, PageFile::Type::Checkpoint, log));
     ASSERT_TRUE(PageFile::isPageFileExist(pf0.fileIdLevel(), path, file_provider, PageFile::Type::Formal, log));
     ASSERT_TRUE(PageFile::isPageFileExist(pf1.fileIdLevel(), path, file_provider, PageFile::Type::Formal, log));
     ASSERT_FALSE(PageFile::isPageFileExist(pf1.fileIdLevel(), path, file_provider, PageFile::Type::Legacy, log));
@@ -86,13 +86,13 @@ TEST(Page_test, GetField)
     for (size_t i = 0; i < buf_sz; ++i)
         c_buff[i] = i % 0xff;
 
-    Page page;
-    page.data = ByteBuffer(c_buff, c_buff + buf_sz);
-    std::set<Page::FieldOffset> fields{// {field_index, data_offset}
-                                       {2, 0},
-                                       {3, 20},
-                                       {9, 99},
-                                       {10086, 1000}};
+    Page page{1};
+    page.data = std::string_view(c_buff, buf_sz);
+    std::set<FieldOffsetInsidePage> fields{// {field_index, data_offset}
+                                           {2, 0},
+                                           {3, 20},
+                                           {9, 99},
+                                           {10086, 1000}};
     page.field_offsets = fields;
 
     ASSERT_EQ(page.data.size(), buf_sz);
@@ -178,13 +178,13 @@ TEST(PageEntry_test, GetFieldInfo)
 
 TEST(PageFileTest, PageFileLink)
 {
-    Poco::Logger * log = &Poco::Logger::get("PageFileLink");
+    auto log = Logger::get("PageFileLink");
     PageId page_id = 55;
     UInt64 tag = 0;
     const String path = DB::tests::TiFlashTestEnv::getTemporaryPath("PageFileLink/");
     DB::tests::TiFlashTestEnv::tryRemovePath(path);
 
-    const auto file_provider = DB::tests::TiFlashTestEnv::getGlobalContext().getFileProvider();
+    const auto file_provider = DB::tests::TiFlashTestEnv::getDefaultFileProvider();
     PageFile pf0 = PageFile::newPageFile(page_id, 0, path, file_provider, PageFile::Type::Formal, log);
     auto writer = pf0.createWriter(true, true);
 
@@ -227,7 +227,7 @@ TEST(PageFileTest, PageFileLink)
 
 TEST(PageFileTest, EncryptedPageFileLink)
 {
-    Poco::Logger * log = &Poco::Logger::get("EncryptedPageFileLink");
+    auto log = Logger::get("EncryptedPageFileLink");
     PageId page_id = 55;
     UInt64 tag = 0;
     const String path = DB::tests::TiFlashTestEnv::getTemporaryPath("EncryptedPageFileLink/");

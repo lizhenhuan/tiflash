@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,20 +12,30 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <AggregateFunctions/AggregateFunctionFactory.h>
 #include <AggregateFunctions/AggregateFunctionUniq.h>
 #include <Debug/MockExecutor/AggregationBinder.h>
+#include <Debug/MockExecutor/AstToPB.h>
 #include <Debug/MockExecutor/ExchangeReceiverBinder.h>
 #include <Debug/MockExecutor/ExchangeSenderBinder.h>
-#include <Debug/MockExecutor/ExecutorBinder.h>
+#include <Debug/MockExecutor/FuncSigMap.h>
+#include <Parsers/ASTIdentifier.h>
 #include <fmt/core.h>
 
 namespace DB::mock
 {
-bool AggregationBinder::toTiPBExecutor(tipb::Executor * tipb_executor, int32_t collator_id, const MPPInfo & mpp_info, const Context & context)
+bool AggregationBinder::toTiPBExecutor(
+    tipb::Executor * tipb_executor,
+    int32_t collator_id,
+    const MPPInfo & mpp_info,
+    const Context & context)
 {
     tipb_executor->set_tp(tipb::ExecType::TypeAggregation);
     tipb_executor->set_executor_id(name);
+    tipb_executor->set_fine_grained_shuffle_stream_count(fine_grained_shuffle_stream_count);
     auto * agg = tipb_executor->mutable_aggregation();
+    if (switcher)
+        agg->set_pre_agg_mode(switcher->mode);
     buildAggExpr(agg, collator_id, context);
     buildGroupBy(agg, collator_id, context);
     auto * child_executor = agg->mutable_child();
@@ -36,8 +46,12 @@ void AggregationBinder::columnPrune(std::unordered_set<String> & used_columns)
 {
     /// output schema for partial agg is the original agg's output schema
     output_schema_for_partial_agg = output_schema;
-    output_schema.erase(std::remove_if(output_schema.begin(), output_schema.end(), [&](const auto & field) { return used_columns.count(field.first) == 0; }),
-                        output_schema.end());
+    output_schema.erase(
+        std::remove_if(
+            output_schema.begin(),
+            output_schema.end(),
+            [&](const auto & field) { return used_columns.count(field.first) == 0; }),
+        output_schema.end());
     std::unordered_set<String> used_input_columns;
     for (auto & func : agg_exprs)
     {
@@ -59,7 +73,12 @@ void AggregationBinder::columnPrune(std::unordered_set<String> & used_columns)
     children[0]->columnPrune(used_input_columns);
 }
 
-void AggregationBinder::toMPPSubPlan(size_t & executor_index, const DAGProperties & properties, std::unordered_map<String, std::pair<std::shared_ptr<ExchangeReceiverBinder>, std::shared_ptr<ExchangeSenderBinder>>> & exchange_map)
+void AggregationBinder::toMPPSubPlan(
+    size_t & executor_index,
+    const DAGProperties & properties,
+    std::unordered_map<
+        String,
+        std::pair<std::shared_ptr<ExchangeReceiverBinder>, std::shared_ptr<ExchangeSenderBinder>>> & exchange_map)
 {
     if (!is_final_mode)
     {
@@ -70,6 +89,7 @@ void AggregationBinder::toMPPSubPlan(size_t & executor_index, const DAGPropertie
     // todo support avg
     if (has_uniq_raw_res)
         throw Exception("uniq raw res not supported in mpp query");
+    // Partial agg cannot be fine grained shuffle. So set fine_grained_shuffle_stream_count as 0.
     std::shared_ptr<AggregationBinder> partial_agg = std::make_shared<AggregationBinder>(
         executor_index,
         output_schema_for_partial_agg,
@@ -77,7 +97,9 @@ void AggregationBinder::toMPPSubPlan(size_t & executor_index, const DAGPropertie
         false,
         std::move(agg_exprs),
         std::move(gby_exprs),
-        false);
+        false,
+        /*fine_grained_shuffle_stream_count*/ 0,
+        switcher);
     partial_agg->children.push_back(children[0]);
     std::vector<size_t> partition_keys;
     size_t agg_func_num = partial_agg->agg_exprs.size();
@@ -86,12 +108,18 @@ void AggregationBinder::toMPPSubPlan(size_t & executor_index, const DAGPropertie
         partition_keys.push_back(i + agg_func_num);
     }
 
-    std::shared_ptr<ExchangeSenderBinder> exchange_sender
-        = std::make_shared<ExchangeSenderBinder>(executor_index, output_schema_for_partial_agg, partition_keys.empty() ? tipb::PassThrough : tipb::Hash, partition_keys);
+    std::shared_ptr<ExchangeSenderBinder> exchange_sender = std::make_shared<ExchangeSenderBinder>(
+        executor_index,
+        output_schema_for_partial_agg,
+        partition_keys.empty() ? tipb::PassThrough : tipb::Hash,
+        partition_keys,
+        fine_grained_shuffle_stream_count);
     exchange_sender->children.push_back(partial_agg);
 
-    std::shared_ptr<ExchangeReceiverBinder> exchange_receiver
-        = std::make_shared<ExchangeReceiverBinder>(executor_index, output_schema_for_partial_agg);
+    std::shared_ptr<ExchangeReceiverBinder> exchange_receiver = std::make_shared<ExchangeReceiverBinder>(
+        executor_index,
+        output_schema_for_partial_agg,
+        fine_grained_shuffle_stream_count);
     exchange_map[exchange_receiver->name] = std::make_pair(exchange_receiver, exchange_sender);
 
     /// re-construct agg_exprs and gby_exprs in final_agg
@@ -103,7 +131,8 @@ void AggregationBinder::toMPPSubPlan(size_t & executor_index, const DAGPropertie
         if (agg_func->name == "count")
             update_agg_func->name = "sum";
         update_agg_func->arguments->children.clear();
-        update_agg_func->arguments->children.push_back(std::make_shared<ASTIdentifier>(output_schema_for_partial_agg[i].first));
+        update_agg_func->arguments->children.push_back(
+            std::make_shared<ASTIdentifier>(output_schema_for_partial_agg[i].first));
         agg_exprs.push_back(update_agg_expr);
     }
     for (size_t i = 0; i < partial_agg->gby_exprs.size(); ++i)
@@ -111,6 +140,8 @@ void AggregationBinder::toMPPSubPlan(size_t & executor_index, const DAGPropertie
         gby_exprs.push_back(std::make_shared<ASTIdentifier>(output_schema_for_partial_agg[agg_func_num + i].first));
     }
     children[0] = exchange_receiver;
+    // Because this aggregation is 2nd agg, so reset auto_pass_through flag.
+    switcher = nullptr;
 }
 
 bool AggregationBinder::needAppendProject() const
@@ -146,7 +177,9 @@ void AggregationBinder::buildAggExpr(tipb::Aggregation * agg, int32_t collator_i
     {
         const auto * func = typeid_cast<const ASTFunction *>(expr.get());
         if (!func || !AggregateFunctionFactory::instance().isAggregateFunctionName(func->name))
-            throw Exception("Only agg function is allowed in select for a query with aggregation", ErrorCodes::LOGICAL_ERROR);
+            throw Exception(
+                "Only agg function is allowed in select for a query with aggregation",
+                ErrorCodes::LOGICAL_ERROR);
 
         tipb::Expr * agg_func = agg->add_agg_func();
 
@@ -203,7 +236,13 @@ void AggregationBinder::buildAggFunc(tipb::Expr * agg_func, const ASTFunction * 
         agg_func->set_aggfuncmode(tipb::AggFunctionMode::Partial1Mode);
 }
 
-ExecutorBinderPtr compileAggregation(ExecutorBinderPtr input, size_t & executor_index, ASTPtr agg_funcs, ASTPtr group_by_exprs)
+ExecutorBinderPtr compileAggregation(
+    ExecutorBinderPtr input,
+    size_t & executor_index,
+    ASTPtr agg_funcs,
+    ASTPtr group_by_exprs,
+    uint64_t fine_grained_shuffle_stream_count,
+    std::shared_ptr<AutoPassThroughSwitcher> switcher)
 {
     std::vector<ASTPtr> agg_exprs;
     std::vector<ASTPtr> gby_exprs;
@@ -235,7 +274,9 @@ ExecutorBinderPtr compileAggregation(ExecutorBinderPtr input, size_t & executor_
                 ci.tp = TiDB::TypeLongLong;
                 ci.flag = TiDB::ColumnFlagUnsigned | TiDB::ColumnFlagNotNull;
             }
-            else if (func->name == "max" || func->name == "min" || func->name == "first_row" || func->name == "sum")
+            else if (
+                func->name == "max" || func->name == "min" || func->name == "first_row" || func->name == "sum"
+                || func->name == "avg")
             {
                 ci = children_ci[0];
                 ci.flag &= ~TiDB::ColumnFlagNotNull;
@@ -273,7 +314,9 @@ ExecutorBinderPtr compileAggregation(ExecutorBinderPtr input, size_t & executor_
         need_append_project,
         std::move(agg_exprs),
         std::move(gby_exprs),
-        true);
+        true,
+        fine_grained_shuffle_stream_count,
+        switcher);
     aggregation->children.push_back(input);
     return aggregation;
 }

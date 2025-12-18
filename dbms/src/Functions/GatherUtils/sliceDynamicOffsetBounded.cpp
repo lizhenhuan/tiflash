@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Functions/GatherUtils/sliceDynamicOffsetBounded.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,16 +19,25 @@
 
 namespace DB::GatherUtils
 {
-struct SliceDynamicOffsetBoundedSelectArraySource : public ArraySinkSourceSelector<SliceDynamicOffsetBoundedSelectArraySource>
+struct SliceDynamicOffsetBoundedSelectArraySource
+    : public ArraySinkSourceSelector<SliceDynamicOffsetBoundedSelectArraySource>
 {
     template <typename Source, typename Sink>
-    static void selectSourceSink(Source && source, Sink && sink, const IColumn & offset_column, const IColumn & length_column)
+    static void selectSourceSink(
+        Source && source,
+        Sink && sink,
+        const IColumn & offset_column,
+        const IColumn & length_column)
     {
         sliceDynamicOffsetBounded(source, sink, offset_column, length_column);
     }
 };
 
-void sliceDynamicOffsetBounded(IArraySource & src, IArraySink & sink, const IColumn & offset_column, const IColumn & length_column)
+void sliceDynamicOffsetBounded(
+    IArraySource & src,
+    IArraySink & sink,
+    const IColumn & offset_column,
+    const IColumn & length_column)
 {
     SliceDynamicOffsetBoundedSelectArraySource::select(src, sink, offset_column, length_column);
 }

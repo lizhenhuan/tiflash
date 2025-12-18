@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Interpreters/evaluateConstantExpression.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -31,7 +33,9 @@ class IDataType;
   * Used in rare cases - for elements of set for IN, for data to INSERT.
   * Quite suboptimal.
   */
-std::pair<Field, std::shared_ptr<const IDataType>> evaluateConstantExpression(const ASTPtr & node, const Context & context);
+std::pair<Field, std::shared_ptr<const IDataType>> evaluateConstantExpression(
+    const ASTPtr & node,
+    const Context & context);
 
 
 /** Evaluate constant expression

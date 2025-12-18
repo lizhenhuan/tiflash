@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/AggregateFunctions/AggregateFunctionBitwise.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -23,7 +25,11 @@ namespace DB
 namespace
 {
 template <template <typename> class Data>
-AggregateFunctionPtr createAggregateFunctionBitwise(const std::string & name, const DataTypes & argument_types, const Array & parameters)
+AggregateFunctionPtr createAggregateFunctionBitwise(
+    const Context & /* context not used */,
+    const std::string & name,
+    const DataTypes & argument_types,
+    const Array & parameters)
 {
     assertNoParameters(name, parameters);
     assertUnary(name, argument_types);
@@ -53,9 +59,18 @@ void registerAggregateFunctionsBitwise(AggregateFunctionFactory & factory)
     factory.registerFunction("groupBitXor", createAggregateFunctionBitwise<AggregateFunctionGroupBitXorData>);
 
     /// Aliases for compatibility with MySQL.
-    factory.registerFunction("BIT_OR", createAggregateFunctionBitwise<AggregateFunctionGroupBitOrData>, AggregateFunctionFactory::CaseInsensitive);
-    factory.registerFunction("BIT_AND", createAggregateFunctionBitwise<AggregateFunctionGroupBitAndData>, AggregateFunctionFactory::CaseInsensitive);
-    factory.registerFunction("BIT_XOR", createAggregateFunctionBitwise<AggregateFunctionGroupBitXorData>, AggregateFunctionFactory::CaseInsensitive);
+    factory.registerFunction(
+        "BIT_OR",
+        createAggregateFunctionBitwise<AggregateFunctionGroupBitOrData>,
+        AggregateFunctionFactory::CaseInsensitive);
+    factory.registerFunction(
+        "BIT_AND",
+        createAggregateFunctionBitwise<AggregateFunctionGroupBitAndData>,
+        AggregateFunctionFactory::CaseInsensitive);
+    factory.registerFunction(
+        "BIT_XOR",
+        createAggregateFunctionBitwise<AggregateFunctionGroupBitXorData>,
+        AggregateFunctionFactory::CaseInsensitive);
 }
 
 } // namespace DB

@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Columns/ColumnVector.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,6 +15,8 @@
 // limitations under the License.
 
 #include <Columns/ColumnVector.h>
+#include <Columns/countBytesInFilter.h>
+#include <Columns/filterColumn.h>
 #include <Common/Arena.h>
 #include <Common/Exception.h>
 #include <Common/HashTable/Hash.h>
@@ -20,15 +24,19 @@
 #include <Common/SipHash.h>
 #include <DataStreams/ColumnGathererStream.h>
 #include <IO/WriteHelpers.h>
+#include <common/memcpy.h>
 
-#include <cmath>
 #include <cstring>
 #include <ext/bit_cast.h>
+#include <ext/scope_guard.h>
 
 #if __SSE2__
 #include <emmintrin.h>
 #endif
 
+#ifdef TIFLASH_ENABLE_AVX_SUPPORT
+ASSERT_USE_AVX2_COMPILE_FLAG
+#endif
 
 namespace DB
 {
@@ -40,18 +48,420 @@ extern const int SIZES_OF_COLUMNS_DOESNT_MATCH;
 
 
 template <typename T>
-StringRef ColumnVector<T>::serializeValueIntoArena(size_t n, Arena & arena, char const *& begin, const TiDB::TiDBCollatorPtr &, String &) const
+StringRef ColumnVector<T>::serializeValueIntoArena(
+    size_t n,
+    Arena & arena,
+    char const *& begin,
+    const TiDB::TiDBCollatorPtr &,
+    String &) const
 {
     auto * pos = arena.allocContinue(sizeof(T), begin);
-    memcpy(pos, &data[n], sizeof(T));
+    tiflash_compiler_builtin_memcpy(pos, &data[n], sizeof(T));
     return StringRef(pos, sizeof(T));
 }
 
 template <typename T>
-const char * ColumnVector<T>::deserializeAndInsertFromArena(const char * pos, const TiDB::TiDBCollatorPtr &)
+void ColumnVector<T>::countSerializeByteSize(PaddedPODArray<size_t> & byte_size) const
 {
-    data.push_back(*reinterpret_cast<const T *>(pos));
-    return pos + sizeof(T);
+    RUNTIME_CHECK_MSG(byte_size.size() == size(), "size of byte_size({}) != column size({})", byte_size.size(), size());
+
+    size_t size = byte_size.size();
+    for (size_t i = 0; i < size; ++i)
+        byte_size[i] += sizeof(T);
+}
+
+template <typename T>
+void ColumnVector<T>::countSerializeByteSizeForColumnArray(
+    PaddedPODArray<size_t> & byte_size,
+    const IColumn::Offsets & array_offsets) const
+{
+    countSerializeByteSizeForColumnArrayImpl<false>(byte_size, array_offsets, nullptr);
+}
+
+template <typename T>
+void ColumnVector<T>::countSerializeByteSizeForCmpColumnArray(
+    PaddedPODArray<size_t> & byte_size,
+    const IColumn::Offsets & array_offsets,
+    const NullMap * nullmap,
+    const TiDB::TiDBCollatorPtr &) const
+{
+    if (nullmap != nullptr)
+        countSerializeByteSizeForColumnArrayImpl<true>(byte_size, array_offsets, nullmap);
+    else
+        countSerializeByteSizeForColumnArrayImpl<false>(byte_size, array_offsets, nullptr);
+}
+
+template <typename T>
+template <bool has_nullmap>
+void ColumnVector<T>::countSerializeByteSizeForColumnArrayImpl(
+    PaddedPODArray<size_t> & byte_size,
+    const IColumn::Offsets & array_offsets,
+    const NullMap * nullmap) const
+{
+    RUNTIME_CHECK_MSG(
+        byte_size.size() == array_offsets.size(),
+        "size of byte_size({}) != size of array_offsets({})",
+        byte_size.size(),
+        array_offsets.size());
+
+    size_t size = array_offsets.size();
+    for (size_t i = 0; i < size; ++i)
+    {
+        if constexpr (has_nullmap)
+        {
+            if (DB::isNullAt(*nullmap, i))
+                continue;
+        }
+        byte_size[i] += sizeof(T) * (array_offsets[i] - array_offsets[i - 1]);
+    }
+}
+
+template <typename T>
+void ColumnVector<T>::serializeToPos(PaddedPODArray<char *> & pos, size_t start, size_t length, bool has_null) const
+{
+    if (has_null)
+        serializeToPosImpl<true, false>(pos, start, length, nullptr);
+    else
+        serializeToPosImpl<false, false>(pos, start, length, nullptr);
+}
+
+template <typename T>
+void ColumnVector<T>::serializeToPosForCmp(
+    PaddedPODArray<char *> & pos,
+    size_t start,
+    size_t length,
+    bool has_null,
+    const NullMap * nullmap,
+    const TiDB::TiDBCollatorPtr &,
+    String *) const
+{
+    if (has_null)
+    {
+        if (nullmap != nullptr)
+            serializeToPosImpl<true, true>(pos, start, length, nullmap);
+        else
+            serializeToPosImpl<true, false>(pos, start, length, nullptr);
+    }
+    else
+    {
+        if (nullmap != nullptr)
+            serializeToPosImpl<false, true>(pos, start, length, nullmap);
+        else
+            serializeToPosImpl<false, false>(pos, start, length, nullptr);
+    }
+}
+
+template <typename T>
+template <bool has_null, bool has_nullmap>
+void ColumnVector<T>::serializeToPosImpl(
+    PaddedPODArray<char *> & pos,
+    size_t start,
+    size_t length,
+    const NullMap * nullmap) const
+{
+    RUNTIME_CHECK_MSG(length <= pos.size(), "length({}) > size of pos({})", length, pos.size());
+    RUNTIME_CHECK_MSG(start + length <= size(), "start({}) + length({}) > size of column({})", start, length, size());
+
+    RUNTIME_CHECK(!has_nullmap || (nullmap && nullmap->size() == size()));
+
+    static constexpr T def_val{};
+    for (size_t i = 0; i < length; ++i)
+    {
+        if constexpr (has_null)
+        {
+            if (pos[i] == nullptr)
+                continue;
+        }
+        if constexpr (has_nullmap)
+        {
+            if (DB::isNullAt(*nullmap, start + i))
+            {
+                tiflash_compiler_builtin_memcpy(pos[i], &def_val, sizeof(T));
+                pos[i] += sizeof(T);
+                continue;
+            }
+        }
+        tiflash_compiler_builtin_memcpy(pos[i], &data[start + i], sizeof(T));
+        pos[i] += sizeof(T);
+    }
+}
+
+template <typename T>
+void ColumnVector<T>::serializeToPosForColumnArray(
+    PaddedPODArray<char *> & pos,
+    size_t start,
+    size_t length,
+    bool has_null,
+    const IColumn::Offsets & array_offsets) const
+{
+    if (has_null)
+        serializeToPosForColumnArrayImpl<true, false>(pos, start, length, array_offsets, nullptr);
+    else
+        serializeToPosForColumnArrayImpl<false, false>(pos, start, length, array_offsets, nullptr);
+}
+
+template <typename T>
+void ColumnVector<T>::serializeToPosForCmpColumnArray(
+    PaddedPODArray<char *> & pos,
+    size_t start,
+    size_t length,
+    bool has_null,
+    const NullMap * nullmap,
+    const IColumn::Offsets & array_offsets,
+    const TiDB::TiDBCollatorPtr &,
+    String *) const
+{
+    if (has_null)
+    {
+        if (nullmap != nullptr)
+            serializeToPosForColumnArrayImpl<true, true>(pos, start, length, array_offsets, nullmap);
+        else
+            serializeToPosForColumnArrayImpl<true, false>(pos, start, length, array_offsets, nullptr);
+    }
+    else
+    {
+        if (nullmap != nullptr)
+            serializeToPosForColumnArrayImpl<false, true>(pos, start, length, array_offsets, nullmap);
+        else
+            serializeToPosForColumnArrayImpl<false, false>(pos, start, length, array_offsets, nullptr);
+    }
+}
+
+template <typename T>
+template <bool has_null, bool has_nullmap>
+void ColumnVector<T>::serializeToPosForColumnArrayImpl(
+    PaddedPODArray<char *> & pos,
+    size_t start,
+    size_t length,
+    const IColumn::Offsets & array_offsets,
+    const NullMap * nullmap) const
+{
+    RUNTIME_CHECK_MSG(length <= pos.size(), "length({}) > size of pos({})", length, pos.size());
+    RUNTIME_CHECK_MSG(
+        start + length <= array_offsets.size(),
+        "start({}) + length({}) > size of array_offsets({})",
+        start,
+        length,
+        array_offsets.size());
+    RUNTIME_CHECK_MSG(
+        array_offsets.empty() || array_offsets.back() == size(),
+        "The last array offset({}) doesn't match size of column({})",
+        array_offsets.back(),
+        size());
+
+    RUNTIME_CHECK(!has_nullmap || (nullmap && nullmap->size() == array_offsets.size()));
+
+    for (size_t i = 0; i < length; ++i)
+    {
+        if constexpr (has_null)
+        {
+            if (pos[i] == nullptr)
+                continue;
+        }
+        if constexpr (has_nullmap)
+        {
+            if (DB::isNullAt(*nullmap, start + i))
+                continue;
+        }
+        size_t len = array_offsets[start + i] - array_offsets[start + i - 1];
+        size_t start_idx = array_offsets[start + i - 1];
+        if (len <= 4)
+        {
+            auto * p = pos[i];
+            for (size_t j = 0; j < len; ++j)
+            {
+                tiflash_compiler_builtin_memcpy(p, &data[start_idx + j], sizeof(T));
+                p += sizeof(T);
+            }
+            pos[i] = p;
+        }
+        else
+        {
+            inline_memcpy(pos[i], &data[start_idx], len * sizeof(T));
+            pos[i] += len * sizeof(T);
+        }
+    }
+}
+
+template <typename T>
+void ColumnVector<T>::deserializeAndInsertFromPos(
+    PaddedPODArray<char *> & pos,
+    bool use_nt_align_buffer [[maybe_unused]])
+{
+    size_t prev_size = data.size();
+    size_t size = pos.size();
+
+#ifdef TIFLASH_ENABLE_AVX_SUPPORT
+    if (use_nt_align_buffer)
+    {
+        if constexpr (FULL_VECTOR_SIZE_AVX2 % sizeof(T) == 0)
+        {
+            bool is_aligned = reinterpret_cast<std::uintptr_t>(&data[prev_size]) % FULL_VECTOR_SIZE_AVX2 == 0;
+            if likely (is_aligned)
+            {
+                if unlikely (align_buffer_ptr == nullptr)
+                    align_buffer_ptr = std::make_unique<ColumnNTAlignBufferAVX2>();
+
+                NTAlignBufferAVX2 & buffer = align_buffer_ptr->getBuffer();
+                UInt8 buffer_size = align_buffer_ptr->getSize();
+                SCOPE_EXIT({ align_buffer_ptr->setSize(buffer_size); });
+
+                constexpr size_t avx2_width = FULL_VECTOR_SIZE_AVX2 / sizeof(T);
+                size_t i = 0;
+                if (buffer_size != 0)
+                {
+                    size_t count = std::min(size, (FULL_VECTOR_SIZE_AVX2 - buffer_size) / sizeof(T));
+                    for (; i < count; ++i)
+                    {
+                        tiflash_compiler_builtin_memcpy(&buffer.data[buffer_size], pos[i], sizeof(T));
+                        buffer_size += sizeof(T);
+                        pos[i] += sizeof(T);
+                    }
+
+                    if (buffer_size < FULL_VECTOR_SIZE_AVX2)
+                        return;
+
+                    assert(buffer_size == FULL_VECTOR_SIZE_AVX2);
+                    data.resize(prev_size + avx2_width, FULL_VECTOR_SIZE_AVX2);
+
+                    nonTemporalStore64B(&data[prev_size], buffer);
+                    prev_size += FULL_VECTOR_SIZE_AVX2 / sizeof(T);
+                    buffer_size = 0;
+                }
+
+                NTAlignBufferAVX2 tmp_buffer;
+                UInt8 tmp_buffer_size = 0;
+
+                data.resize(prev_size + (size - i) / avx2_width * avx2_width, FULL_VECTOR_SIZE_AVX2);
+                for (; i + avx2_width <= size; i += avx2_width)
+                {
+                    /// Loop unrolling
+                    for (size_t j = 0; j < avx2_width; ++j)
+                    {
+                        tiflash_compiler_builtin_memcpy(
+                            &tmp_buffer.data[tmp_buffer_size + j * sizeof(T)],
+                            pos[i + j],
+                            sizeof(T));
+                        pos[i + j] += sizeof(T);
+                    }
+                    tmp_buffer_size += avx2_width * sizeof(T);
+
+                    nonTemporalStore64B(&data[prev_size], tmp_buffer);
+                    prev_size += FULL_VECTOR_SIZE_AVX2 / sizeof(T);
+                    tmp_buffer_size = 0;
+                }
+
+                for (; i < size; ++i)
+                {
+                    tiflash_compiler_builtin_memcpy(&buffer.data[buffer_size], pos[i], sizeof(T));
+                    buffer_size += sizeof(T);
+                    pos[i] += sizeof(T);
+                }
+
+                _mm_sfence();
+                return;
+            }
+        }
+    }
+
+    RUNTIME_CHECK_MSG(
+        align_buffer_ptr == nullptr,
+        "align_buffer_ptr is not nullptr but use_nt_align_buffer({}) is false or data is unaligned",
+        use_nt_align_buffer);
+#endif
+
+    data.resize(prev_size + size);
+    for (size_t i = 0; i < size; ++i)
+    {
+        tiflash_compiler_builtin_memcpy(&data[prev_size + i], pos[i], sizeof(T));
+        pos[i] += sizeof(T);
+    }
+}
+
+template <typename T>
+void ColumnVector<T>::deserializeAndInsertFromPosForColumnArray(
+    PaddedPODArray<char *> & pos,
+    const IColumn::Offsets & array_offsets,
+    bool use_nt_align_buffer [[maybe_unused]])
+{
+    // Check if pos is empty is necessary.
+    // If pos is not empty, then array_offsets is not empty either due to pos.size() <= array_offsets.size().
+    // Then reading array_offsets[-1] and array_offsets.back() is valid.
+    if unlikely (pos.empty())
+        return;
+    RUNTIME_CHECK_MSG(
+        pos.size() <= array_offsets.size(),
+        "size of pos({}) > size of array_offsets({})",
+        pos.size(),
+        array_offsets.size());
+    size_t start_point = array_offsets.size() - pos.size();
+    RUNTIME_CHECK_MSG(
+        array_offsets[start_point - 1] == size(),
+        "array_offset[start_point({}) - 1]({}) doesn't match size of column({})",
+        start_point,
+        array_offsets[start_point - 1],
+        size());
+
+    data.resize(array_offsets.back());
+
+    size_t size = pos.size();
+    for (size_t i = 0; i < size; ++i)
+    {
+        size_t len = array_offsets[start_point + i] - array_offsets[start_point + i - 1];
+        size_t start_idx = array_offsets[start_point + i - 1];
+        if (len <= 4)
+        {
+            auto * p = pos[i];
+            for (size_t j = 0; j < len; ++j)
+            {
+                tiflash_compiler_builtin_memcpy(&data[start_idx + j], p, sizeof(T));
+                p += sizeof(T);
+            }
+            pos[i] = p;
+        }
+        else
+        {
+            inline_memcpy(&data[start_idx], pos[i], len * sizeof(T));
+            pos[i] += len * sizeof(T);
+        }
+    }
+}
+
+template <typename T>
+void ColumnVector<T>::flushNTAlignBuffer()
+{
+#ifdef TIFLASH_ENABLE_AVX_SUPPORT
+    if (align_buffer_ptr)
+    {
+        NTAlignBufferAVX2 & buffer = align_buffer_ptr->getBuffer();
+        UInt8 buffer_size = align_buffer_ptr->getSize();
+        if (buffer_size > 0)
+        {
+            size_t prev_size = data.size();
+            data.resize(prev_size + buffer_size / sizeof(T));
+            inline_memcpy(&data[prev_size], buffer.data, buffer_size);
+        }
+        align_buffer_ptr.reset();
+    }
+#endif
+}
+
+template <typename T>
+void ColumnVector<T>::deserializeAndAdvancePosForColumnArray(
+    PaddedPODArray<char *> & pos,
+    const IColumn::Offsets & array_offsets) const
+{
+    RUNTIME_CHECK_MSG(
+        pos.size() == array_offsets.size(),
+        "size of pos({}) != size of array_offsets({})",
+        pos.size(),
+        array_offsets.size());
+    size_t size = pos.size();
+    for (size_t i = 0; i < size; ++i)
+    {
+        size_t len = array_offsets[i] - array_offsets[i - 1];
+        pos[i] += len * sizeof(T);
+    }
 }
 
 template <typename T>
@@ -61,7 +471,8 @@ void ColumnVector<T>::updateHashWithValue(size_t n, SipHash & hash, const TiDB::
 }
 
 template <typename T>
-void ColumnVector<T>::updateHashWithValues(IColumn::HashValues & hash_values, const TiDB::TiDBCollatorPtr &, String &) const
+void ColumnVector<T>::updateHashWithValues(IColumn::HashValues & hash_values, const TiDB::TiDBCollatorPtr &, String &)
+    const
 {
     for (size_t i = 0, sz = size(); i < sz; ++i)
     {
@@ -72,25 +483,53 @@ void ColumnVector<T>::updateHashWithValues(IColumn::HashValues & hash_values, co
 template <typename T>
 void ColumnVector<T>::updateWeakHash32(WeakHash32 & hash, const TiDB::TiDBCollatorPtr &, String &) const
 {
-    auto s = data.size();
+    updateWeakHash32Impl<false>(hash, {});
+}
 
-    if (hash.getData().size() != s)
-        throw Exception(
-            fmt::format("Size of WeakHash32 does not match size of column: column size is {}, hash size is {}", s, hash.getData().size()),
-            ErrorCodes::LOGICAL_ERROR);
+template <typename T>
+void ColumnVector<T>::updateWeakHash32(
+    WeakHash32 & hash,
+    const TiDB::TiDBCollatorPtr &,
+    String &,
+    const BlockSelective & selective) const
+{
+    updateWeakHash32Impl<true>(hash, selective);
+}
+
+template <typename T>
+template <bool selective_block>
+void ColumnVector<T>::updateWeakHash32Impl(WeakHash32 & hash, const BlockSelective & selective) const
+{
+    size_t rows;
+    if constexpr (selective_block)
+    {
+        rows = selective.size();
+    }
+    else
+    {
+        rows = data.size();
+    }
+
+    RUNTIME_CHECK_MSG(
+        hash.getData().size() == rows,
+        "size of WeakHash32({}) doesn't match size of column({})",
+        hash.getData().size(),
+        rows);
 
     const T * begin = data.data();
-    const T * end = begin + s;
     UInt32 * hash_data = hash.getData().data();
 
-    while (begin < end)
+    for (size_t i = 0; i < rows; ++i)
     {
-        if constexpr (is_fit_register<T>)
-            *hash_data = intHashCRC32(*begin, *hash_data);
-        else
-            *hash_data = wideIntHashCRC32(*begin, *hash_data);
+        size_t row = i;
+        if constexpr (selective_block)
+            row = selective[i];
 
-        ++begin;
+        if constexpr (is_fit_register<T>)
+            *hash_data = intHashCRC32(*(begin + row), *hash_data);
+        else
+            *hash_data = wideIntHashCRC32(*(begin + row), *hash_data);
+
         ++hash_data;
     }
 }
@@ -104,7 +543,10 @@ struct ColumnVector<T>::less
         : parent(parent_)
         , nan_direction_hint(nan_direction_hint_)
     {}
-    bool operator()(size_t lhs, size_t rhs) const { return CompareHelper<T>::less(parent.data[lhs], parent.data[rhs], nan_direction_hint); }
+    bool operator()(size_t lhs, size_t rhs) const
+    {
+        return CompareHelper<T>::less(parent.data[lhs], parent.data[rhs], nan_direction_hint);
+    }
 };
 
 template <typename T>
@@ -116,11 +558,15 @@ struct ColumnVector<T>::greater
         : parent(parent_)
         , nan_direction_hint(nan_direction_hint_)
     {}
-    bool operator()(size_t lhs, size_t rhs) const { return CompareHelper<T>::greater(parent.data[lhs], parent.data[rhs], nan_direction_hint); }
+    bool operator()(size_t lhs, size_t rhs) const
+    {
+        return CompareHelper<T>::greater(parent.data[lhs], parent.data[rhs], nan_direction_hint);
+    }
 };
 
 template <typename T>
-void ColumnVector<T>::getPermutation(bool reverse, size_t limit, int nan_direction_hint, IColumn::Permutation & res) const
+void ColumnVector<T>::getPermutation(bool reverse, size_t limit, int nan_direction_hint, IColumn::Permutation & res)
+    const
 {
     size_t s = data.size();
     res.resize(s);
@@ -198,7 +644,8 @@ void ColumnVector<T>::insertRangeFrom(const IColumn & src, size_t start, size_t 
     if (start + length > src_vec.data.size())
         throw Exception(
             fmt::format(
-                "Parameters are out of bound in ColumnVector<T>::insertRangeFrom method, start={}, length={}, src.size()={}",
+                "Parameters are out of bound in ColumnVector<T>::insertRangeFrom method, start={}, length={}, "
+                "src.size()={}",
                 start,
                 length,
                 src_vec.data.size()),
@@ -220,55 +667,17 @@ ColumnPtr ColumnVector<T>::filter(const IColumn::Filter & filt, ssize_t result_s
     Container & res_data = res->getData();
 
     if (result_size_hint)
-        res_data.reserve(result_size_hint > 0 ? result_size_hint : size);
+    {
+        if (result_size_hint < 0)
+            result_size_hint = countBytesInFilter(filt);
+        res_data.reserve(result_size_hint);
+    }
 
     const UInt8 * filt_pos = &filt[0];
     const UInt8 * filt_end = filt_pos + size;
     const T * data_pos = &data[0];
 
-#if __SSE2__
-    /** A slightly more optimized version.
-        * Based on the assumption that often pieces of consecutive values
-        *  completely pass or do not pass the filter.
-        * Therefore, we will optimistically check the parts of `SIMD_BYTES` values.
-        */
-
-    static constexpr size_t SIMD_BYTES = 16;
-    const __m128i zero16 = _mm_setzero_si128();
-    const UInt8 * filt_end_sse = filt_pos + size / SIMD_BYTES * SIMD_BYTES;
-
-    while (filt_pos < filt_end_sse)
-    {
-        int mask = _mm_movemask_epi8(_mm_cmpgt_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i *>(filt_pos)), zero16));
-
-        if (0 == mask)
-        {
-            /// Nothing is inserted.
-        }
-        else if (0xFFFF == mask)
-        {
-            res_data.insert(data_pos, data_pos + SIMD_BYTES);
-        }
-        else
-        {
-            for (size_t i = 0; i < SIMD_BYTES; ++i)
-                if (filt_pos[i])
-                    res_data.push_back(data_pos[i]);
-        }
-
-        filt_pos += SIMD_BYTES;
-        data_pos += SIMD_BYTES;
-    }
-#endif
-
-    while (filt_pos < filt_end)
-    {
-        if (*filt_pos)
-            res_data.push_back(*data_pos);
-
-        ++filt_pos;
-        ++data_pos;
-    }
+    filterImpl(filt_pos, filt_end, data_pos, res_data);
 
     return res;
 }
@@ -295,27 +704,34 @@ ColumnPtr ColumnVector<T>::permute(const IColumn::Permutation & perm, size_t lim
 }
 
 template <typename T>
-ColumnPtr ColumnVector<T>::replicate(const IColumn::Offsets & offsets) const
+ColumnPtr ColumnVector<T>::replicateRange(size_t start_row, size_t end_row, const IColumn::Offsets & offsets) const
 {
     size_t size = data.size();
     if (size != offsets.size())
         throw Exception("Size of offsets doesn't match size of column.", ErrorCodes::SIZES_OF_COLUMNS_DOESNT_MATCH);
+
+    assert(start_row < end_row);
+    assert(end_row <= size);
 
     if (0 == size)
         return this->create();
 
     auto res = this->create();
     typename Self::Container & res_data = res->getData();
-    res_data.reserve(offsets.back());
+
+    res_data.reserve(offsets[end_row - 1]);
 
     IColumn::Offset prev_offset = 0;
-    for (size_t i = 0; i < size; ++i)
+
+    for (size_t i = start_row; i < end_row; ++i)
     {
         size_t size_to_replicate = offsets[i] - prev_offset;
         prev_offset = offsets[i];
 
         for (size_t j = 0; j < size_to_replicate; ++j)
+        {
             res_data.push_back(data[i]);
+        }
     }
 
     return res;

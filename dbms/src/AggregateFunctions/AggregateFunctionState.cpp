@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/AggregateFunctions/AggregateFunctionState.cpp
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -29,12 +31,9 @@ extern const int BAD_ARGUMENTS;
 class AggregateFunctionCombinatorState final : public IAggregateFunctionCombinator
 {
 public:
-    String getName() const override { return "State"; };
+    String getName() const override { return "State"; }
 
-    DataTypes transformArguments(const DataTypes & arguments) const override
-    {
-        return arguments;
-    }
+    DataTypes transformArguments(const DataTypes & arguments) const override { return arguments; }
 
     AggregateFunctionPtr transformAggregateFunction(
         const AggregateFunctionPtr & nested_function,
@@ -63,7 +62,9 @@ DataTypePtr AggregateFunctionState::getReturnType() const
             throw Exception("Combinator -MergeState expects only one argument", ErrorCodes::BAD_ARGUMENTS);
 
         if (!typeid_cast<const DataTypeAggregateFunction *>(arguments[0].get()))
-            throw Exception("Combinator -MergeState expects argument with AggregateFunction type", ErrorCodes::BAD_ARGUMENTS);
+            throw Exception(
+                "Combinator -MergeState expects argument with AggregateFunction type",
+                ErrorCodes::BAD_ARGUMENTS);
 
         return arguments[0];
     }

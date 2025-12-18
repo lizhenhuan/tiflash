@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/DataStreams/PartialSortingBlockInputStream.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -30,12 +32,12 @@ public:
     /// limit - if not 0, then you can sort each block not completely, but only `limit` first rows by order.
     PartialSortingBlockInputStream(
         const BlockInputStreamPtr & input_,
-        SortDescription & description_,
+        const SortDescription & description_,
         const String & req_id,
         size_t limit_ = 0)
         : description(description_)
         , limit(limit_)
-        , log(Logger::get(NAME, req_id))
+        , log(Logger::get(req_id))
     {
         children.push_back(input_);
     }

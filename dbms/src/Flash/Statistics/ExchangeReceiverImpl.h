@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,9 +20,10 @@
 
 namespace DB
 {
-struct ExchangeReceiveDetail : public ConnectionProfileInfo
+struct ExchangeReceiveDetail
 {
     Int64 receiver_source_task_id;
+    ConnectionProfileInfo conn_profile_info;
 
     explicit ExchangeReceiveDetail(Int64 receiver_source_task_id_)
         : receiver_source_task_id(receiver_source_task_id_)
@@ -37,10 +38,9 @@ struct ExchangeReceiverImpl
 
     static constexpr auto type = "ExchangeReceiver";
 
-    static bool isMatch(const tipb::Executor * executor)
-    {
-        return executor->has_exchange_receiver();
-    }
+    static bool isMatch(const tipb::Executor * executor) { return executor->has_exchange_receiver(); }
+
+    static bool isSourceExecutor() { return true; }
 };
 
 using ExchangeReceiverStatisticsBase = ExecutorStatistics<ExchangeReceiverImpl>;
@@ -59,5 +59,8 @@ private:
 protected:
     void appendExtraJson(FmtBuffer &) const override;
     void collectExtraRuntimeDetail() override;
+
+private:
+    void updateExchangeReceiveDetail(const std::vector<ConnectionProfileInfo> & connection_profile_infos);
 };
 } // namespace DB

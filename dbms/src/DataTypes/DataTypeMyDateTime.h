@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -24,7 +24,7 @@ class DataTypeMyDateTime final : public DataTypeMyTimeBase
     int fraction;
 
 public:
-    DataTypeMyDateTime(int fraction_ = 0);
+    explicit DataTypeMyDateTime(int fraction_ = 0);
 
     const char * getFamilyName() const override { return "MyDateTime"; }
 
@@ -37,10 +37,9 @@ public:
     void deserializeTextEscaped(IColumn & column, ReadBuffer & istr) const override;
     void serializeTextQuoted(const IColumn & column, size_t row_num, WriteBuffer & ostr) const override;
     void deserializeTextQuoted(IColumn & column, ReadBuffer & istr) const override;
-    void serializeTextJSON(const IColumn & column, size_t row_num, WriteBuffer & ostr, const FormatSettingsJSON &) const override;
+    void serializeTextJSON(const IColumn & column, size_t row_num, WriteBuffer & ostr, const FormatSettingsJSON &)
+        const override;
     void deserializeTextJSON(IColumn & column, ReadBuffer & istr) const override;
-    void serializeTextCSV(const IColumn & column, size_t row_num, WriteBuffer & ostr) const override;
-    void deserializeTextCSV(IColumn & column, ReadBuffer & istr, const char delimiter) const override;
 
     bool equals(const IDataType & rhs) const override;
 

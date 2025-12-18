@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Common/AutoArray.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -54,15 +56,9 @@ class AutoArray
 {
 public:
     /// For deferred creation.
-    AutoArray()
-    {
-        setEmpty();
-    }
+    AutoArray() { setEmpty(); }
 
-    explicit AutoArray(size_t size_)
-    {
-        init(size_, false);
-    }
+    explicit AutoArray(size_t size_) { init(size_, false); }
 
     /** Initializes all elements with a copy constructor with the `value` parameter.
       */
@@ -106,20 +102,11 @@ public:
         return *this;
     }
 
-    ~AutoArray()
-    {
-        uninit();
-    }
+    ~AutoArray() { uninit(); }
 
-    size_t size() const
-    {
-        return mSize();
-    }
+    size_t size() const { return mSize(); }
 
-    bool empty() const
-    {
-        return size() == 0;
-    }
+    bool empty() const { return size() == 0; }
 
     void clear()
     {
@@ -140,35 +127,23 @@ public:
             new (place(i)) T(*it);
     }
 
-    void assign(const AutoArray & from)
-    {
-        assign(from.begin(), from.end());
-    }
+    void assign(const AutoArray & from) { assign(from.begin(), from.end()); }
 
     /** You can read and modify elements using the [] operator
       *  only if items were initialized
       *  (that is, into the constructor was not passed DontInitElemsTag,
       *   or you initialized them using `place` and `placement new`).
       */
-    T & operator[](size_t i)
-    {
-        return elem(i);
-    }
+    T & operator[](size_t i) { return elem(i); }
 
-    const T & operator[](size_t i) const
-    {
-        return elem(i);
-    }
+    const T & operator[](size_t i) const { return elem(i); }
 
     /** Get the piece of memory in which the element should be located.
       * The function is intended to initialize an element,
       *  which has not yet been initialized
       * new (arr.place(i)) T(args);
       */
-    char * place(size_t i)
-    {
-        return data + sizeof(T) * i;
-    }
+    char * place(size_t i) { return data + sizeof(T) * i; }
 
     using iterator = T *;
     using const_iterator = const T *;
@@ -193,10 +168,7 @@ public:
         return true;
     }
 
-    bool operator!=(const AutoArray<T> & rhs) const
-    {
-        return !(*this == rhs);
-    }
+    bool operator!=(const AutoArray<T> & rhs) const { return !(*this == rhs); }
 
     bool operator<(const AutoArray<T> & rhs) const
     {
@@ -222,25 +194,13 @@ public:
 private:
     char * data;
 
-    size_t & mSize()
-    {
-        return reinterpret_cast<size_t *>(data)[-1];
-    }
+    size_t & mSize() { return reinterpret_cast<size_t *>(data)[-1]; }
 
-    size_t mSize() const
-    {
-        return reinterpret_cast<const size_t *>(data)[-1];
-    }
+    size_t mSize() const { return reinterpret_cast<const size_t *>(data)[-1]; }
 
-    T & elem(size_t i)
-    {
-        return reinterpret_cast<T *>(data)[i];
-    }
+    T & elem(size_t i) { return reinterpret_cast<T *>(data)[i]; }
 
-    const T & elem(size_t i) const
-    {
-        return reinterpret_cast<const T *>(data)[i];
-    }
+    const T & elem(size_t i) const { return reinterpret_cast<const T *>(data)[i]; }
 
     void setEmpty()
     {

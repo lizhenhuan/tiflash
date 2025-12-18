@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,22 +13,37 @@
 // limitations under the License.
 
 #include <Common/CurrentMetrics.h>
+#include <Common/SyncPoint/SyncPoint.h>
+#include <DataStreams/ConcatBlockInputStream.h>
 #include <DataStreams/OneBlockInputStream.h>
+#include <Interpreters/Context.h>
+#include <Storages/DeltaMerge/ColumnDefine_fwd.h>
 #include <Storages/DeltaMerge/DMContext.h>
 #include <Storages/DeltaMerge/DeltaMergeStore.h>
 #include <Storages/DeltaMerge/File/DMFileBlockOutputStream.h>
+#include <Storages/DeltaMerge/File/DMFilePackFilter.h>
+#include <Storages/DeltaMerge/Range.h>
+#include <Storages/DeltaMerge/ReadMode.h>
+#include <Storages/DeltaMerge/RowKeyRange.h>
 #include <Storages/DeltaMerge/Segment.h>
-#include <Storages/DeltaMerge/StoragePool.h>
+#include <Storages/DeltaMerge/Segment_fwd.h>
+#include <Storages/DeltaMerge/StoragePool/GlobalPageIdAllocator.h>
+#include <Storages/DeltaMerge/StoragePool/StoragePool.h>
+#include <Storages/DeltaMerge/WriteBatchesImpl.h>
 #include <Storages/DeltaMerge/tests/DMTestEnv.h>
-#include <Storages/Transaction/TMTContext.h>
-#include <Storages/tests/TiFlashStorageTestBasic.h>
+#include <Storages/DeltaMerge/tests/gtest_dm_simple_pk_test_basic.h>
+#include <Storages/KVStore/TMTContext.h>
+#include <Storages/PathPool.h>
 #include <TestUtils/FunctionTestUtils.h>
 #include <TestUtils/InputStreamTestUtils.h>
+#include <TestUtils/TiFlashStorageTestBasic.h>
 #include <TestUtils/TiFlashTestBasic.h>
 #include <common/logger_useful.h>
 
 #include <ctime>
+#include <future>
 #include <memory>
+
 
 namespace CurrentMetrics
 {
@@ -40,17 +55,17 @@ extern const Metric DT_SnapshotOfDeltaMerge;
 extern const Metric DT_SnapshotOfPlaceIndex;
 } // namespace CurrentMetrics
 
-namespace DB
+namespace DB::DM
 {
-namespace DM
-{
-extern DMFilePtr writeIntoNewDMFile(DMContext & dm_context, //
-                                    const ColumnDefinesPtr & schema_snap,
-                                    const BlockInputStreamPtr & input_stream,
-                                    UInt64 file_id,
-                                    const String & parent_path,
-                                    DMFileBlockOutputStream::Flags flags);
-namespace tests
+extern DMFilePtr writeIntoNewDMFile(
+    DMContext & dm_context, //
+    const ColumnDefinesPtr & schema_snap,
+    const BlockInputStreamPtr & input_stream,
+    UInt64 file_id,
+    const String & parent_path);
+}
+
+namespace DB::DM::tests
 {
 class SegmentTest : public DB::base::TiFlashStorageTestBasic
 {
@@ -65,21 +80,36 @@ public:
         TiFlashStorageTestBasic::SetUp();
         table_columns = std::make_shared<ColumnDefines>();
 
-        segment = reload();
+        segment = buildFirstSegment();
         ASSERT_EQ(segment->segmentId(), DELTA_MERGE_FIRST_SEGMENT_ID);
     }
 
 protected:
-    SegmentPtr reload(const ColumnDefinesPtr & pre_define_columns = {}, DB::Settings && db_settings = DB::Settings())
+    SegmentPtr buildFirstSegment(
+        const ColumnDefinesPtr & pre_define_columns = {},
+        DB::Settings && db_settings = DB::Settings())
     {
         TiFlashStorageTestBasic::reload(std::move(db_settings));
-        storage_path_pool = std::make_unique<StoragePathPool>(db_context->getPathPool().withTable("test", "t1", false));
-        storage_pool = std::make_unique<StoragePool>(*db_context, /*ns_id*/ 100, *storage_path_pool, "test.t1");
+        storage_path_pool = std::make_shared<StoragePathPool>(db_context->getPathPool().withTable("test", "t1", false));
+        page_id_allocator = std::make_shared<GlobalPageIdAllocator>();
+        storage_pool = std::make_shared<StoragePool>(
+            *db_context,
+            NullspaceID,
+            /*ns_id*/ 100,
+            *storage_path_pool,
+            page_id_allocator,
+            "test.t1");
         storage_pool->restore();
         ColumnDefinesPtr cols = (!pre_define_columns) ? DMTestEnv::getDefaultColumns() : pre_define_columns;
         setColumns(cols);
 
-        return Segment::newSegment(*dm_context, table_columns, RowKeyRange::newAll(false, 1), storage_pool->newMetaPageId(), 0);
+        return Segment::newSegment(
+            Logger::get(),
+            *dm_context,
+            table_columns,
+            RowKeyRange::newAll(false, 1),
+            DELTA_MERGE_FIRST_SEGMENT_ID,
+            0);
     }
 
     // setColumns should update dm_context at the same time
@@ -87,24 +117,40 @@ protected:
     {
         *table_columns = *columns;
 
-        dm_context = std::make_unique<DMContext>(*db_context,
-                                                 *storage_path_pool,
-                                                 *storage_pool,
-                                                 /*min_version_*/ 0,
-                                                 settings.not_compress_columns,
-                                                 false,
-                                                 1,
-                                                 db_context->getSettingsRef());
+        dm_context = DMContext::createUnique(
+            *db_context,
+            storage_path_pool,
+            storage_pool,
+            /*min_version_*/ 0,
+            NullspaceID,
+            /*physical_table_id*/ 100,
+            /*pk_col_id*/ 0,
+            false,
+            1,
+            db_context->getSettingsRef());
     }
 
     const ColumnDefinesPtr & tableColumns() const { return table_columns; }
 
     DMContext & dmContext() { return *dm_context; }
 
+    auto loadPackFilterResults(const SegmentSnapshotPtr & snap, const RowKeyRanges & ranges)
+    {
+        DMFilePackFilterResults results;
+        results.reserve(snap->stable->getDMFiles().size());
+        for (const auto & file : snap->stable->getDMFiles())
+        {
+            auto pack_filter = DMFilePackFilter::loadFrom(*dm_context, file, true, ranges, EMPTY_RS_OPERATOR, {});
+            results.push_back(pack_filter);
+        }
+        return results;
+    }
+
 protected:
     /// all these var lives as ref in dm_context
-    std::unique_ptr<StoragePathPool> storage_path_pool;
-    std::unique_ptr<StoragePool> storage_pool;
+    GlobalPageIdAllocatorPtr page_id_allocator;
+    std::shared_ptr<StoragePathPool> storage_path_pool;
+    std::shared_ptr<StoragePool> storage_pool;
     ColumnDefinesPtr table_columns;
     DM::DeltaMergeStore::Settings settings;
     /// dm_context
@@ -138,7 +184,7 @@ try
     { // Round 1
         {
             // read written data (only in delta)
-            auto in = segment->getInputStream(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)});
+            auto in = segment->getInputStreamModeNormal(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)});
             ASSERT_INPUTSTREAM_NROWS(in, num_rows_write);
         }
 
@@ -149,7 +195,7 @@ try
 
         {
             // read written data (only in stable)
-            auto in = segment->getInputStream(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)});
+            auto in = segment->getInputStreamModeNormal(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)});
             ASSERT_INPUTSTREAM_NROWS(in, num_rows_write);
         }
     }
@@ -165,7 +211,7 @@ try
     { // Round 2
         {
             // read written data (both in delta and stable)
-            auto in = segment->getInputStream(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)});
+            auto in = segment->getInputStreamModeNormal(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)});
             ASSERT_INPUTSTREAM_NROWS(in, num_rows_write + num_rows_write_2);
         }
 
@@ -176,10 +222,76 @@ try
 
         {
             // read written data (only in stable)
-            auto in = segment->getInputStream(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)});
+            auto in = segment->getInputStreamModeNormal(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)});
             ASSERT_INPUTSTREAM_NROWS(in, num_rows_write + num_rows_write_2);
         }
     }
+}
+CATCH
+
+
+TEST_F(SegmentTest, ClipBlockRows)
+try
+{
+    constexpr auto num_rows_write = 100;
+    auto block = DMTestEnv::prepareSimpleWriteBlock(0, num_rows_write, false);
+    segment->write(dmContext(), block);
+    auto row_bytes = segment->stable->avgRowBytes(*tableColumns());
+    ASSERT_EQ(row_bytes, 0);
+
+    constexpr size_t pack_rows = 512;
+
+    auto clipped_block_rows = Segment::clipBlockRows(
+        /*max_block_bytes*/ 1024,
+        pack_rows,
+        /*max_block_rows*/ 1023,
+        *tableColumns(),
+        segment->stable);
+    ASSERT_EQ(clipped_block_rows, 1023);
+
+    clipped_block_rows = Segment::clipBlockRows(
+        /*max_block_bytes*/ 1024,
+        pack_rows,
+        /*max_block_rows*/ 102400,
+        *tableColumns(),
+        segment->stable);
+    ASSERT_EQ(clipped_block_rows, 1024);
+
+    segment = segment->mergeDelta(dmContext(), tableColumns());
+    row_bytes = segment->stable->avgRowBytes(*tableColumns());
+    ASSERT_EQ(row_bytes, 17);
+
+    clipped_block_rows = Segment::clipBlockRows(
+        /*max_block_bytes*/ 1023,
+        pack_rows,
+        /*max_block_rows*/ 1024,
+        *tableColumns(),
+        segment->stable);
+    ASSERT_EQ(clipped_block_rows, pack_rows);
+
+    clipped_block_rows = Segment::clipBlockRows(
+        /*max_block_bytes*/ 102400,
+        pack_rows,
+        /*max_block_rows*/ 1024,
+        *tableColumns(),
+        segment->stable);
+    ASSERT_EQ(clipped_block_rows, 1024);
+
+    clipped_block_rows = Segment::clipBlockRows(
+        /*max_block_bytes*/ 4096,
+        pack_rows,
+        /*max_block_rows*/ 3000,
+        *tableColumns(),
+        segment->stable);
+    ASSERT_EQ(clipped_block_rows, pack_rows);
+
+    clipped_block_rows
+        = Segment::clipBlockRows(/*max_block_bytes*/ 1023, pack_rows, /*max_block_rows*/ 1024, {}, segment->stable);
+    ASSERT_EQ(clipped_block_rows, pack_rows);
+
+    clipped_block_rows
+        = Segment::clipBlockRows(/*max_block_bytes*/ 102400, pack_rows, /*max_block_rows*/ 1024, {}, segment->stable);
+    ASSERT_EQ(clipped_block_rows, 1024);
 }
 CATCH
 
@@ -206,7 +318,7 @@ try
     }
 
     {
-        auto in = segment->getInputStream(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)});
+        auto in = segment->getInputStreamModeNormal(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)});
         // only write two visible pks
         ASSERT_INPUTSTREAM_NROWS(in, 2);
     }
@@ -242,7 +354,7 @@ try
     { // Round 1
         {
             // read written data (only in delta)
-            auto in = segment->getInputStream(dmContext(), *tableColumns(), read_ranges);
+            auto in = segment->getInputStreamModeNormal(dmContext(), *tableColumns(), read_ranges);
             ASSERT_INPUTSTREAM_NROWS(in, expect_read_rows);
         }
 
@@ -255,7 +367,7 @@ try
 
         {
             // read written data (only in stable)
-            auto in = segment->getInputStream(dmContext(), *tableColumns(), read_ranges);
+            auto in = segment->getInputStreamModeNormal(dmContext(), *tableColumns(), read_ranges);
             ASSERT_INPUTSTREAM_NROWS(in, expect_read_rows);
         }
     }
@@ -273,7 +385,7 @@ try
     { // Round 2
         {
             // read written data (both in delta and stable)
-            auto in = segment->getInputStream(dmContext(), *tableColumns(), read_ranges);
+            auto in = segment->getInputStreamModeNormal(dmContext(), *tableColumns(), read_ranges);
             ASSERT_INPUTSTREAM_NROWS(in, expect_read_rows_2);
         }
 
@@ -285,7 +397,7 @@ try
 
         {
             // read written data (only in stable)
-            auto in = segment->getInputStream(dmContext(), *tableColumns(), read_ranges);
+            auto in = segment->getInputStreamModeNormal(dmContext(), *tableColumns(), read_ranges);
             ASSERT_INPUTSTREAM_NROWS(in, expect_read_rows_2);
         }
     }
@@ -317,19 +429,19 @@ try
     // Thread A
     write_rows(100);
     ASSERT_INPUTSTREAM_NROWS(
-        segment->getInputStream(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)}),
+        segment->getInputStreamModeNormal(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)}),
         100);
     auto snap = segment->createSnapshot(dmContext(), false, CurrentMetrics::DT_SnapshotOfRead);
 
     // Thread B
     write_rows(100);
     ASSERT_INPUTSTREAM_NROWS(
-        segment->getInputStream(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)}),
+        segment->getInputStreamModeNormal(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)}),
         200);
 
     // Thread A
     {
-        auto in = segment->getInputStream(
+        auto in = segment->getInputStreamModeNormal(
             dmContext(),
             *tableColumns(),
             snap,
@@ -338,6 +450,211 @@ try
             std::numeric_limits<UInt64>::max(),
             DEFAULT_BLOCK_SIZE);
         ASSERT_INPUTSTREAM_NROWS(in, 100);
+    }
+}
+CATCH
+
+TEST_F(SegmentTest, ReadWithMoreAdvacedDeltaIndex2)
+try
+{
+    auto write_rows = [&](size_t offset, size_t rows) {
+        Block block = DMTestEnv::prepareSimpleWriteBlock(offset, offset + rows, false);
+        // write to segment
+        segment->write(dmContext(), block);
+    };
+
+    // Thread A
+    write_rows(0, 100);
+    ASSERT_INPUTSTREAM_NROWS(
+        segment->getInputStreamModeNormal(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)}),
+        100);
+    auto snap = segment->createSnapshot(dmContext(), false, CurrentMetrics::DT_SnapshotOfRead);
+
+    {
+        // check segment
+        segment->check(dmContext(), "test");
+    }
+
+    // Thread B
+    write_rows(0, 100);
+    ASSERT_INPUTSTREAM_NROWS(
+        segment->getInputStreamModeNormal(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)}),
+        100);
+
+    // Thread A
+    {
+        auto in = segment->getInputStreamModeNormal(
+            dmContext(),
+            *tableColumns(),
+            snap,
+            {RowKeyRange::newAll(false, 1)},
+            {},
+            std::numeric_limits<UInt64>::max(),
+            DEFAULT_BLOCK_SIZE);
+        ASSERT_INPUTSTREAM_NROWS(in, 100);
+    }
+}
+CATCH
+
+TEST_F(SegmentTest, ReadWithMoreAdvacedDeltaIndexWithDeleteRange01)
+try
+{
+    auto write_rows = [&](size_t offset, size_t rows) {
+        Block block = DMTestEnv::prepareSimpleWriteBlock(offset, offset + rows, false);
+        // write to segment
+        segment->write(dmContext(), block);
+    };
+
+    // Thread A write [0, 100) && [100, 200)
+    write_rows(0, 100);
+    write_rows(100, 100);
+    ASSERT_INPUTSTREAM_NROWS(
+        segment->getInputStreamModeNormal(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)}),
+        200);
+    // check segment
+    segment->check(dmContext(), "test");
+    auto snap_a = segment->createSnapshot(dmContext(), false, CurrentMetrics::DT_SnapshotOfRead);
+
+    // Thread B delete range [0, 50)
+    RowKeyRange range = RowKeyRange::fromHandleRange(HandleRange(0, 50));
+    segment->write(dmContext(), range);
+    LOG_INFO(Logger::get(), "Thread B read");
+    ASSERT_INPUTSTREAM_NROWS(
+        segment->getInputStreamModeNormal(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)}),
+        150);
+
+    {
+        // tryClone will return an empty delta-index because `shared_delta_index.placed_deletes != delta->getDeletes()`
+        auto my_delta_index
+            = snap_a->delta->getSharedDeltaIndex()->tryClone(snap_a->delta->getRows(), snap_a->delta->getDeletes());
+        auto [my_placed_rows, my_placed_deletes] = my_delta_index->getPlacedStatus();
+        ASSERT_EQ(my_placed_rows, 0);
+        ASSERT_EQ(my_placed_deletes, 0);
+    }
+
+    // Thread A read [0, 200)
+    {
+        LOG_INFO(Logger::get(), "Thread A read with snap_a");
+        auto in = segment->getInputStreamModeNormal(
+            dmContext(),
+            *tableColumns(),
+            snap_a,
+            {RowKeyRange::newAll(false, 1)},
+            {},
+            std::numeric_limits<UInt64>::max(),
+            DEFAULT_BLOCK_SIZE);
+        ASSERT_INPUTSTREAM_NROWS(in, 200);
+    }
+}
+CATCH
+
+
+TEST_F(SegmentTest, ReadWithMoreAdvacedDeltaIndexWithDeleteRange02)
+try
+{
+    auto write_rows = [&](size_t offset, size_t rows) {
+        Block block = DMTestEnv::prepareSimpleWriteBlock(offset, offset + rows, false);
+        // write to segment
+        segment->write(dmContext(), block);
+    };
+
+    // Thread A write [0, 100)
+    write_rows(0, 100);
+    ASSERT_INPUTSTREAM_NROWS(
+        segment->getInputStreamModeNormal(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)}),
+        100);
+    // check segment
+    segment->check(dmContext(), "test");
+    auto snap_a = segment->createSnapshot(dmContext(), false, CurrentMetrics::DT_SnapshotOfRead);
+
+    // Thread B write [100, 200) && delete range [0, 50)
+    write_rows(100, 100);
+    RowKeyRange range = RowKeyRange::fromHandleRange(HandleRange(0, 50));
+    segment->write(dmContext(), range);
+    LOG_INFO(Logger::get(), "Thread B read");
+    ASSERT_INPUTSTREAM_NROWS(
+        segment->getInputStreamModeNormal(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)}),
+        150);
+
+    // Thread A
+    {
+        LOG_INFO(Logger::get(), "Thread A read with snap_a");
+        auto in = segment->getInputStreamModeNormal(
+            dmContext(),
+            *tableColumns(),
+            snap_a,
+            {RowKeyRange::newAll(false, 1)},
+            {},
+            std::numeric_limits<UInt64>::max(),
+            DEFAULT_BLOCK_SIZE);
+        ASSERT_INPUTSTREAM_NROWS(in, 100);
+    }
+}
+CATCH
+
+TEST_F(SegmentTest, ReadWithMoreAdvacedDeltaIndexComplicated)
+try
+{
+    // Test the case that reading rows with an advance DeltaIndex
+    size_t offset = 0;
+    auto write_rows = [&](size_t rows, bool flush) {
+        Block block = DMTestEnv::prepareSimpleWriteBlock(offset, offset + rows, false);
+        offset += rows;
+        // write to segment
+        segment->write(dmContext(), block, flush);
+    };
+
+    // Thread C
+    write_rows(100, false);
+    write_rows(100, false);
+    ASSERT_INPUTSTREAM_NROWS(
+        segment->getInputStreamModeNormal(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)}),
+        200);
+    auto snap_c = segment->createSnapshot(dmContext(), false, CurrentMetrics::DT_SnapshotOfRead);
+    segment->check(dmContext(), "test");
+
+    // Thread A write 100 rows to persisted_files and 100 rows to mem_tables
+    write_rows(100, true);
+    write_rows(100, false);
+    ASSERT_INPUTSTREAM_NROWS(
+        segment->getInputStreamModeNormal(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)}),
+        400);
+    auto snap_a = segment->createSnapshot(dmContext(), false, CurrentMetrics::DT_SnapshotOfRead);
+    segment->check(dmContext(), "test");
+
+    // Thread B write 100 rows to mem_tables
+    write_rows(100, false);
+    LOG_INFO(Logger::get(), "Thread B read");
+    ASSERT_INPUTSTREAM_NROWS(
+        segment->getInputStreamModeNormal(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)}),
+        500);
+    segment->check(dmContext(), "test");
+
+    // Thread A
+    {
+        LOG_INFO(Logger::get(), "Thread A read with snap_a");
+        auto in = segment->getInputStreamModeNormal(
+            dmContext(),
+            *tableColumns(),
+            snap_a,
+            {RowKeyRange::newAll(false, 1)},
+            {},
+            std::numeric_limits<UInt64>::max(),
+            DEFAULT_BLOCK_SIZE);
+        ASSERT_INPUTSTREAM_NROWS(in, 400);
+    }
+    // Thread C
+    {
+        LOG_INFO(Logger::get(), "Thread C read with snap_c");
+        auto in = segment->getInputStreamModeNormal(
+            dmContext(),
+            *tableColumns(),
+            snap_c,
+            {RowKeyRange::newAll(false, 1)},
+            {},
+            std::numeric_limits<UInt64>::max(),
+            DEFAULT_BLOCK_SIZE);
+        ASSERT_INPUTSTREAM_NROWS(in, 200);
     }
 }
 CATCH
@@ -355,7 +672,7 @@ try
     Settings my_settings;
     const auto enable_relevant_place = GetParam();
     my_settings.dt_enable_relevant_place = enable_relevant_place;
-    this->reload({}, std::move(my_settings));
+    this->buildFirstSegment({}, std::move(my_settings));
 
     const size_t num_rows_write = 300;
     {
@@ -365,7 +682,7 @@ try
     }
 
     auto get_rows = [&](const RowKeyRange & range) {
-        auto in = segment->getInputStream(dmContext(), *tableColumns(), {range});
+        auto in = segment->getInputStreamModeNormal(dmContext(), *tableColumns(), {range});
         return getInputStreamNRows(in);
     };
 
@@ -435,7 +752,7 @@ try
     if (read_before_delete)
     {
         // read written data
-        auto in = segment->getInputStream(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)});
+        auto in = segment->getInputStreamModeNormal(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)});
         ASSERT_INPUTSTREAM_NROWS(in, num_rows_write);
     }
 
@@ -456,18 +773,15 @@ try
 
     {
         // read after delete range
-        auto in = segment->getInputStream(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)});
-        ASSERT_INPUTSTREAM_COLS_UR(
-            in,
-            Strings({DMTestEnv::pk_name}),
-            createColumns({createColumn<Int64>({0, 99})}));
+        auto in = segment->getInputStreamModeNormal(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)});
+        ASSERT_INPUTSTREAM_COLS_UR(in, Strings({DMTestEnv::pk_name}), createColumns({createColumn<Int64>({0, 99})}));
     }
 
     // For the case that apply merge delta after delete range, we ensure that data on disk are compacted
     if (merge_delta_after_delete)
     {
         // read raw after delete range
-        auto in = segment->getInputStreamRaw(dmContext(), *tableColumns());
+        auto in = segment->getInputStreamModeRaw(dmContext(), *tableColumns());
         // Only 2 rows are left on disk, others are compacted.
         ASSERT_INPUTSTREAM_NROWS(in, 2);
     }
@@ -488,7 +802,7 @@ try
     if (read_before_delete)
     {
         // read written data
-        auto in = segment->getInputStream(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)});
+        auto in = segment->getInputStreamModeNormal(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)});
         ASSERT_INPUTSTREAM_NROWS(in, num_rows_write);
     }
 
@@ -517,18 +831,15 @@ try
 
     {
         // read after delete range
-        auto in = segment->getInputStream(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)});
-        ASSERT_INPUTSTREAM_COLS_UR(
-            in,
-            Strings({DMTestEnv::pk_name}),
-            createColumns({createColumn<Int64>({0, 99})}));
+        auto in = segment->getInputStreamModeNormal(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)});
+        ASSERT_INPUTSTREAM_COLS_UR(in, Strings({DMTestEnv::pk_name}), createColumns({createColumn<Int64>({0, 99})}));
     }
 
     // For the case that apply merge delta after delete range, we ensure that data on disk are compacted
     if (merge_delta_after_delete)
     {
         // read raw after delete range
-        auto in = segment->getInputStreamRaw(dmContext(), *tableColumns());
+        auto in = segment->getInputStreamModeRaw(dmContext(), *tableColumns());
         // Only 2 rows are left on disk, others are compacted.
         ASSERT_INPUTSTREAM_NROWS(in, 2);
     }
@@ -558,7 +869,7 @@ try
     if (read_before_delete)
     {
         // read written data
-        auto in = segment->getInputStream(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)});
+        auto in = segment->getInputStreamModeNormal(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)});
         ASSERT_INPUTSTREAM_NROWS(in, num_rows_write);
     }
 
@@ -579,25 +890,25 @@ try
 
     {
         // read after delete range
-        auto in = segment->getInputStream(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)});
-        ASSERT_INPUTSTREAM_COLS_UR(
-            in,
-            Strings({DMTestEnv::pk_name}),
-            createColumns({createColumn<Int64>({0, 99})}));
+        auto in = segment->getInputStreamModeNormal(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)});
+        ASSERT_INPUTSTREAM_COLS_UR(in, Strings({DMTestEnv::pk_name}), createColumns({createColumn<Int64>({0, 99})}));
     }
 
     // For the case that apply merge delta after delete range, we ensure that data on disk are compacted
     if (merge_delta_after_delete)
     {
         // read raw after delete range
-        auto in = segment->getInputStreamRaw(dmContext(), *tableColumns());
+        auto in = segment->getInputStreamModeRaw(dmContext(), *tableColumns());
         // Only 2 rows are left on disk, others are compacted.
         ASSERT_INPUTSTREAM_NROWS(in, 2);
     }
 }
 CATCH
 
-INSTANTIATE_TEST_CASE_P(WhetherReadOrMergeDeltaBeforeDeleteRange, SegmentDeletionTest, testing::Combine(testing::Bool(), testing::Bool()));
+INSTANTIATE_TEST_CASE_P(
+    WhetherReadOrMergeDeltaBeforeDeleteRange,
+    SegmentDeletionTest,
+    testing::Combine(testing::Bool(), testing::Bool()));
 
 TEST_F(SegmentTest, DeleteRead)
 try
@@ -616,7 +927,7 @@ try
     auto check_segment_squash_delete_range = [this](SegmentPtr & segment, const HandleRange & expect_range) {
         // set `is_update=false` to get full squash delete range
         auto snap = segment->createSnapshot(dmContext(), /*for_update*/ false, CurrentMetrics::DT_SnapshotOfRead);
-        auto squash_range = snap->delta->getSquashDeleteRange();
+        auto squash_range = snap->delta->getSquashDeleteRange(/*is_common_handle=*/false, /*rowkey_column_size=*/1);
         ASSERT_ROWKEY_RANGE_EQ(squash_range, RowKeyRange::fromHandleRange(expect_range));
     };
 
@@ -626,14 +937,12 @@ try
         segment->write(dmContext(), {RowKeyRange::fromHandleRange(del)});
         SCOPED_TRACE("check after range: " + del.toDebugString()); // Add trace msg when ASSERT failed
         check_segment_squash_delete_range(segment, HandleRange{70, 100});
-
-        segment = segment->mergeDelta(dmContext(), tableColumns());
     }
 
     {
         // Read after deletion
         // The deleted range has no overlap with current data, so there should be no change
-        auto in = segment->getInputStream(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)});
+        auto in = segment->getInputStreamModeNormal(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)});
         ASSERT_INPUTSTREAM_COLS_UR(
             in,
             Strings({DMTestEnv::pk_name}),
@@ -645,15 +954,14 @@ try
         HandleRange del{63, 70};
         segment->write(dmContext(), {RowKeyRange::fromHandleRange(del)});
         SCOPED_TRACE("check after range: " + del.toDebugString());
-        check_segment_squash_delete_range(segment, HandleRange{63, 100});
 
-        segment = segment->mergeDelta(dmContext(), tableColumns());
+        check_segment_squash_delete_range(segment, HandleRange{63, 100});
     }
 
     {
         // Read after deletion
         // The deleted range has overlap range [63, 64) with current data, so the record with Handle 63 should be deleted
-        auto in = segment->getInputStream(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)});
+        auto in = segment->getInputStreamModeNormal(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)});
         ASSERT_INPUTSTREAM_COLS_UR(
             in,
             Strings({DMTestEnv::pk_name}),
@@ -665,21 +973,18 @@ try
         HandleRange del{1, 32};
         segment->write(dmContext(), {RowKeyRange::fromHandleRange(del)});
         SCOPED_TRACE("check after range: " + del.toDebugString());
+        // suqash_delete_range will consider [1, 100) maybe deleted
         check_segment_squash_delete_range(segment, HandleRange{1, 100});
-        segment = segment->mergeDelta(dmContext(), tableColumns());
     }
 
     {
         // Read after deletion
-        auto in = segment->getInputStream(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)});
+        auto in = segment->getInputStreamModeNormal(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)});
 
         std::vector<Int64> pk_coldata{0};
         auto tmp = createNumbers<Int64>(32, 63);
         pk_coldata.insert(pk_coldata.end(), tmp.begin(), tmp.end());
-        ASSERT_INPUTSTREAM_COLS_UR(
-            in,
-            Strings({DMTestEnv::pk_name}),
-            createColumns({createColumn<Int64>(pk_coldata)}));
+        ASSERT_INPUTSTREAM_COLS_UR(in, Strings({DMTestEnv::pk_name}), createColumns({createColumn<Int64>(pk_coldata)}));
     }
 
     {
@@ -689,19 +994,15 @@ try
         segment->write(dmContext(), {RowKeyRange::fromHandleRange(del)});
         SCOPED_TRACE("check after range: " + del.toDebugString());
         check_segment_squash_delete_range(segment, HandleRange{1, 100});
-        segment = segment->mergeDelta(dmContext(), tableColumns());
     }
 
     {
         // Read after deletion
-        auto in = segment->getInputStream(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)});
+        auto in = segment->getInputStreamModeNormal(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)});
         std::vector<Int64> pk_coldata{0};
         auto tmp = createNumbers<Int64>(32, 63);
         pk_coldata.insert(pk_coldata.end(), tmp.begin(), tmp.end());
-        ASSERT_INPUTSTREAM_COLS_UR(
-            in,
-            Strings({DMTestEnv::pk_name}),
-            createColumns({createColumn<Int64>(pk_coldata)}));
+        ASSERT_INPUTSTREAM_COLS_UR(in, Strings({DMTestEnv::pk_name}), createColumns({createColumn<Int64>(pk_coldata)}));
     }
 
     {
@@ -711,17 +1012,13 @@ try
         segment->write(dmContext(), {RowKeyRange::fromHandleRange(del)});
         SCOPED_TRACE("check after range: " + del.toDebugString());
         check_segment_squash_delete_range(segment, HandleRange{0, 100});
-        segment = segment->mergeDelta(dmContext(), tableColumns());
     }
 
     {
         // Read after deletion
-        auto in = segment->getInputStream(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)});
+        auto in = segment->getInputStreamModeNormal(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)});
         std::vector<Int64> pk_coldata = createNumbers<Int64>(32, 63);
-        ASSERT_INPUTSTREAM_COLS_UR(
-            in,
-            Strings({DMTestEnv::pk_name}),
-            createColumns({createColumn<Int64>(pk_coldata)}));
+        ASSERT_INPUTSTREAM_COLS_UR(in, Strings({DMTestEnv::pk_name}), createColumns({createColumn<Int64>(pk_coldata)}));
     }
 
     {
@@ -734,15 +1031,181 @@ try
 
     {
         // Read after new write
-        auto in = segment->getInputStream(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)});
+        auto in = segment->getInputStreamModeNormal(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)});
         std::vector<Int64> pk_coldata = createNumbers<Int64>(9, 16);
         auto tmp = createNumbers<Int64>(32, 63);
         pk_coldata.insert(pk_coldata.end(), tmp.begin(), tmp.end());
 
-        ASSERT_INPUTSTREAM_COLS_UR(
+        ASSERT_INPUTSTREAM_COLS_UR(in, Strings({DMTestEnv::pk_name}), createColumns({createColumn<Int64>(pk_coldata)}));
+    }
+}
+CATCH
+
+TEST_F(SegmentTest, ColumnFileBigRangeGreaterThanSegment)
+try
+{
+    auto write_column_file_big = [&](size_t begin, size_t end, size_t block_num) {
+        WriteBatches ingest_wbs(*dm_context->storage_pool, dm_context->getWriteLimiter());
+        auto delegator = storage_path_pool->getStableDiskDelegator();
+        auto parent_path = delegator.choosePath();
+        auto file_id = storage_pool->newDataPageIdForDTFile(delegator, __PRETTY_FUNCTION__);
+
+        std::vector<BlockInputStreamPtr> streams;
+        streams.reserve(block_num);
+        size_t step = (end - begin) / block_num;
+        for (size_t i = 0; i < block_num; ++i)
+        {
+            Block block = DMTestEnv::prepareSimpleWriteBlock(begin + i * step, begin + (i + 1) * step, false);
+            auto stream = std::make_shared<OneBlockInputStream>(block);
+            streams.push_back(stream);
+        }
+        auto input_stream = std::make_shared<ConcatBlockInputStream>(std::move(streams), dmContext().tracing_id);
+
+        auto dm_file = writeIntoNewDMFile(*dm_context, table_columns, input_stream, file_id, parent_path);
+        ingest_wbs.data.putExternal(file_id, /* tag */ 0);
+        ingest_wbs.writeLogAndData();
+        delegator.addDTFile(file_id, dm_file->getBytesOnDisk(), parent_path);
+
+        WriteBatches wbs(*dm_context->storage_pool, dm_context->getWriteLimiter());
+        auto ref_id = storage_pool->newDataPageIdForDTFile(delegator, __PRETTY_FUNCTION__);
+        wbs.data.putRefPage(ref_id, dm_file->pageId());
+        auto ref_file = DMFile::restore(
+            dm_context->global_context.getFileProvider(),
+            file_id,
+            ref_id,
+            parent_path,
+            DMFileMeta::ReadMode::all());
+        wbs.writeLogAndData();
+        ASSERT_TRUE(segment->ingestDataToDelta(
+            *dm_context,
+            segment->getRowKeyRange(),
+            {ref_file},
+            /* clear_data_in_range */ false));
+
+        ingest_wbs.rollbackWrittenLogAndData();
+    };
+
+    const auto read_range = RowKeyRange::fromHandleRange(HandleRange(0, 100));
+
+    {
+        // let segment's rowkey_range be [30, 70)
+        HandleRange range(30, 70);
+        segment->rowkey_range = RowKeyRange::fromHandleRange(range);
+        // write ColumnFileBig with range [0, 20), [20, 40), [40, 60), [60, 80), [80, 100).
+        write_column_file_big(0, 100, 5);
+    }
+    {
+        // test built bitmap filter
+        auto segment_snap = segment->createSnapshot(dmContext(), false, CurrentMetrics::DT_SnapshotOfRead);
+        auto real_ranges = segment->shrinkRowKeyRanges({read_range});
+        auto bitmap_filter_delta_index = segment->buildMVCCBitmapFilter( //
+            dmContext(),
+            segment_snap,
+            real_ranges,
+            loadPackFilterResults(segment_snap, real_ranges),
+            std::numeric_limits<UInt64>::max(),
+            DEFAULT_BLOCK_SIZE,
+            /*enable_version_chain*/ false);
+        auto bitmap_filter_version_chain = segment->buildMVCCBitmapFilter( //
+            dmContext(),
+            segment_snap,
+            real_ranges,
+            loadPackFilterResults(segment_snap, real_ranges),
+            std::numeric_limits<UInt64>::max(),
+            DEFAULT_BLOCK_SIZE,
+            /*enable_version_chain*/ true);
+        // the bitmap only contains the overlapped packs of ColumnFileBig. So only 60 here.
+        ASSERT_EQ(bitmap_filter_version_chain->size(), 60);
+        ASSERT_EQ(
+            bitmap_filter_version_chain->toDebugString(),
+            "000000000011111111111111111111111111111111111111110000000000");
+        ASSERT_EQ(*bitmap_filter_version_chain, *bitmap_filter_delta_index);
+    }
+
+    ColumnDefines cols_to_read{
+        getExtraHandleColumnDefine(false),
+    };
+    {
+        // test read data
+        auto segment_snap = segment->createSnapshot(dmContext(), false, CurrentMetrics::DT_SnapshotOfRead);
+        auto in = segment->getInputStream(
+            ReadMode::Bitmap,
+            dmContext(),
+            cols_to_read,
+            segment_snap,
+            {RowKeyRange::newAll(false, 1)},
+            {},
+            std::numeric_limits<UInt64>::max(),
+            DEFAULT_BLOCK_SIZE);
+        ASSERT_INPUTSTREAM_BLOCK_UR(
             in,
-            Strings({DMTestEnv::pk_name}),
-            createColumns({createColumn<Int64>(pk_coldata)}));
+            Block({
+                createColumn<Int64>(createNumbers<Int64>(30, 70)),
+            }));
+    }
+
+    {
+        // let segment's rowkey_range be [30, 90)
+        HandleRange range(30, 90);
+        segment->rowkey_range = RowKeyRange::fromHandleRange(range);
+        // delete range [50, 80)
+        Block block = DMTestEnv::prepareSimpleWriteBlock(
+            50,
+            80,
+            false,
+            3,
+            "_tidb_rowid",
+            MutSup::extra_handle_id,
+            MutSup::getExtraHandleColumnIntType(),
+            false,
+            1,
+            true,
+            /*is_deleted=*/true);
+        segment->write(dmContext(), std::move(block));
+        // write range [80, 90)
+        Block block2 = DMTestEnv::prepareSimpleWriteBlock(80, 90, false);
+        segment->write(dmContext(), std::move(block2));
+
+        // test built bitmap filter
+        auto segment_snap = segment->createSnapshot(dmContext(), false, CurrentMetrics::DT_SnapshotOfRead);
+        auto read_ranges = {RowKeyRange::newAll(false, 1)};
+        auto real_ranges = segment->shrinkRowKeyRanges(read_ranges);
+
+        auto bitmap_filter_delta_index = segment->buildMVCCBitmapFilter( //
+            dmContext(),
+            segment_snap,
+            real_ranges,
+            loadPackFilterResults(segment_snap, real_ranges),
+            std::numeric_limits<UInt64>::max(),
+            DEFAULT_BLOCK_SIZE,
+            /*enable_version_chain*/ false);
+        auto bitmap_filter_version_chain = segment->buildMVCCBitmapFilter( //
+            dmContext(),
+            segment_snap,
+            real_ranges,
+            loadPackFilterResults(segment_snap, real_ranges),
+            std::numeric_limits<UInt64>::max(),
+            DEFAULT_BLOCK_SIZE,
+            /*enable_version_chain*/ false);
+
+        ASSERT_EQ(*bitmap_filter_delta_index, *bitmap_filter_version_chain);
+    }
+    {
+        // test read data with delete-range and new writes
+        auto segment_snap = segment->createSnapshot(dmContext(), false, CurrentMetrics::DT_SnapshotOfRead);
+        auto in = segment->getInputStream(
+            ReadMode::Bitmap,
+            dmContext(),
+            cols_to_read,
+            segment_snap,
+            {RowKeyRange::newAll(false, 1)},
+            {},
+            std::numeric_limits<UInt64>::max(),
+            DEFAULT_BLOCK_SIZE);
+        // Only the rows in [30, 50) and [80, 90) valid
+        auto vec = createNumbers<Int64>(30, 50);
+        vec.append_range(createNumbers<Int64>(80, 90));
+        ASSERT_INPUTSTREAM_BLOCK_UR(in, Block({createColumn<Int64>(vec)}));
     }
 }
 CATCH
@@ -765,7 +1228,7 @@ try
 
     {
         // read written data
-        auto in = segment->getInputStream(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)});
+        auto in = segment->getInputStreamModeNormal(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)});
         ASSERT_INPUTSTREAM_NROWS(in, num_rows_write);
     }
 
@@ -784,8 +1247,10 @@ try
     EXPECT_EQ(*s2_range.end.value, *old_range.end.value);
     // TODO check segment epoch is increase
 
-    size_t num_rows_seg1 = getInputStreamNRows(segment->getInputStream(dmContext(), *tableColumns(), {segment->getRowKeyRange()}));
-    size_t num_rows_seg2 = getInputStreamNRows(new_segment->getInputStream(dmContext(), *tableColumns(), {new_segment->getRowKeyRange()}));
+    size_t num_rows_seg1 = getInputStreamNRows(
+        segment->getInputStreamModeNormal(dmContext(), *tableColumns(), {segment->getRowKeyRange()}));
+    size_t num_rows_seg2 = getInputStreamNRows(
+        new_segment->getInputStreamModeNormal(dmContext(), *tableColumns(), {new_segment->getRowKeyRange()}));
     ASSERT_EQ(num_rows_seg1 + num_rows_seg2, num_rows_write);
 
     // delete rows in the right segment
@@ -805,7 +1270,7 @@ try
             // TODO check segment epoch is increase
         }
         {
-            auto in = segment->getInputStream(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)});
+            auto in = segment->getInputStreamModeNormal(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)});
             ASSERT_INPUTSTREAM_NROWS(in, num_rows_seg1);
         }
     }
@@ -839,8 +1304,8 @@ try
     // If they are equal, result will be true, otherwise it will be false.
     auto compare = [&](const SegmentPtr & seg1, const SegmentPtr & seg2, bool & result) {
         result = false;
-        auto in1 = seg1->getInputStream(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)});
-        auto in2 = seg2->getInputStream(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)});
+        auto in1 = seg1->getInputStreamModeNormal(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)});
+        auto in2 = seg2->getInputStreamModeNormal(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)});
         in1->readPrefix();
         in2->readPrefix();
         for (;;)
@@ -871,7 +1336,7 @@ try
 
                 ASSERT_EQ(c1->size(), c2->size());
 
-                for (Int64 i = 0; i < Int64(c1->size()); i++)
+                for (Int64 i = 0; i < static_cast<Int64>(c1->size()); i++)
                 {
                     if (iter1->name == DMTestEnv::pk_name)
                     {
@@ -899,7 +1364,7 @@ try
         segment = segment->mergeDelta(dmContext(), tableColumns());
     }
 
-    SegmentPtr new_segment = Segment::restoreSegment(dmContext(), segment->segmentId());
+    SegmentPtr new_segment = Segment::restoreSegment(Logger::get(), dmContext(), segment->segmentId());
 
     {
         // test compare
@@ -912,7 +1377,7 @@ try
         // Do some update and restore again
         HandleRange del(0, 32);
         segment->write(dmContext(), {RowKeyRange::fromHandleRange(del)});
-        new_segment = segment->restoreSegment(dmContext(), segment->segmentId());
+        new_segment = segment->restoreSegment(Logger::get(), dmContext(), segment->segmentId());
     }
 
     {
@@ -927,11 +1392,11 @@ CATCH
 TEST_F(SegmentTest, MassiveSplit)
 try
 {
-    Settings settings = dmContext().db_context.getSettings();
+    Settings settings = dmContext().global_context.getSettings();
     settings.dt_segment_limit_rows = 11;
     settings.dt_segment_delta_limit_rows = 7;
 
-    segment = reload(DMTestEnv::getDefaultColumns(), std::move(settings));
+    segment = buildFirstSegment(DMTestEnv::getDefaultColumns(), std::move(settings));
 
     size_t num_batches_written = 0;
     const size_t num_rows_per_write = 5;
@@ -955,8 +1420,9 @@ try
             // Delete some records so that the following condition can be satisfied:
             // if pk % 5 < 2, then the record would be deleted
             // if pk % 5 >= 2, then the record would be reserved
-            HandleRange del{Int64((num_batches_written - 1) * num_rows_per_write),
-                            Int64((num_batches_written - 1) * num_rows_per_write + 2)};
+            HandleRange del{
+                static_cast<Int64>((num_batches_written - 1) * num_rows_per_write),
+                static_cast<Int64>((num_batches_written - 1) * num_rows_per_write + 2)};
             segment->write(dmContext(), {RowKeyRange::fromHandleRange(del)});
         }
 
@@ -965,18 +1431,17 @@ try
             segment = segment->mergeDelta(dmContext(), tableColumns());
         }
 
-        for (size_t i = (num_batches_written - 1) * num_rows_per_write + 2; i < num_batches_written * num_rows_per_write; i++)
+        for (size_t i = (num_batches_written - 1) * num_rows_per_write + 2;
+             i < num_batches_written * num_rows_per_write;
+             i++)
         {
-            temp.push_back(Int64(i));
+            temp.push_back(static_cast<Int64>(i));
         }
 
         {
             // Read after writing
-            auto in = segment->getInputStream(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)});
-            ASSERT_INPUTSTREAM_COLS_UR(
-                in,
-                Strings({DMTestEnv::pk_name}),
-                createColumns({createColumn<Int64>(temp)}))
+            auto in = segment->getInputStreamModeNormal(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)});
+            ASSERT_INPUTSTREAM_COLS_UR(in, Strings({DMTestEnv::pk_name}), createColumns({createColumn<Int64>(temp)}))
                 << fmt::format("num_batches_written={} num_rows_per_write={}", num_batches_written, num_rows_per_write);
         }
 
@@ -993,65 +1458,63 @@ try
 }
 CATCH
 
-enum SegmentTestMode
+enum class SegmentTestMode
 {
-    V1_BlockOnly,
-    V2_BlockOnly,
-    V2_FileOnly,
+    PageStorageV2_MemoryOnly,
+    PageStorageV2_DiskOnly,
+    Current_MemoryOnly,
+    Current_DiskOnly,
 };
 
 String testModeToString(const ::testing::TestParamInfo<SegmentTestMode> & info)
 {
-    const auto mode = info.param;
-    switch (mode)
-    {
-    case SegmentTestMode::V1_BlockOnly:
-        return "V1_BlockOnly";
-    case SegmentTestMode::V2_BlockOnly:
-        return "V2_BlockOnly";
-    case SegmentTestMode::V2_FileOnly:
-        return "V2_FileOnly";
-    default:
-        return "Unknown";
-    }
+    return String{magic_enum::enum_name(info.param)};
 }
 
-class SegmentTest2 : public SegmentTest
+class SegmentTest2
+    : public SegmentTest
     , public testing::WithParamInterface<SegmentTestMode>
 {
-public:
-    SegmentTest2() = default;
+    const StorageFormatVersion current_version;
 
+public:
+    SegmentTest2()
+        : current_version(STORAGE_FORMAT_CURRENT)
+    {}
 
     void SetUp() override
     {
         mode = GetParam();
         switch (mode)
         {
-        case SegmentTestMode::V1_BlockOnly:
-            setStorageFormat(1);
+        case SegmentTestMode::PageStorageV2_MemoryOnly:
+        case SegmentTestMode::PageStorageV2_DiskOnly:
+            setStorageFormat(3);
             break;
-        case SegmentTestMode::V2_BlockOnly:
-        case SegmentTestMode::V2_FileOnly:
-            setStorageFormat(2);
+        case SegmentTestMode::Current_MemoryOnly:
+        case SegmentTestMode::Current_DiskOnly:
+            setStorageFormat(STORAGE_FORMAT_CURRENT);
             break;
         }
 
         SegmentTest::SetUp();
     }
 
-    std::pair<RowKeyRange, PageIds> genDMFile(DMContext & context, const Block & block)
+    ~SegmentTest2() override { setStorageFormat(current_version); }
+
+    std::pair<RowKeyRange, PageIdU64s> genDMFile(DMContext & context, const Block & block)
     {
-        auto delegator = context.path_pool.getStableDiskDelegator();
-        auto file_id = context.storage_pool.newDataPageIdForDTFile(delegator, __PRETTY_FUNCTION__);
+        auto delegator = context.path_pool->getStableDiskDelegator();
+        auto file_id = context.storage_pool->newDataPageIdForDTFile(delegator, __PRETTY_FUNCTION__);
         auto input_stream = std::make_shared<OneBlockInputStream>(block);
         auto store_path = delegator.choosePath();
 
-        DMFileBlockOutputStream::Flags flags;
-        flags.setSingleFile(DMTestEnv::getPseudoRandomNumber() % 2);
-
-        auto dmfile
-            = writeIntoNewDMFile(context, std::make_shared<ColumnDefines>(*tableColumns()), input_stream, file_id, store_path, flags);
+        auto dmfile = writeIntoNewDMFile(
+            context,
+            std::make_shared<ColumnDefines>(*tableColumns()),
+            input_stream,
+            file_id,
+            store_path);
 
         delegator.addDTFile(file_id, dmfile->getBytesOnDisk(), store_path);
 
@@ -1063,7 +1526,7 @@ public:
         return {RowKeyRange::fromHandleRange(range), {file_id}};
     }
 
-    SegmentTestMode mode;
+    SegmentTestMode mode{};
 };
 
 TEST_P(SegmentTest2, FlushDuringSplitAndMerge)
@@ -1077,24 +1540,25 @@ try
             row_offset += 100;
             switch (mode)
             {
-            case SegmentTestMode::V1_BlockOnly:
-            case SegmentTestMode::V2_BlockOnly:
+            case SegmentTestMode::PageStorageV2_MemoryOnly:
+            case SegmentTestMode::Current_MemoryOnly:
                 segment->write(dmContext(), std::move(block));
                 break;
-            case SegmentTestMode::V2_FileOnly:
+            case SegmentTestMode::PageStorageV2_DiskOnly:
+            case SegmentTestMode::Current_DiskOnly:
             {
-                auto delegate = dmContext().path_pool.getStableDiskDelegator();
-                auto file_provider = dmContext().db_context.getFileProvider();
+                auto delegate = dmContext().path_pool->getStableDiskDelegator();
+                auto file_provider = dmContext().global_context.getFileProvider();
                 auto [range, file_ids] = genDMFile(dmContext(), block);
                 auto file_id = file_ids[0];
                 auto file_parent_path = delegate.getDTFilePath(file_id);
-                auto file = DMFile::restore(file_provider, file_id, file_id, file_parent_path, DMFile::ReadMetaMode::all());
-                auto column_file = std::make_shared<ColumnFileBig>(dmContext(), file, range);
+                auto file
+                    = DMFile::restore(file_provider, file_id, file_id, file_parent_path, DMFileMeta::ReadMode::all());
                 WriteBatches wbs(*storage_pool);
                 wbs.data.putExternal(file_id, 0);
                 wbs.writeLogAndData();
 
-                segment->ingestColumnFiles(dmContext(), range, {column_file}, false);
+                segment->ingestDataToDelta(dmContext(), range, {file}, false);
                 break;
             }
             default:
@@ -1106,7 +1570,7 @@ try
     };
 
     auto read_rows = [&](const SegmentPtr & segment) {
-        auto in = segment->getInputStream(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)});
+        auto in = segment->getInputStreamModeNormal(dmContext(), *tableColumns(), {RowKeyRange::newAll(false, 1)});
         return getInputStreamNRows(in);
     };
 
@@ -1115,7 +1579,7 @@ try
     // Test split
     SegmentPtr other_segment;
     {
-        WriteBatches wbs(dmContext().storage_pool);
+        WriteBatches wbs(*dmContext().storage_pool);
         auto segment_snap = segment->createSnapshot(dmContext(), true, CurrentMetrics::DT_SnapshotOfSegmentSplit);
         ASSERT_FALSE(!segment_snap);
 
@@ -1124,18 +1588,19 @@ try
         auto split_info = segment->prepareSplit(dmContext(), tableColumns(), segment_snap, wbs);
 
         wbs.writeLogAndData();
-        split_info->my_stable->enableDMFilesGC();
-        split_info->other_stable->enableDMFilesGC();
+        split_info->my_stable->enableDMFilesGC(dmContext());
+        split_info->other_stable->enableDMFilesGC(dmContext());
 
         auto lock = segment->mustGetUpdateLock();
-        std::tie(segment, other_segment) = segment->applySplit(lock, dmContext(), segment_snap, wbs, split_info.value());
+        std::tie(segment, other_segment)
+            = segment->applySplit(lock, dmContext(), segment_snap, wbs, split_info.value());
 
         wbs.writeAll();
     }
 
     {
-        SegmentPtr new_segment_1 = Segment::restoreSegment(dmContext(), segment->segmentId());
-        SegmentPtr new_segment_2 = Segment::restoreSegment(dmContext(), other_segment->segmentId());
+        SegmentPtr new_segment_1 = Segment::restoreSegment(Logger::get(), dmContext(), segment->segmentId());
+        SegmentPtr new_segment_2 = Segment::restoreSegment(Logger::get(), dmContext(), other_segment->segmentId());
         auto rows1 = read_rows(new_segment_1);
         auto rows2 = read_rows(new_segment_2);
         ASSERT_EQ(rows1 + rows2, (size_t)200);
@@ -1143,7 +1608,7 @@ try
 
     // Test merge
     {
-        WriteBatches wbs(dmContext().storage_pool);
+        WriteBatches wbs(*dmContext().storage_pool);
 
         auto left_snap = segment->createSnapshot(dmContext(), true, CurrentMetrics::DT_SnapshotOfSegmentMerge);
         auto right_snap = other_segment->createSnapshot(dmContext(), true, CurrentMetrics::DT_SnapshotOfSegmentMerge);
@@ -1152,31 +1617,47 @@ try
         write_100_rows(other_segment);
         segment->flushCache(dmContext());
 
-        auto merged_stable = Segment::prepareMerge(dmContext(), tableColumns(), {segment, other_segment}, {left_snap, right_snap}, wbs);
+        auto merged_stable = Segment::prepareMerge(
+            dmContext(),
+            tableColumns(),
+            {segment, other_segment},
+            {left_snap, right_snap},
+            wbs);
 
         wbs.writeLogAndData();
-        merged_stable->enableDMFilesGC();
+        merged_stable->enableDMFilesGC(dmContext());
 
         std::vector<Segment::Lock> locks;
         locks.emplace_back(segment->mustGetUpdateLock());
         locks.emplace_back(other_segment->mustGetUpdateLock());
-        segment = Segment::applyMerge(locks, dmContext(), {segment, other_segment}, {left_snap, right_snap}, wbs, merged_stable);
+        segment = Segment::applyMerge(
+            locks,
+            dmContext(),
+            {segment, other_segment},
+            {left_snap, right_snap},
+            wbs,
+            merged_stable);
 
         wbs.writeAll();
     }
 
     {
-        SegmentPtr new_segment = Segment::restoreSegment(dmContext(), segment->segmentId());
+        SegmentPtr new_segment = Segment::restoreSegment(Logger::get(), dmContext(), segment->segmentId());
         auto rows = read_rows(new_segment);
         ASSERT_EQ(rows, (size_t)300);
     }
 }
 CATCH
 
-INSTANTIATE_TEST_CASE_P(SegmentTestMode, //
-                        SegmentTest2,
-                        testing::Values(SegmentTestMode::V1_BlockOnly, SegmentTestMode::V2_BlockOnly, SegmentTestMode::V2_FileOnly),
-                        testModeToString);
+INSTANTIATE_TEST_CASE_P(
+    SegmentTestMode, //
+    SegmentTest2,
+    testing::Values(
+        SegmentTestMode::PageStorageV2_MemoryOnly,
+        SegmentTestMode::PageStorageV2_DiskOnly,
+        SegmentTestMode::Current_MemoryOnly,
+        SegmentTestMode::Current_DiskOnly),
+    testModeToString);
 
 enum class SegmentWriteType
 {
@@ -1215,7 +1696,7 @@ try
         auto columns_before_ddl = DMTestEnv::getDefaultColumns();
         columns_before_ddl->emplace_back(column_i8_before_ddl);
         DB::Settings db_settings;
-        segment = reload(columns_before_ddl, std::move(db_settings));
+        segment = buildFirstSegment(columns_before_ddl, std::move(db_settings));
 
         /// write to segment
         Block block = DMTestEnv::prepareSimpleWriteBlock(0, num_rows_write, false);
@@ -1249,7 +1730,7 @@ try
 
     {
         // read written data
-        auto in = segment->getInputStream(dmContext(), *columns_to_read, {RowKeyRange::newAll(false, 1)});
+        auto in = segment->getInputStreamModeNormal(dmContext(), *columns_to_read, {RowKeyRange::newAll(false, 1)});
         // check that we can read correct values
         ASSERT_INPUTSTREAM_COLS_UR(
             in,
@@ -1281,7 +1762,7 @@ try
 
     {
         // read written data
-        auto in = segment->getInputStream(dmContext(), *columns_to_read, {RowKeyRange::newAll(false, 1)});
+        auto in = segment->getInputStreamModeNormal(dmContext(), *columns_to_read, {RowKeyRange::newAll(false, 1)});
 
         // check that we can read correct values
         // [0, 50) is the old signed values, [50, 100) is replaced by newer written values
@@ -1307,7 +1788,7 @@ try
 
     {
         // check the stable data with new schema
-        auto in = segment->getInputStream(dmContext(), *columns_to_read, {RowKeyRange::newAll(false, 1)});
+        auto in = segment->getInputStreamModeNormal(dmContext(), *columns_to_read, {RowKeyRange::newAll(false, 1)});
 
         // check that we can read correct values
         std::vector<Int64> i32_columndata = createSignedNumbers(0, num_rows_write / 2);
@@ -1340,7 +1821,7 @@ try
         auto columns_before_ddl = DMTestEnv::getDefaultColumns();
         // Not cache any rows
         DB::Settings db_settings;
-        segment = reload(columns_before_ddl, std::move(db_settings));
+        segment = buildFirstSegment(columns_before_ddl, std::move(db_settings));
     }
 
     const size_t num_rows_write = 100;
@@ -1372,7 +1853,7 @@ try
 
     {
         // read written data
-        auto in = segment->getInputStream(dmContext(), *columns_after_ddl, {RowKeyRange::newAll(false, 1)});
+        auto in = segment->getInputStreamModeNormal(dmContext(), *columns_after_ddl, {RowKeyRange::newAll(false, 1)});
 
         // check that we can read correct values
         ASSERT_INPUTSTREAM_COLS_UR(
@@ -1407,7 +1888,7 @@ try
 
     {
         // read written data
-        auto in = segment->getInputStream(dmContext(), *columns_after_ddl, {RowKeyRange::newAll(false, 1)});
+        auto in = segment->getInputStreamModeNormal(dmContext(), *columns_after_ddl, {RowKeyRange::newAll(false, 1)});
 
         // check that we can read correct values
         // First 50 values are default value
@@ -1434,7 +1915,7 @@ try
 
     {
         // read written data after delta-merge
-        auto in = segment->getInputStream(dmContext(), *columns_after_ddl, {RowKeyRange::newAll(false, 1)});
+        auto in = segment->getInputStreamModeNormal(dmContext(), *columns_after_ddl, {RowKeyRange::newAll(false, 1)});
 
         // check that we can read correct values
         // First 50 values are default value
@@ -1457,10 +1938,10 @@ CATCH
 TEST_F(SegmentTest, CalculateDTFileProperty)
 try
 {
-    Settings settings = dmContext().db_context.getSettings();
+    Settings settings = dmContext().global_context.getSettings();
     settings.dt_segment_stable_pack_rows = 10;
 
-    segment = reload(DMTestEnv::getDefaultColumns(), std::move(settings));
+    segment = buildFirstSegment(DMTestEnv::getDefaultColumns(), std::move(settings));
 
     const size_t num_rows_write_every_round = 100;
     const size_t write_round = 3;
@@ -1480,8 +1961,8 @@ try
         ASSERT_EQ(stable->getRows(), num_rows_write_every_round * write_round);
         // calculate StableProperty
         ASSERT_EQ(stable->isStablePropertyCached(), false);
-        auto start = RowKeyValue::fromHandle(0);
-        auto end = RowKeyValue::fromHandle(num_rows_write_every_round);
+        auto start = RowKeyValue::fromIntHandle(0);
+        auto end = RowKeyValue::fromIntHandle(num_rows_write_every_round);
         RowKeyRange range(start, end, false, 1);
         // calculate the StableProperty for packs in the key range [0, num_rows_write_every_round)
         stable->calculateStableProperty(dmContext(), range, false);
@@ -1498,10 +1979,10 @@ CATCH
 TEST_F(SegmentTest, CalculateDTFilePropertyWithPropertyFileDeleted)
 try
 {
-    Settings settings = dmContext().db_context.getSettings();
+    Settings settings = dmContext().global_context.getSettings();
     settings.dt_segment_stable_pack_rows = 10;
 
-    segment = reload(DMTestEnv::getDefaultColumns(), std::move(settings));
+    segment = buildFirstSegment(DMTestEnv::getDefaultColumns(), std::move(settings));
 
     const size_t num_rows_write_every_round = 100;
     const size_t write_round = 3;
@@ -1522,16 +2003,19 @@ try
         const auto & dmfile = dmfiles[0];
         auto file_path = dmfile->path();
         // check property file exists and then delete it
-        ASSERT_EQ(Poco::File(file_path + "/property").exists(), true);
-        Poco::File(file_path + "/property").remove();
-        ASSERT_EQ(Poco::File(file_path + "/property").exists(), false);
+        if (!dmfile->useMetaV2())
+        {
+            ASSERT_EQ(Poco::File(file_path + "/property").exists(), true);
+            Poco::File(file_path + "/property").remove();
+            ASSERT_EQ(Poco::File(file_path + "/property").exists(), false);
+        }
         // clear PackProperties to force it to calculate from scratch
-        dmfile->getPackProperties().clear_property();
+        dmfile->clearPackProperties();
         ASSERT_EQ(dmfile->getPackProperties().property_size(), 0);
-        // caculate StableProperty
+        // calculate StableProperty
         ASSERT_EQ(stable->isStablePropertyCached(), false);
-        auto start = RowKeyValue::fromHandle(0);
-        auto end = RowKeyValue::fromHandle(num_rows_write_every_round);
+        auto start = RowKeyValue::fromIntHandle(0);
+        auto end = RowKeyValue::fromIntHandle(num_rows_write_every_round);
         RowKeyRange range(start, end, false, 1);
         // calculate the StableProperty for packs in the key range [0, num_rows_write_every_round)
         stable->calculateStableProperty(dmContext(), range, false);
@@ -1545,13 +2029,100 @@ try
 }
 CATCH
 
-INSTANTIATE_TEST_CASE_P(SegmentWriteType,
-                        SegmentDDLTest,
-                        ::testing::Combine( //
-                            ::testing::Values(SegmentWriteType::ToDisk, SegmentWriteType::ToCache),
-                            ::testing::Bool()),
-                        paramToString);
+INSTANTIATE_TEST_CASE_P(
+    SegmentWriteType,
+    SegmentDDLTest,
+    ::testing::Combine( //
+        ::testing::Values(SegmentWriteType::ToDisk, SegmentWriteType::ToCache),
+        ::testing::Bool()),
+    paramToString);
 
-} // namespace tests
-} // namespace DM
-} // namespace DB
+
+TEST_F(SimplePKTestBasic, FlushWhileMerging)
+try
+{
+    ensureSegmentBreakpoints({0, 50, 100});
+
+    // Everything in memtable
+    fill(-1000, 1000);
+    ASSERT_EQ(1000, getSegmentAt(-10)->getDelta()->getMemTableSet()->getRows());
+
+    auto sp_merge_prepared = SyncPointCtl::enableInScope("after_DeltaMergeStore::segmentMerge|prepare_merge");
+
+    auto th_merge = std::async([&]() { ASSERT_TRUE(merge(-10, 20)); });
+
+    sp_merge_prepared.waitAndPause();
+    flush(-10, -9); // Flush the first segment
+    sp_merge_prepared.next();
+    th_merge.get();
+
+    ASSERT_EQ(2000, getRowsN());
+    ASSERT_EQ(2000, getRowsN(-1000, 1000));
+}
+CATCH
+
+TEST_F(SimplePKTestBasic, MultipleFlushAndWriteWhileMerging)
+try
+{
+    ensureSegmentBreakpoints({0, 50, 100});
+
+    fill(-1000, 1000);
+
+    auto sp_merge_prepared = SyncPointCtl::enableInScope("after_DeltaMergeStore::segmentMerge|prepare_merge");
+
+    auto th_merge = std::async([&]() { ASSERT_TRUE(merge(-10, 110)); });
+
+    sp_merge_prepared.waitAndPause();
+
+    ASSERT_EQ(2000, getRowsN());
+
+    flush(-10, -9);
+    ASSERT_EQ(2000, getRowsN());
+
+    fill(0, 100);
+    ASSERT_EQ(2000, getRowsN());
+
+    flush(50, 51);
+    ASSERT_EQ(2000, getRowsN());
+
+    deleteRange(30, 70);
+    ASSERT_EQ(1960, getRowsN());
+
+    sp_merge_prepared.next();
+    th_merge.get();
+
+    ASSERT_EQ(1960, getRowsN());
+    ASSERT_EQ(1960, getRowsN(-1000, 1000));
+}
+CATCH
+
+TEST_F(SimplePKTestBasic, MergeWhileFlushing)
+try
+{
+    ensureSegmentBreakpoints({0, 50, 100});
+
+    fill(-1000, 1000);
+    ASSERT_EQ(2000, getRowsN());
+
+    auto sp_flush_prepared = SyncPointCtl::enableInScope("after_DeltaValueSpace::flush|prepare_flush");
+
+    auto th_flush = std::async([&]() { flush(10, 11); });
+
+    sp_flush_prepared.waitAndPause();
+
+    ASSERT_TRUE(merge(-10, 110));
+    ASSERT_EQ(std::vector<Int64>({}), getSegmentBreakpoints());
+    ASSERT_EQ(2000, getRowsN());
+
+    deleteRange(30, 70);
+    ASSERT_EQ(1960, getRowsN());
+
+    sp_flush_prepared.next();
+    sp_flush_prepared.waitAndNext(); // We expect one flush retry
+    th_flush.get();
+
+    ASSERT_EQ(1960, getRowsN());
+}
+CATCH
+
+} // namespace DB::DM::tests

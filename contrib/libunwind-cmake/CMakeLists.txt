@@ -1,9 +1,9 @@
 enable_language(ASM)
 
 set(LIBUNWIND_SOURCE_DIR "${TiFlash_SOURCE_DIR}/contrib/libunwind")
-if(ARCH_LINUX)
+if(OS_LINUX)
     set(UNWIND_OS "linux")
-elseif(ARCH_FREEBSD)
+elseif(OS_FREEBSD)
     set(UNWIND_OS "freebsd")
 endif()
 
@@ -152,3 +152,4 @@ target_include_directories (unwind PUBLIC ${LIBUNWIND_SOURCE_DIR}/include)
 target_include_directories (unwind PRIVATE ${LIBUNWIND_SOURCE_DIR}/include/tdep)
 target_include_directories (unwind PRIVATE ${LIBUNWIND_SOURCE_DIR}/src)
 target_include_directories (unwind PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/include)
+target_compile_options (unwind PRIVATE "-Wno-absolute-value")

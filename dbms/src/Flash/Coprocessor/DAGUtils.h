@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,9 +18,9 @@
 #include <Core/Field.h>
 #include <Core/NamesAndTypes.h>
 #include <Core/SortDescription.h>
-#include <Storages/Transaction/Collator.h>
-#include <Storages/Transaction/TiDB.h>
-#include <Storages/Transaction/Types.h>
+#include <Storages/KVStore/Types.h>
+#include <TiDB/Collation/Collator.h>
+#include <TiDB/Schema/TiDB_fwd.h>
 #include <grpcpp/impl/codegen/status_code_enum.h>
 #include <tipb/executor.pb.h>
 #include <tipb/select.pb.h>
@@ -39,6 +39,7 @@ bool isAggFunctionExpr(const tipb::Expr & expr);
 bool isWindowFunctionExpr(const tipb::Expr & expr);
 const String & getFunctionName(const tipb::Expr & expr);
 const String & getAggFunctionName(const tipb::Expr & expr);
+const String & getAggFunctionNameForWindow(const tipb::Expr & expr, bool need_decrease);
 const String & getWindowFunctionName(const tipb::Expr & expr);
 String getExchangeTypeName(const tipb::ExchangeType & tp);
 String getJoinTypeName(const tipb::JoinType & tp);
@@ -46,7 +47,13 @@ String getFieldTypeName(Int32 tp);
 String getJoinExecTypeName(const tipb::JoinExecType & tp);
 bool isColumnExpr(const tipb::Expr & expr);
 String getColumnNameForColumnExpr(const tipb::Expr & expr, const std::vector<NameAndTypePair> & input_col);
-NameAndTypePair getColumnNameAndTypeForColumnExpr(const tipb::Expr & expr, const std::vector<NameAndTypePair> & input_col);
+void getColumnIDsFromExpr(
+    const tipb::Expr & expr,
+    const std::vector<TiDB::ColumnInfo> & input_col,
+    std::unordered_set<ColumnID> & col_id_set);
+NameAndTypePair getColumnNameAndTypeForColumnExpr(
+    const tipb::Expr & expr,
+    const std::vector<NameAndTypePair> & input_col);
 const String & getTypeName(const tipb::Expr & expr);
 String exprToString(const tipb::Expr & expr, const std::vector<NameAndTypePair> & input_col);
 bool exprHasValidFieldType(const tipb::Expr & expr);
@@ -54,6 +61,7 @@ tipb::Expr constructStringLiteralTiExpr(const String & value);
 tipb::Expr constructInt64LiteralTiExpr(Int64 value);
 tipb::Expr constructDateTimeLiteralTiExpr(UInt64 packed_value);
 tipb::Expr constructNULLLiteralTiExpr();
+tipb::Expr constructZeroVectorFloat32TiExpr();
 DataTypePtr inferDataType4Literal(const tipb::Expr & expr);
 SortDescription getSortDescription(
     const std::vector<NameAndTypePair> & order_columns,
@@ -61,7 +69,8 @@ SortDescription getSortDescription(
 String genFuncString(
     const String & func_name,
     const Names & argument_names,
-    const TiDB::TiDBCollators & collators);
+    const TiDB::TiDBCollators & collators,
+    const std::vector<const tipb::FieldType *> & field_types = {});
 
 extern const Int8 VAR_SIZE;
 
@@ -70,16 +79,14 @@ bool isUnsupportedEncodeType(const std::vector<tipb::FieldType> & types, tipb::E
 TiDB::TiDBCollatorPtr getCollatorFromExpr(const tipb::Expr & expr);
 TiDB::TiDBCollatorPtr getCollatorFromFieldType(const tipb::FieldType & field_type);
 bool hasUnsignedFlag(const tipb::FieldType & tp);
+bool hasIsBooleanFlag(const tipb::FieldType & tp);
+bool hasParseToJSONFlag(const tipb::FieldType & tp);
 
-void assertBlockSchema(
-    const DataTypes & expected_types,
-    const Block & block,
-    const String & context_description);
+void assertBlockSchema(const DataTypes & expected_types, const Block & block, const String & context_description);
 
-void assertBlockSchema(
-    const Block & header,
-    const Block & block,
-    const String & context_description);
+void assertBlockSchema(const Block & header, const Block & block, const String & context_description);
+
+UInt64 getMaxBufferedBytesInResponseWriter(Int64 max_buffered_bytes_in_executor, size_t concurrency);
 
 class UniqueNameGenerator
 {
@@ -103,7 +110,5 @@ public:
 };
 
 tipb::DAGRequest getDAGRequestFromStringWithRetry(const String & s);
-tipb::EncodeType analyzeDAGEncodeType(DAGContext & dag_context);
 tipb::ScalarFuncSig reverseGetFuncSigByFuncName(const String & name);
-
 } // namespace DB

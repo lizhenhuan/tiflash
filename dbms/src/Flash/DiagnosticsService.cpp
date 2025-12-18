@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,11 +15,13 @@
 #include <Common/Exception.h>
 #include <Flash/DiagnosticsService.h>
 #include <Flash/LogSearch.h>
+#include <Interpreters/Context.h>
+#include <Interpreters/SharedContexts/Disagg.h>
 #include <Poco/DirectoryIterator.h>
 #include <Poco/Path.h>
-#include <Storages/Transaction/KVStore.h>
-#include <Storages/Transaction/ProxyFFI.h>
-#include <Storages/Transaction/TMTContext.h>
+#include <Storages/KVStore/FFI/ProxyFFI.h>
+#include <Storages/KVStore/KVStore.h>
+#include <Storages/KVStore/TMTContext.h>
 #include <fmt/ranges.h>
 
 #include <ext/scope_guard.h>
@@ -38,6 +40,14 @@ using diagnosticspb::SearchLogResponse;
     ::diagnosticspb::ServerInfoResponse * response)
 try
 {
+    if (context.getSharedContextDisagg()->isDisaggregatedComputeMode()
+        && context.getSharedContextDisagg()->use_autoscaler)
+    {
+        String err_msg = "tiflash compute node should be managed by AutoScaler instead of PD, this grpc should not be "
+                         "called be AutoScaler for now";
+        LOG_ERROR(log, err_msg);
+        return ::grpc::Status(::grpc::StatusCode::INTERNAL, err_msg);
+    }
     const TiFlashRaftProxyHelper * helper = context.getTMTContext().getKVStore()->getProxyHelper();
     if (helper)
     {
@@ -46,7 +56,7 @@ try
     }
     else
     {
-        LOG_FMT_ERROR(log, "TiFlashRaftProxyHelper is null, `DiagnosticsService::server_info` is useless");
+        LOG_ERROR(log, "TiFlashRaftProxyHelper is null, `DiagnosticsService::server_info` is useless");
         return ::grpc::Status(::grpc::StatusCode::INTERNAL, "TiFlashRaftProxyHelper is null");
     }
     return ::grpc::Status::OK;
@@ -63,7 +73,10 @@ catch (const std::exception & e)
 }
 
 // get & filter(ts of last record < start-time) all files in same log directory.
-std::list<std::string> getFilesToSearch(Poco::Util::LayeredConfiguration & config, Poco::Logger * log, const int64_t start_time)
+std::list<std::string> getFilesToSearch(
+    Poco::Util::LayeredConfiguration & config,
+    Poco::Logger * log,
+    const int64_t start_time)
 {
     std::list<std::string> files_to_search;
 
@@ -81,7 +94,7 @@ std::list<std::string> getFilesToSearch(Poco::Util::LayeredConfiguration & confi
         }
     }
 
-    LOG_FMT_DEBUG(log, "got log directory {}", log_dir);
+    LOG_DEBUG(log, "got log directory {}", log_dir);
 
     if (log_dir.empty())
         return files_to_search;
@@ -97,12 +110,15 @@ std::list<std::string> getFilesToSearch(Poco::Util::LayeredConfiguration & confi
         }
     }
 
-    LOG_FMT_DEBUG(log, "got log files to search {}", files_to_search);
+    LOG_DEBUG(log, "got log files to search {}", files_to_search);
 
     return files_to_search;
 }
 
-grpc::Status searchLog(Poco::Logger * log, ::grpc::ServerWriter<::diagnosticspb::SearchLogResponse> * stream, LogIterator & log_itr)
+grpc::Status searchLog(
+    Poco::Logger * log,
+    ::grpc::ServerWriter<::diagnosticspb::SearchLogResponse> * stream,
+    LogIterator & log_itr)
 {
     static constexpr size_t LOG_BATCH_SIZE = 256;
 
@@ -128,7 +144,7 @@ grpc::Status searchLog(Poco::Logger * log, ::grpc::ServerWriter<::diagnosticspb:
 
         if (!stream->Write(resp))
         {
-            LOG_FMT_DEBUG(log, "Write response failed for unknown reason.");
+            LOG_DEBUG(log, "Write response failed for unknown reason.");
             return grpc::Status(grpc::StatusCode::UNKNOWN, "Write response failed for unknown reason.");
         }
     }
@@ -158,16 +174,14 @@ grpc::Status searchLog(Poco::Logger * log, ::grpc::ServerWriter<::diagnosticspb:
         patterns.push_back(pattern);
     }
 
-    LOG_FMT_DEBUG(log, "Handling SearchLog: {}", request->DebugString());
-    SCOPE_EXIT({
-        LOG_FMT_DEBUG(log, "Handling SearchLog done: {}", request->DebugString());
-    });
+    LOG_DEBUG(log, "Handling SearchLog: {}", request->DebugString());
+    SCOPE_EXIT({ LOG_DEBUG(log, "Handling SearchLog done: {}", request->DebugString()); });
 
     auto files_to_search = getFilesToSearch(config, log, start_time);
 
     for (const auto & path : files_to_search)
     {
-        LOG_FMT_DEBUG(log, "start to search file {}", path);
+        LOG_DEBUG(log, "start to search file {}", path);
         auto status = grpc::Status::OK;
         ReadLogFile(path, [&](std::istream & istr) {
             LogIterator log_itr(start_time, end_time, levels, patterns, istr);

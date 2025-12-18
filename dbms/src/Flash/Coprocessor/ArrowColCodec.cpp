@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,11 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <Columns/ColumnArray.h>
 #include <Columns/ColumnDecimal.h>
 #include <Columns/ColumnNullable.h>
 #include <Columns/ColumnString.h>
 #include <Columns/ColumnVector.h>
 #include <Common/TiFlashException.h>
+#include <DataTypes/DataTypeArray.h>
 #include <DataTypes/DataTypeDecimal.h>
 #include <DataTypes/DataTypeEnum.h>
 #include <DataTypes/DataTypeMyDate.h>
@@ -26,10 +28,14 @@
 #include <Flash/Coprocessor/ArrowColCodec.h>
 #include <Flash/Coprocessor/DAGUtils.h>
 #include <Functions/FunctionHelpers.h>
-#include <IO/Endian.h>
+#include <IO/copyData.h>
+#include <TiDB/Decode/TypeMapping.h>
+#include <TiDB/Schema/TiDB.h>
 
 namespace DB
 {
+using TiDB::ColumnInfo;
+
 namespace ErrorCodes
 {
 extern const int LOGICAL_ERROR;
@@ -107,17 +113,41 @@ void flashDecimalColToArrowCol(
     size_t end_index,
     const IDataType * data_type)
 {
-    if (!(flashDecimalColToArrowColInternal<Decimal32, is_nullable>(dag_column, flash_col_untyped, start_index, end_index, data_type)
-          || flashDecimalColToArrowColInternal<Decimal64, is_nullable>(dag_column, flash_col_untyped, start_index, end_index, data_type)
-          || flashDecimalColToArrowColInternal<Decimal128, is_nullable>(dag_column, flash_col_untyped, start_index, end_index, data_type)
-          || flashDecimalColToArrowColInternal<Decimal256, is_nullable>(dag_column, flash_col_untyped, start_index, end_index, data_type)))
+    if (!(flashDecimalColToArrowColInternal<Decimal32, is_nullable>(
+              dag_column,
+              flash_col_untyped,
+              start_index,
+              end_index,
+              data_type)
+          || flashDecimalColToArrowColInternal<Decimal64, is_nullable>(
+              dag_column,
+              flash_col_untyped,
+              start_index,
+              end_index,
+              data_type)
+          || flashDecimalColToArrowColInternal<Decimal128, is_nullable>(
+              dag_column,
+              flash_col_untyped,
+              start_index,
+              end_index,
+              data_type)
+          || flashDecimalColToArrowColInternal<Decimal256, is_nullable>(
+              dag_column,
+              flash_col_untyped,
+              start_index,
+              end_index,
+              data_type)))
         throw TiFlashException(
             "Error while trying to convert flash col to DAG col, column name " + flash_col_untyped->getName(),
             Errors::Coprocessor::Internal);
 }
 
 template <typename T, bool is_nullable>
-bool flashIntegerColToArrowColInternal(TiDBColumn & dag_column, const IColumn * flash_col_untyped, size_t start_index, size_t end_index)
+bool flashIntegerColToArrowColInternal(
+    TiDBColumn & dag_column,
+    const IColumn * flash_col_untyped,
+    size_t start_index,
+    size_t end_index)
 {
     const IColumn * nested_col = getNestedCol(flash_col_untyped);
     if (const auto * flash_col = checkAndGetColumn<ColumnVector<T>>(nested_col))
@@ -144,7 +174,11 @@ bool flashIntegerColToArrowColInternal(TiDBColumn & dag_column, const IColumn * 
 }
 
 template <typename T, bool is_nullable>
-void flashDoubleColToArrowCol(TiDBColumn & dag_column, const IColumn * flash_col_untyped, size_t start_index, size_t end_index)
+void flashDoubleColToArrowCol(
+    TiDBColumn & dag_column,
+    const IColumn * flash_col_untyped,
+    size_t start_index,
+    size_t end_index)
 {
     const IColumn * nested_col = getNestedCol(flash_col_untyped);
     if (const auto * flash_col = checkAndGetColumn<ColumnVector<T>>(nested_col))
@@ -169,16 +203,44 @@ void flashDoubleColToArrowCol(TiDBColumn & dag_column, const IColumn * flash_col
 }
 
 template <bool is_nullable>
-void flashIntegerColToArrowCol(TiDBColumn & dag_column, const IColumn * flash_col_untyped, size_t start_index, size_t end_index)
+void flashIntegerColToArrowCol(
+    TiDBColumn & dag_column,
+    const IColumn * flash_col_untyped,
+    size_t start_index,
+    size_t end_index)
 {
     if (!(flashIntegerColToArrowColInternal<UInt8, is_nullable>(dag_column, flash_col_untyped, start_index, end_index)
-          || flashIntegerColToArrowColInternal<UInt16, is_nullable>(dag_column, flash_col_untyped, start_index, end_index)
-          || flashIntegerColToArrowColInternal<UInt32, is_nullable>(dag_column, flash_col_untyped, start_index, end_index)
-          || flashIntegerColToArrowColInternal<UInt64, is_nullable>(dag_column, flash_col_untyped, start_index, end_index)
+          || flashIntegerColToArrowColInternal<UInt16, is_nullable>(
+              dag_column,
+              flash_col_untyped,
+              start_index,
+              end_index)
+          || flashIntegerColToArrowColInternal<UInt32, is_nullable>(
+              dag_column,
+              flash_col_untyped,
+              start_index,
+              end_index)
+          || flashIntegerColToArrowColInternal<UInt64, is_nullable>(
+              dag_column,
+              flash_col_untyped,
+              start_index,
+              end_index)
           || flashIntegerColToArrowColInternal<Int8, is_nullable>(dag_column, flash_col_untyped, start_index, end_index)
-          || flashIntegerColToArrowColInternal<Int16, is_nullable>(dag_column, flash_col_untyped, start_index, end_index)
-          || flashIntegerColToArrowColInternal<Int32, is_nullable>(dag_column, flash_col_untyped, start_index, end_index)
-          || flashIntegerColToArrowColInternal<Int64, is_nullable>(dag_column, flash_col_untyped, start_index, end_index)))
+          || flashIntegerColToArrowColInternal<Int16, is_nullable>(
+              dag_column,
+              flash_col_untyped,
+              start_index,
+              end_index)
+          || flashIntegerColToArrowColInternal<Int32, is_nullable>(
+              dag_column,
+              flash_col_untyped,
+              start_index,
+              end_index)
+          || flashIntegerColToArrowColInternal<Int64, is_nullable>(
+              dag_column,
+              flash_col_untyped,
+              start_index,
+              end_index)))
         throw TiFlashException(
             "Error while trying to convert flash col to DAG col, column name " + flash_col_untyped->getName(),
             Errors::Coprocessor::Internal);
@@ -212,7 +274,11 @@ void flashDateOrDateTimeColToArrowCol(
 }
 
 template <bool is_nullable>
-void flashStringColToArrowCol(TiDBColumn & dag_column, const IColumn * flash_col_untyped, size_t start_index, size_t end_index)
+void flashStringColToArrowCol(
+    TiDBColumn & dag_column,
+    const IColumn * flash_col_untyped,
+    size_t start_index,
+    size_t end_index)
 {
     const IColumn * nested_col = getNestedCol(flash_col_untyped);
     // columnFixedString is not used so do not check it
@@ -229,6 +295,37 @@ void flashStringColToArrowCol(TiDBColumn & dag_column, const IColumn * flash_col
             }
         }
         dag_column.append(flash_col->getDataAt(i));
+    }
+}
+
+template <bool is_nullable>
+void flashArrayFloat32ColToArrowCol(
+    TiDBColumn & dag_column,
+    const IColumn * flash_col_untyped,
+    size_t start_index,
+    size_t end_index)
+{
+    // We only unwrap the NULLABLE() part.
+    const IColumn * nested_col = getNestedCol(flash_col_untyped);
+    const auto * flash_col = checkAndGetColumn<ColumnArray>(nested_col);
+
+    RUNTIME_CHECK(checkAndGetColumn<ColumnVector<Float32>>(&flash_col->getData()));
+    RUNTIME_CHECK(flash_col->getData().isFixedAndContiguous());
+
+    for (size_t i = start_index; i < end_index; i++)
+    {
+        // todo check if we can convert flash_col to DAG col directly since the internal representation is almost the same
+        if constexpr (is_nullable)
+        {
+            if (flash_col_untyped->isNullAt(i))
+            {
+                dag_column.appendNull();
+                continue;
+            }
+        }
+
+        auto [num_elems, elem_bytes] = flash_col->getElementRef(i);
+        dag_column.appendVectorF32(num_elems, elem_bytes);
     }
 }
 
@@ -280,14 +377,25 @@ void flashEnumColToArrowCol(
             }
         }
         auto enum_value = static_cast<UInt64>(flash_col->getElement(i));
-        if (enum_value == 0 || enum_value > enum_value_size)
-            throw TiFlashException("number of enum overflow enum boundary", Errors::Coprocessor::Internal);
-        TiDBEnum ti_enum(enum_value, enum_type->getNameForValue(static_cast<const DataTypeEnum16::FieldType>(enum_value)));
+        if (enum_value > enum_value_size)
+            throw TiFlashException(
+                Errors::Coprocessor::Internal,
+                "number of enum value {} overflow enum boundary {}",
+                enum_value,
+                enum_value_size);
+
+        const auto & enum_name = enum_type->getNameForValue(static_cast<const DataTypeEnum16::FieldType>(enum_value));
+        TiDBEnum ti_enum(enum_value, enum_name);
         dag_column.append(ti_enum);
     }
 }
 
-void flashColToArrowCol(TiDBColumn & dag_column, const ColumnWithTypeAndName & flash_col, const tipb::FieldType & field_type, size_t start_index, size_t end_index)
+void flashColToArrowCol(
+    TiDBColumn & dag_column,
+    const ColumnWithTypeAndName & flash_col,
+    const tipb::FieldType & field_type,
+    size_t start_index,
+    size_t end_index)
 {
     auto column = flash_col.column->isColumnConst() ? flash_col.column->convertToFullColumnIfConst() : flash_col.column;
     const IColumn * col = column.get();
@@ -296,7 +404,9 @@ void flashColToArrowCol(TiDBColumn & dag_column, const ColumnWithTypeAndName & f
 
     if (type->isNullable() && tidb_column_info.hasNotNullFlag())
     {
-        throw TiFlashException("Flash column and TiDB column has different not null flag", Errors::Coprocessor::Internal);
+        throw TiFlashException(
+            "Flash column and TiDB column has different not null flag",
+            Errors::Coprocessor::Internal);
     }
     if (type->isNullable())
         type = static_cast<const DataTypeNullable *>(type)->getNestedType().get();
@@ -312,10 +422,13 @@ void flashColToArrowCol(TiDBColumn & dag_column, const ColumnWithTypeAndName & f
     case TiDB::TypeTime:
         if (!type->isInteger() && !type->isMyTime())
             throw TiFlashException(
-                "Type un-matched during arrow encode, target col type is integer and source column type is " + type->getName(),
+                "Type un-matched during arrow encode, target col type is integer and source column type is "
+                    + type->getName(),
                 Errors::Coprocessor::Internal);
         if (type->isUnsignedInteger() != tidb_column_info.hasUnsignedFlag())
-            throw TiFlashException("Flash column and TiDB column has different unsigned flag", Errors::Coprocessor::Internal);
+            throw TiFlashException(
+                "Flash column and TiDB column has different unsigned flag",
+                Errors::Coprocessor::Internal);
         if (tidb_column_info.hasNotNullFlag())
             flashIntegerColToArrowCol<false>(dag_column, col, start_index, end_index);
         else
@@ -324,7 +437,8 @@ void flashColToArrowCol(TiDBColumn & dag_column, const ColumnWithTypeAndName & f
     case TiDB::TypeFloat:
         if (!checkDataType<DataTypeFloat32>(type))
             throw TiFlashException(
-                "Type un-matched during arrow encode, target col type is float32 and source column type is " + type->getName(),
+                "Type un-matched during arrow encode, target col type is float32 and source column type is "
+                    + type->getName(),
                 Errors::Coprocessor::Internal);
         if (tidb_column_info.hasNotNullFlag())
             flashDoubleColToArrowCol<Float32, false>(dag_column, col, start_index, end_index);
@@ -334,7 +448,8 @@ void flashColToArrowCol(TiDBColumn & dag_column, const ColumnWithTypeAndName & f
     case TiDB::TypeDouble:
         if (!checkDataType<DataTypeFloat64>(type))
             throw TiFlashException(
-                "Type un-matched during arrow encode, target col type is float64 and source column type is " + type->getName(),
+                "Type un-matched during arrow encode, target col type is float64 and source column type is "
+                    + type->getName(),
                 Errors::Coprocessor::Internal);
         if (tidb_column_info.hasNotNullFlag())
             flashDoubleColToArrowCol<Float64, false>(dag_column, col, start_index, end_index);
@@ -346,7 +461,8 @@ void flashColToArrowCol(TiDBColumn & dag_column, const ColumnWithTypeAndName & f
     case TiDB::TypeTimestamp:
         if (!type->isDateOrDateTime())
             throw TiFlashException(
-                "Type un-matched during arrow encode, target col type is datetime and source column type is " + type->getName(),
+                "Type un-matched during arrow encode, target col type is datetime and source column type is "
+                    + type->getName(),
                 Errors::Coprocessor::Internal);
         if (tidb_column_info.hasNotNullFlag())
             flashDateOrDateTimeColToArrowCol<false>(dag_column, col, start_index, end_index, field_type);
@@ -356,7 +472,8 @@ void flashColToArrowCol(TiDBColumn & dag_column, const ColumnWithTypeAndName & f
     case TiDB::TypeNewDecimal:
         if (!type->isDecimal())
             throw TiFlashException(
-                "Type un-matched during arrow encode, target col type is datetime and source column type is " + type->getName(),
+                "Type un-matched during arrow encode, target col type is datetime and source column type is "
+                    + type->getName(),
                 Errors::Coprocessor::Internal);
         if (tidb_column_info.hasNotNullFlag())
             flashDecimalColToArrowCol<false>(dag_column, col, start_index, end_index, type);
@@ -373,17 +490,33 @@ void flashColToArrowCol(TiDBColumn & dag_column, const ColumnWithTypeAndName & f
     case TiDB::TypeJSON:
         if (!checkDataType<DataTypeString>(type))
             throw TiFlashException(
-                "Type un-matched during arrow encode, target col type is string and source column type is " + type->getName(),
+                "Type un-matched during arrow encode, target col type is string and source column type is "
+                    + type->getName(),
                 Errors::Coprocessor::Internal);
         if (tidb_column_info.hasNotNullFlag())
             flashStringColToArrowCol<false>(dag_column, col, start_index, end_index);
         else
             flashStringColToArrowCol<true>(dag_column, col, start_index, end_index);
         break;
+    case TiDB::TypeTiDBVectorFloat32:
+    {
+        const auto * data_type = checkAndGetDataType<DataTypeArray>(type);
+        if (!data_type || data_type->getNestedType()->getTypeId() != TypeIndex::Float32)
+            throw TiFlashException(
+                Errors::Coprocessor::Internal,
+                "Type un-matched during arrow encode, target col type is array<float32> and source column type is {}",
+                type->getName());
+        if (tidb_column_info.hasNotNullFlag())
+            flashArrayFloat32ColToArrowCol<false>(dag_column, col, start_index, end_index);
+        else
+            flashArrayFloat32ColToArrowCol<true>(dag_column, col, start_index, end_index);
+        break;
+    }
     case TiDB::TypeBit:
         if (!checkDataType<DataTypeUInt64>(type))
             throw TiFlashException(
-                "Type un-matched during arrow encode, target col type is bit and source column type is " + type->getName(),
+                "Type un-matched during arrow encode, target col type is bit and source column type is "
+                    + type->getName(),
                 Errors::Coprocessor::Internal);
         if (tidb_column_info.hasNotNullFlag())
             flashBitColToArrowCol<false>(dag_column, col, start_index, end_index, field_type);
@@ -393,7 +526,8 @@ void flashColToArrowCol(TiDBColumn & dag_column, const ColumnWithTypeAndName & f
     case TiDB::TypeEnum:
         if (!checkDataType<DataTypeEnum16>(type))
             throw TiFlashException(
-                "Type un-matched during arrow encode, target col type is bit and source column type is " + type->getName(),
+                "Type un-matched during arrow encode, target col type is bit and source column type is "
+                    + type->getName(),
                 Errors::Coprocessor::Internal);
         if (tidb_column_info.hasNotNullFlag())
             flashEnumColToArrowCol<false>(dag_column, col, start_index, end_index, type);
@@ -442,6 +576,35 @@ const char * arrowStringColToFlashCol(
     return pos + offsets[length];
 }
 
+const char * arrowArrayFloat32ColToFlashCol(
+    const char * pos,
+    UInt8,
+    UInt32 null_count,
+    const std::vector<UInt8> & null_bitmap,
+    const std::vector<UInt64> & offsets,
+    const ColumnWithTypeAndName & col,
+    const ColumnInfo &,
+    UInt32 length)
+{
+    const auto * data_type = checkAndGetDataType<DataTypeArray>(&*col.type);
+    if (!data_type || data_type->getNestedType()->getTypeId() != TypeIndex::Float32)
+        throw TiFlashException(
+            Errors::Coprocessor::Internal,
+            "Type un-matched during arrow decode, target col type is array<float32> and source column type is {}",
+            col.type->getName());
+
+    for (UInt32 i = 0; i < length; i++)
+    {
+        if (checkNull(i, null_count, null_bitmap, col))
+            continue;
+
+        auto arrow_data_size = offsets[i + 1] - offsets[i];
+        const auto * base_offset = pos + offsets[i];
+        col.column->assumeMutable()->insertFromDatumData(base_offset, arrow_data_size);
+    }
+    return pos + offsets[length];
+}
+
 const char * arrowEnumColToFlashCol(
     const char * pos,
     UInt8,
@@ -456,7 +619,8 @@ const char * arrowEnumColToFlashCol(
     {
         if (checkNull(i, null_count, null_bitmap, col))
             continue;
-        const auto enum_value = static_cast<Int64>(toLittleEndian(*(reinterpret_cast<const UInt32 *>(pos + offsets[i]))));
+        const auto enum_value
+            = static_cast<Int64>(toLittleEndian(*(reinterpret_cast<const UInt32 *>(pos + offsets[i]))));
         col.column->assumeMutable()->insert(Field(enum_value));
     }
     return pos + offsets[length];
@@ -550,8 +714,9 @@ const char * arrowDecimalColToFlashCol(
         UInt8 negative = toLittleEndian(*(reinterpret_cast<const UInt8 *>(pos)));
         pos += 1;
         Int32 word_buf[MAX_WORD_BUF_LEN];
-        const DataTypePtr decimal_type
-            = col.type->isNullable() ? static_cast<const DataTypeNullable *>(col.type.get())->getNestedType() : col.type;
+        const DataTypePtr decimal_type = col.type->isNullable()
+            ? static_cast<const DataTypeNullable *>(col.type.get())->getNestedType()
+            : col.type;
         for (int & j : word_buf)
         {
             j = toLittleEndian(*(reinterpret_cast<const Int32 *>(pos)));
@@ -599,13 +764,20 @@ const char * arrowDateColToFlashCol(
             continue;
         }
         UInt64 chunk_time = toLittleEndian(*(reinterpret_cast<const UInt64 *>(pos)));
-        auto year = static_cast<UInt16>((chunk_time & MyTimeBase::YEAR_BIT_FIELD_MASK) >> MyTimeBase::YEAR_BIT_FIELD_OFFSET);
-        auto month = static_cast<UInt8>((chunk_time & MyTimeBase::MONTH_BIT_FIELD_MASK) >> MyTimeBase::MONTH_BIT_FIELD_OFFSET);
-        auto day = static_cast<UInt8>((chunk_time & MyTimeBase::DAY_BIT_FIELD_MASK) >> MyTimeBase::DAY_BIT_FIELD_OFFSET);
-        auto hour = static_cast<UInt16>((chunk_time & MyTimeBase::HOUR_BIT_FIELD_MASK) >> MyTimeBase::HOUR_BIT_FIELD_OFFSET);
-        auto minute = static_cast<UInt8>((chunk_time & MyTimeBase::MINUTE_BIT_FIELD_MASK) >> MyTimeBase::MINUTE_BIT_FIELD_OFFSET);
-        auto second = static_cast<UInt8>((chunk_time & MyTimeBase::SECOND_BIT_FIELD_MASK) >> MyTimeBase::SECOND_BIT_FIELD_OFFSET);
-        auto micro_second = static_cast<UInt32>((chunk_time & MyTimeBase::MICROSECOND_BIT_FIELD_MASK) >> MyTimeBase::MICROSECOND_BIT_FIELD_OFFSET);
+        auto year
+            = static_cast<UInt16>((chunk_time & MyTimeBase::YEAR_BIT_FIELD_MASK) >> MyTimeBase::YEAR_BIT_FIELD_OFFSET);
+        auto month
+            = static_cast<UInt8>((chunk_time & MyTimeBase::MONTH_BIT_FIELD_MASK) >> MyTimeBase::MONTH_BIT_FIELD_OFFSET);
+        auto day
+            = static_cast<UInt8>((chunk_time & MyTimeBase::DAY_BIT_FIELD_MASK) >> MyTimeBase::DAY_BIT_FIELD_OFFSET);
+        auto hour
+            = static_cast<UInt16>((chunk_time & MyTimeBase::HOUR_BIT_FIELD_MASK) >> MyTimeBase::HOUR_BIT_FIELD_OFFSET);
+        auto minute = static_cast<UInt8>(
+            (chunk_time & MyTimeBase::MINUTE_BIT_FIELD_MASK) >> MyTimeBase::MINUTE_BIT_FIELD_OFFSET);
+        auto second = static_cast<UInt8>(
+            (chunk_time & MyTimeBase::SECOND_BIT_FIELD_MASK) >> MyTimeBase::SECOND_BIT_FIELD_OFFSET);
+        auto micro_second = static_cast<UInt32>(
+            (chunk_time & MyTimeBase::MICROSECOND_BIT_FIELD_MASK) >> MyTimeBase::MICROSECOND_BIT_FIELD_OFFSET);
         MyDateTime mt(year, month, day, hour, minute, second, micro_second);
         pos += field_length;
         col.column->assumeMutable()->insert(Field(mt.toPackedUInt()));
@@ -699,7 +871,15 @@ const char * arrowColToFlashCol(
     case TiDB::TypeTimestamp:
         return arrowDateColToFlashCol(pos, field_length, null_count, null_bitmap, offsets, flash_col, col_info, length);
     case TiDB::TypeNewDecimal:
-        return arrowDecimalColToFlashCol(pos, field_length, null_count, null_bitmap, offsets, flash_col, col_info, length);
+        return arrowDecimalColToFlashCol(
+            pos,
+            field_length,
+            null_count,
+            null_bitmap,
+            offsets,
+            flash_col,
+            col_info,
+            length);
     case TiDB::TypeVarString:
     case TiDB::TypeVarchar:
     case TiDB::TypeBlob:
@@ -708,13 +888,33 @@ const char * arrowColToFlashCol(
     case TiDB::TypeMediumBlob:
     case TiDB::TypeLongBlob:
     case TiDB::TypeJSON:
-        return arrowStringColToFlashCol(pos, field_length, null_count, null_bitmap, offsets, flash_col, col_info, length);
+        return arrowStringColToFlashCol(
+            pos,
+            field_length,
+            null_count,
+            null_bitmap,
+            offsets,
+            flash_col,
+            col_info,
+            length);
     case TiDB::TypeBit:
         return arrowBitColToFlashCol(pos, field_length, null_count, null_bitmap, offsets, flash_col, col_info, length);
+    case TiDB::TypeTiDBVectorFloat32:
+        return arrowArrayFloat32ColToFlashCol(
+            pos,
+            field_length,
+            null_count,
+            null_bitmap,
+            offsets,
+            flash_col,
+            col_info,
+            length);
     case TiDB::TypeEnum:
         return arrowEnumColToFlashCol(pos, field_length, null_count, null_bitmap, offsets, flash_col, col_info, length);
     default:
-        throw TiFlashException("Not supported yet: field tp = " + std::to_string(col_info.tp), Errors::Coprocessor::Unimplemented);
+        throw TiFlashException(
+            "Not supported yet: field tp = " + std::to_string(col_info.tp),
+            Errors::Coprocessor::Unimplemented);
     }
 }
 

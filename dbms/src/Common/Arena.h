@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/Common/Arena.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,6 +17,7 @@
 #pragma once
 
 #include <Common/Allocator.h>
+#include <Common/Exception.h>
 #include <Common/ProfileEvents.h>
 #include <Core/Defines.h>
 #include <common/likely.h>
@@ -26,6 +29,7 @@
 
 namespace DB
 {
+using ResizeCallback = std::function<bool()>;
 /** Memory pool to append something. For example, short strings.
   * Usage scenario:
   * - put lot of strings inside pool, keep their addresses;
@@ -71,10 +75,9 @@ private:
     Chunk * head;
     size_t size_in_bytes;
 
-    static size_t roundUpToPageSize(size_t s)
-    {
-        return (s + 4096 - 1) / 4096 * 4096;
-    }
+    ResizeCallback resize_callback;
+
+    static size_t roundUpToPageSize(size_t s) { return (s + 4096 - 1) / 4096 * 4096; }
 
     /// If chunks size is less than 'linear_growth_threshold', then use exponential growth, otherwise - linear growth
     ///  (to not allocate too much excessive memory).
@@ -94,30 +97,45 @@ private:
     }
 
     /// Add next contiguous chunk of memory with size not less than specified.
-    void NO_INLINE addChunk(size_t min_size)
+    /// If free_empty_head_chunk is true, empty head will be freed.
+    /// It can avoid mem leak when you want always reuse one chunk.
+    void NO_INLINE addChunk(size_t min_size, bool free_empty_head_chunk)
     {
-        head = new Chunk(nextSize(min_size), head);
+        if (resize_callback != nullptr)
+        {
+            if unlikely (!resize_callback())
+                throw ResizeException("Error in arena resize");
+        }
+        const auto next_size = nextSize(min_size);
+        if (free_empty_head_chunk && head->remaining() == head->size())
+        {
+            size_in_bytes -= head->size();
+            auto * old_head = head;
+            head = head->prev;
+            old_head->prev = nullptr;
+            delete old_head;
+        }
+        head = new Chunk(next_size, head);
         size_in_bytes += head->size();
     }
 
     friend class ArenaAllocator;
 
 public:
-    explicit Arena(size_t initial_size_ = 4096, size_t growth_factor_ = 2, size_t linear_growth_threshold_ = 128 * 1024 * 1024)
+    explicit Arena(
+        size_t initial_size_ = 4096,
+        size_t growth_factor_ = 2,
+        size_t linear_growth_threshold_ = 128 * 1024 * 1024)
         : growth_factor(growth_factor_)
         , linear_growth_threshold(linear_growth_threshold_)
         , head(new Chunk(initial_size_, nullptr))
         , size_in_bytes(head->size())
-    {
-    }
+    {}
 
-    ~Arena()
-    {
-        delete head;
-    }
+    ~Arena() { delete head; }
 
     /// Get piece of memory with alignment
-    char * alignedAlloc(size_t size, size_t alignment)
+    char * alignedAlloc(size_t size, size_t alignment, bool free_empty_head_chunk = false)
     {
         do
         {
@@ -132,15 +150,15 @@ public:
                 return res;
             }
 
-            addChunk(size + alignment);
+            addChunk(size + alignment, free_empty_head_chunk);
         } while (true);
     }
 
     /// Get piece of memory, without alignment.
-    char * alloc(size_t size)
+    char * alloc(size_t size, bool free_empty_head_chunk = false)
     {
         if (unlikely(head->pos + size > head->end))
-            addChunk(size);
+            addChunk(size, free_empty_head_chunk);
 
         char * res = head->pos;
         head->pos += size;
@@ -150,10 +168,10 @@ public:
     /** Rollback just performed allocation.
       * Must pass size not more that was just allocated.
       */
-    void rollback(size_t size)
-    {
-        head->pos -= size;
-    }
+    void rollback(size_t size) { head->pos -= size; }
+    void rollback() { head->pos = head->begin; }
+
+    void setResizeCallback(const ResizeCallback & resize_callback_) { resize_callback = resize_callback_; }
 
     /** Begin or expand allocation of contiguous piece of memory.
       * 'begin' - current begin of piece of memory, if it need to be expanded, or nullptr, if it need to be started.
@@ -165,7 +183,7 @@ public:
         while (unlikely(head->pos + size > head->end))
         {
             char * prev_end = head->pos;
-            addChunk(size);
+            addChunk(size, false);
 
             if (begin)
                 begin = insert(begin, prev_end - begin);
@@ -200,15 +218,9 @@ public:
     }
 
     /// Size of chunks in bytes.
-    size_t size() const
-    {
-        return size_in_bytes;
-    }
+    size_t size() const { return size_in_bytes; }
 
-    size_t remainingSpaceInCurrentChunk() const
-    {
-        return head->remaining();
-    }
+    size_t remainingSpaceInCurrentChunk() const { return head->remaining(); }
 };
 
 using ArenaPtr = std::shared_ptr<Arena>;

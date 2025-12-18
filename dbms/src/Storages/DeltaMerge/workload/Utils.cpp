@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <Common/MyTime.h>
+#include <DataTypes/DataTypeDecimal.h>
 #include <Storages/DeltaMerge/workload/Utils.h>
 #include <fmt/chrono.h>
 #include <fmt/ranges.h>
@@ -31,7 +33,8 @@ std::string localDate()
 std::string fieldToString(const DataTypePtr & data_type, const Field & f)
 {
     std::string family_name = data_type->getFamilyName();
-    if (family_name == "Int8" || family_name == "Int16" || family_name == "Int32" || family_name == "Int64" || family_name == "Enum8" || family_name == "Enum16")
+    if (family_name == "Int8" || family_name == "Int16" || family_name == "Int32" || family_name == "Int64"
+        || family_name == "Enum8" || family_name == "Enum16")
     {
         auto i = f.safeGet<Int64>();
         return std::to_string(i);
@@ -108,7 +111,12 @@ std::string blockToString(const Block & block)
     const auto & cols = block.getColumnsWithTypeAndName();
     for (const auto & col : cols)
     {
-        s += fmt::format("{} {} {} {}\n", col.column_id, col.name, col.type->getFamilyName(), colToVec(col.type, col.column));
+        s += fmt::format(
+            "{} {} {} {}\n",
+            col.column_id,
+            col.name,
+            col.type->getFamilyName(),
+            colToVec(col.type, col.column));
     }
     return s;
 }

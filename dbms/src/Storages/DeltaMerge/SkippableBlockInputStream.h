@@ -1,4 +1,4 @@
-// Copyright 2022 PingCAP, Ltd.
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,27 +16,41 @@
 
 #include <Core/Block.h>
 #include <DataStreams/IBlockInputStream.h>
+#include <Storages/DeltaMerge/DeltaMergeDefines.h>
+#include <Storages/DeltaMerge/DeltaMergeHelpers.h>
 
-namespace DB
+
+namespace DB::DM
 {
-namespace DM
-{
+
 class SkippableBlockInputStream : public IBlockInputStream
 {
 public:
-    virtual ~SkippableBlockInputStream() = default;
+    ~SkippableBlockInputStream() override = default;
 
     /// Return false if it is the end of stream.
     virtual bool getSkippedRows(size_t & skip_rows) = 0;
+
+    /// Skip next block in the stream.
+    /// Return the number of rows of the next block.
+    /// Return 0 if failed to skip or the end of stream.
+    virtual size_t skipNextBlock() = 0;
+
+    /// Read specific rows of next block in the stream according to the filter.
+    /// Return empty block if failed to read or the end of stream.
+    /// Note: filter can not be all false.
+    /// Only used in Late Materialization.
+    virtual Block readWithFilter(const IColumn::Filter & filter) = 0;
 };
 
 using SkippableBlockInputStreamPtr = std::shared_ptr<SkippableBlockInputStream>;
 using SkippableBlockInputStreams = std::vector<SkippableBlockInputStreamPtr>;
 
+/// A SkippableBlockInputStream that always returns an empty block.
 class EmptySkippableBlockInputStream : public SkippableBlockInputStream
 {
 public:
-    EmptySkippableBlockInputStream(const ColumnDefines & read_columns_)
+    explicit EmptySkippableBlockInputStream(const ColumnDefines & read_columns_)
         : read_columns(read_columns_)
     {}
 
@@ -46,73 +60,53 @@ public:
 
     bool getSkippedRows(size_t &) override { return false; }
 
+    size_t skipNextBlock() override { return 0; }
+
+    Block readWithFilter(const IColumn::Filter &) override { return {}; }
+
     Block read() override { return {}; }
 
 private:
     ColumnDefines read_columns;
 };
 
-class ConcatSkippableBlockInputStream : public SkippableBlockInputStream
+template <typename T>
+class AsNopSkippableBlockInputStream;
+
+/// A SkippableBlockInputStream that does not support any skip operations.
+class NopSkippableBlockInputStream : public SkippableBlockInputStream
 {
 public:
-    ConcatSkippableBlockInputStream(SkippableBlockInputStreams inputs_)
+    /// Wraps any stream into a NopSkippableBlockInputStream.
+    /// Note: After wrapping, you cannot use dynamic_pointer_cast to get the original stream. Use children[0] instead.
+    template <typename T>
+    static auto wrap(const std::shared_ptr<T> & stream)
     {
-        children.insert(children.end(), inputs_.begin(), inputs_.end());
-        current_stream = children.begin();
+        return std::make_shared<AsNopSkippableBlockInputStream<T>>(stream);
     }
 
-    String getName() const override { return "ConcatSkippable"; }
+public:
+    bool getSkippedRows(size_t &) override { throw Exception("Not implemented", ErrorCodes::NOT_IMPLEMENTED); }
 
-    Block getHeader() const override { return children.at(0)->getHeader(); }
+    size_t skipNextBlock() override { throw Exception("Not implemented", ErrorCodes::NOT_IMPLEMENTED); }
 
-    bool getSkippedRows(size_t & skip_rows) override
+    Block readWithFilter(const IColumn::Filter &) override
     {
-        skip_rows = 0;
-        while (current_stream != children.end())
-        {
-            auto skippable_stream = dynamic_cast<SkippableBlockInputStream *>((*current_stream).get());
-
-            size_t skip;
-            bool has_next_block = skippable_stream->getSkippedRows(skip);
-            skip_rows += skip;
-
-            if (has_next_block)
-            {
-                return true;
-            }
-            else
-            {
-                (*current_stream)->readSuffix();
-                ++current_stream;
-            }
-        }
-
-        return false;
+        throw Exception("Not implemented", ErrorCodes::NOT_IMPLEMENTED);
     }
-
-    Block read() override
-    {
-        Block res;
-
-        while (current_stream != children.end())
-        {
-            res = (*current_stream)->read();
-
-            if (res)
-                break;
-            else
-            {
-                (*current_stream)->readSuffix();
-                ++current_stream;
-            }
-        }
-
-        return res;
-    }
-
-private:
-    BlockInputStreams::iterator current_stream;
 };
 
-} // namespace DM
-} // namespace DB
+template <typename T>
+class AsNopSkippableBlockInputStream : public NopSkippableBlockInputStream
+{
+public:
+    explicit AsNopSkippableBlockInputStream(const std::shared_ptr<T> & stream_) { children.push_back(stream_); }
+
+    String getName() const override { return "AsNopSkippable"; }
+
+    Block getHeader() const override { return children[0]->getHeader(); }
+
+    Block read() override { return children[0]->read(); }
+};
+
+} // namespace DB::DM

@@ -1,4 +1,6 @@
-// Copyright 2022 PingCAP, Ltd.
+// Modified from: https://github.com/ClickHouse/ClickHouse/blob/30fcaeb2a3fff1bf894aae9c776bed7fd83f783f/dbms/src/IO/ReadHelpers.h
+//
+// Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,8 +23,8 @@
 #include <Common/StringUtils/StringUtils.h>
 #include <Core/Types.h>
 #include <Core/UUID.h>
-#include <IO/ReadBuffer.h>
-#include <IO/ReadBufferFromMemory.h>
+#include <IO/Buffer/ReadBuffer.h>
+#include <IO/Buffer/ReadBufferFromMemory.h>
 #include <IO/VarInt.h>
 #include <common/DateLUT.h>
 #include <common/LocalDate.h>
@@ -30,15 +32,15 @@
 #include <common/StringRef.h>
 #include <double-conversion/double-conversion.h>
 
-#include <algorithm>
-#include <cassert>
-#include <cmath>
 #include <cstring>
 #include <iterator>
-#include <limits>
 #include <type_traits>
 
-#define DEFAULT_MAX_STRING_SIZE 0x00FFFFFFULL
+static constexpr UInt64 DEFAULT_MAX_STRING_SIZE = 0x00FFFFFFULL; // 16777215, 16MiB-1
+
+// According to `txn-entry-size-limit` in TiDB, the max size of a TiKV key/value is 120MB.
+// https://docs.pingcap.com/tidb/stable/tidb-configuration-file/#txn-entry-size-limit-new-in-v4010-and-v500
+static constexpr UInt64 TIKV_MAX_VALUE_SIZE = 125829120;
 
 namespace DB
 {
@@ -134,12 +136,21 @@ inline void readStringBinary(std::string & s, ReadBuffer & buf, size_t MAX_STRIN
     readVarUInt(size, buf);
 
     if (size > MAX_STRING_SIZE)
-        throw Poco::Exception("Too large string size.");
+        throw DB::Exception(
+            ErrorCodes::LOGICAL_ERROR,
+            "Too large string size, size={} max_size={}",
+            size,
+            MAX_STRING_SIZE);
 
     s.resize(size);
     buf.readStrict(&s[0], size);
 }
 
+// Corresponding to `writeString(const char * data, size_t size, WriteBuffer & buf)`.
+inline void readString(char * data, size_t size, ReadBuffer & buf)
+{
+    buf.readStrict(data, size);
+}
 
 inline StringRef readStringBinaryInto(Arena & arena, ReadBuffer & buf)
 {
@@ -160,7 +171,11 @@ void readVectorBinary(std::vector<T> & v, ReadBuffer & buf, size_t MAX_VECTOR_SI
     readVarUInt(size, buf);
 
     if (size > MAX_VECTOR_SIZE)
-        throw Poco::Exception("Too large vector size.");
+        throw DB::Exception(
+            ErrorCodes::LOGICAL_ERROR,
+            "Too large vector size, size={}, max_size={}",
+            size,
+            MAX_VECTOR_SIZE);
 
     v.resize(size);
     for (size_t i = 0; i < size; ++i)
@@ -353,7 +368,6 @@ inline void readDecimalText(Decimal<T> & x, ReadBuffer & buf, PrecType precision
         value = -value;
     x.value = static_cast<T>(value);
     checkDecimalOverflow(x, precision);
-    return;
 }
 
 template <typename T, typename ReturnType = void>
@@ -526,21 +540,6 @@ void readBackQuotedStringWithSQLStyle(String & s, ReadBuffer & buf);
 
 void readStringUntilEOF(String & s, ReadBuffer & buf);
 
-
-/** Read string in CSV format.
-  * Parsing rules:
-  * - string could be placed in quotes; quotes could be single: ' or double: ";
-  * - or string could be unquoted - this is determined by first character;
-  * - if string is unquoted, then it is read until next delimiter,
-  *   either until end of line (CR or LF),
-  *   or until end of stream;
-  *   but spaces and tabs at begin and end of unquoted string are consumed but ignored (note that this behaviour differs from RFC).
-  * - if string is in quotes, then it will be read until closing quote,
-  *   but sequences of two consecutive quotes are parsed as single quote inside string;
-  */
-void readCSVString(String & s, ReadBuffer & buf, const char delimiter = ',');
-
-
 /// Read and append result to array of characters.
 template <typename Vector>
 void readStringInto(Vector & s, ReadBuffer & buf);
@@ -560,9 +559,6 @@ void readBackQuotedStringInto(Vector & s, ReadBuffer & buf);
 template <typename Vector>
 void readStringUntilEOFInto(Vector & s, ReadBuffer & buf);
 
-template <typename Vector>
-void readCSVStringInto(Vector & s, ReadBuffer & buf, const char delimiter = ',');
-
 /// ReturnType is either bool or void. If bool, the function will return false instead of throwing an exception.
 template <typename Vector, typename ReturnType = void>
 ReturnType readJSONStringInto(Vector & s, ReadBuffer & buf);
@@ -577,14 +573,14 @@ bool tryReadJSONStringInto(Vector & s, ReadBuffer & buf)
 struct NullSink
 {
     void append(const char *, size_t){};
-    void push_back(char){};
+    void push_back(char){}; // NOLINT
 };
 
 void parseUUID(const UInt8 * src36, UInt8 * dst16);
 void parseUUID(const UInt8 * src36, std::reverse_iterator<UInt8 *> dst16);
 
 template <typename IteratorSrc, typename IteratorDst>
-void formatHex(IteratorSrc src, IteratorDst dst, const size_t num_bytes);
+void formatHex(IteratorSrc src, IteratorDst dst, size_t num_bytes);
 
 template <typename ReturnType = void>
 ReturnType readMyDateTextImpl(UInt64 & date, ReadBuffer & buf)
@@ -594,7 +590,8 @@ ReturnType readMyDateTextImpl(UInt64 & date, ReadBuffer & buf)
     /// Optimistic path, when whole value is in buffer.
     if (buf.position() + 10 <= buf.buffer().end())
     {
-        UInt16 year = (buf.position()[0] - '0') * 1000 + (buf.position()[1] - '0') * 100 + (buf.position()[2] - '0') * 10 + (buf.position()[3] - '0');
+        UInt16 year = (buf.position()[0] - '0') * 1000 + (buf.position()[1] - '0') * 100
+            + (buf.position()[2] - '0') * 10 + (buf.position()[3] - '0');
         buf.position() += 5;
 
         UInt8 month = buf.position()[0] - '0';
@@ -616,13 +613,13 @@ ReturnType readMyDateTextImpl(UInt64 & date, ReadBuffer & buf)
             buf.position() += 1;
 
         date = MyDate(year, month, day).toPackedUInt();
-        return ReturnType(true);
+        return static_cast<ReturnType>(true);
     }
 
     if constexpr (throw_exception)
         throw Exception("wrong date format.", ErrorCodes::CANNOT_PARSE_DATE);
     else
-        return ReturnType(false);
+        return static_cast<ReturnType>(false);
 }
 
 inline void readMyDateText(UInt64 & date, ReadBuffer & buf)
@@ -650,7 +647,8 @@ inline void readDateText(LocalDate & date, ReadBuffer & buf)
     /// Optimistic path, when whole value is in buffer.
     if (buf.position() + 10 <= buf.buffer().end())
     {
-        UInt16 year = (buf.position()[0] - '0') * 1000 + (buf.position()[1] - '0') * 100 + (buf.position()[2] - '0') * 10 + (buf.position()[3] - '0');
+        UInt16 year = (buf.position()[0] - '0') * 1000 + (buf.position()[1] - '0') * 100
+            + (buf.position()[2] - '0') * 10 + (buf.position()[3] - '0');
         buf.position() += 5;
 
         UInt8 month = buf.position()[0] - '0';
@@ -696,7 +694,9 @@ inline void readUUIDText(UUID & uuid, ReadBuffer & buf)
         throw Exception(std::string("Cannot parse uuid ") + s, ErrorCodes::CANNOT_PARSE_UUID);
     }
 
-    parseUUID(reinterpret_cast<const UInt8 *>(s), std::reverse_iterator<UInt8 *>(reinterpret_cast<UInt8 *>(&uuid) + 16));
+    parseUUID(
+        reinterpret_cast<const UInt8 *>(s),
+        std::reverse_iterator<UInt8 *>(reinterpret_cast<UInt8 *>(&uuid) + 16));
 }
 
 
@@ -757,7 +757,7 @@ ReturnType readMyDateTimeTextImpl(UInt64 & packed, int fsp, ReadBuffer & buf)
                 micro_second *= 10;
 
             packed = MyDateTime(year, month, day, hour, minute, second, micro_second).toPackedUInt();
-            return ReturnType(true);
+            return static_cast<ReturnType>(true);
         }
     }
     else if (s + 10 <= buf.buffer().end())
@@ -769,7 +769,7 @@ ReturnType readMyDateTimeTextImpl(UInt64 & packed, int fsp, ReadBuffer & buf)
     if constexpr (throw_exception)
         throw Exception("wrong datetime format.", ErrorCodes::CANNOT_PARSE_DATETIME);
     else
-        return ReturnType(false);
+        return static_cast<ReturnType>(false);
 }
 
 inline void readMyDateTimeText(UInt64 & packed, int fsp, ReadBuffer & buf)
@@ -852,8 +852,7 @@ inline void readDateTimeText(LocalDateTime & datetime, ReadBuffer & buf)
 
 /// Generic methods to read value in native binary format.
 template <typename T>
-inline std::enable_if_t<std::is_arithmetic_v<T>, void>
-readBinary(T & x, ReadBuffer & buf)
+inline std::enable_if_t<std::is_arithmetic_v<T>, void> readBinary(T & x, ReadBuffer & buf)
 {
     readPODBinary(x, buf);
 }
@@ -887,15 +886,13 @@ inline void readBinary(Decimal<T> & x, ReadBuffer & buf)
 
 /// Generic methods to read value in text tab-separated format.
 template <typename T>
-inline std::enable_if_t<std::is_integral_v<T>, void>
-readText(T & x, ReadBuffer & buf)
+inline std::enable_if_t<std::is_integral_v<T>, void> readText(T & x, ReadBuffer & buf)
 {
     readIntText(x, buf);
 }
 
 template <typename T>
-inline std::enable_if_t<std::is_floating_point_v<T>, void>
-readText(T & x, ReadBuffer & buf)
+inline std::enable_if_t<std::is_floating_point_v<T>, void> readText(T & x, ReadBuffer & buf)
 {
     readFloatText(x, buf);
 }
@@ -931,8 +928,7 @@ inline void readText(UInt128 &, ReadBuffer &)
 /// Generic methods to read value in text format,
 ///  possibly in single quotes (only for data types that use quotes in VALUES format of INSERT statement in SQL).
 template <typename T>
-inline std::enable_if_t<std::is_arithmetic_v<T>, void>
-readQuoted(T & x, ReadBuffer & buf)
+inline std::enable_if_t<std::is_arithmetic_v<T>, void> readQuoted(T & x, ReadBuffer & buf)
 {
     readText(x, buf);
 }
@@ -959,8 +955,7 @@ inline void readQuoted(LocalDateTime & x, ReadBuffer & buf)
 
 /// Same as above, but in double quotes.
 template <typename T>
-inline std::enable_if_t<std::is_arithmetic_v<T>, void>
-readDoubleQuoted(T & x, ReadBuffer & buf)
+inline std::enable_if_t<std::is_arithmetic_v<T>, void> readDoubleQuoted(T & x, ReadBuffer & buf)
 {
     readText(x, buf);
 }
@@ -984,105 +979,6 @@ inline void readDoubleQuoted(LocalDateTime & x, ReadBuffer & buf)
     assertChar('"', buf);
 }
 
-
-/// CSV, for numbers, dates: quotes are optional, no special escaping rules.
-template <typename T>
-inline void readCSVSimple(T & x, ReadBuffer & buf)
-{
-    if (buf.eof())
-        throwReadAfterEOF();
-
-    char maybe_quote = *buf.position();
-
-    if (maybe_quote == '\'' || maybe_quote == '\"')
-        ++buf.position();
-
-    readText(x, buf);
-
-    if (maybe_quote == '\'' || maybe_quote == '\"')
-        assertChar(maybe_quote, buf);
-}
-
-template <typename T>
-inline void readCSVDecimal(Decimal<T> & x, ReadBuffer & buf, PrecType precision, ScaleType scale)
-{
-    if (buf.eof())
-        throwReadAfterEOF();
-
-    char maybe_quote = *buf.position();
-
-    if (maybe_quote == '\'' || maybe_quote == '\"')
-        ++buf.position();
-
-    readDecimalText(x, buf, precision, scale);
-
-    if (maybe_quote == '\'' || maybe_quote == '\"')
-        assertChar(maybe_quote, buf);
-}
-
-inline void readMyDateTimeCSV(UInt64 & datetime, int fsp, ReadBuffer & buf)
-{
-    if (buf.eof())
-        throwReadAfterEOF();
-
-    char maybe_quote = *buf.position();
-
-    if (maybe_quote == '\'' || maybe_quote == '\"')
-        ++buf.position();
-
-    readMyDateTimeText(datetime, fsp, buf);
-
-    if (maybe_quote == '\'' || maybe_quote == '\"')
-        assertChar(maybe_quote, buf);
-}
-
-inline void readDateTimeCSV(time_t & datetime, ReadBuffer & buf, const DateLUTImpl & date_lut)
-{
-    if (buf.eof())
-        throwReadAfterEOF();
-
-    char maybe_quote = *buf.position();
-
-    if (maybe_quote == '\'' || maybe_quote == '\"')
-        ++buf.position();
-
-    readDateTimeText(datetime, buf, date_lut);
-
-    if (maybe_quote == '\'' || maybe_quote == '\"')
-        assertChar(maybe_quote, buf);
-}
-
-template <typename T>
-inline std::enable_if_t<std::is_arithmetic_v<T>, void>
-readCSV(T & x, ReadBuffer & buf)
-{
-    readCSVSimple(x, buf);
-}
-
-inline void readCSV(String & x, ReadBuffer & buf, const char delimiter = ',')
-{
-    readCSVString(x, buf, delimiter);
-}
-inline void readCSV(LocalDate & x, ReadBuffer & buf)
-{
-    readCSVSimple(x, buf);
-}
-inline void readCSV(LocalDateTime & x, ReadBuffer & buf)
-{
-    readCSVSimple(x, buf);
-}
-inline void readCSV(UUID & x, ReadBuffer & buf)
-{
-    readCSVSimple(x, buf);
-}
-inline void readCSV(UInt128 &, ReadBuffer &)
-{
-    /** Because UInt128 isn't a natural type, without arithmetic operator and only use as an intermediary type -for UUID-
-     *  it should never arrive here. But because we used the DataTypeNumber class we should have at least a definition of it.
-     */
-    throw Exception("UInt128 cannot be read as a text", ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT);
-}
-
 template <typename T>
 void readBinary(std::vector<T> & x, ReadBuffer & buf)
 {
@@ -1090,7 +986,11 @@ void readBinary(std::vector<T> & x, ReadBuffer & buf)
     readVarUInt(size, buf);
 
     if (size > DEFAULT_MAX_STRING_SIZE)
-        throw Poco::Exception("Too large vector size.");
+        throw DB::Exception(
+            ErrorCodes::LOGICAL_ERROR,
+            "Too large vector size, size={} max_size={}",
+            size,
+            DEFAULT_MAX_STRING_SIZE);
 
     x.resize(size);
     for (size_t i = 0; i < size; ++i)
@@ -1210,11 +1110,8 @@ inline T parse(const String & s)
   */
 inline void skipBOMIfExists(ReadBuffer & buf)
 {
-    if (!buf.eof()
-        && buf.position() + 3 < buf.buffer().end()
-        && buf.position()[0] == '\xEF'
-        && buf.position()[1] == '\xBB'
-        && buf.position()[2] == '\xBF')
+    if (!buf.eof() && buf.position() + 3 < buf.buffer().end() && buf.position()[0] == '\xEF'
+        && buf.position()[1] == '\xBB' && buf.position()[2] == '\xBF')
     {
         buf.position() += 3;
     }
